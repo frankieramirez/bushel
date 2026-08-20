@@ -1,0 +1,2 @@
+Error: internalError: "failed to list containers" (cause: "interrupted: "XPC connection error: Connection invalid"")
+Ensure container system service has been started with `container system start`.
