@@ -19,8 +19,37 @@ _Avoid_: mount
 ### Interaction
 
 **Pane**:
-One of the three entity views (containers, images, volumes).
+One of the three entity views (containers, images, volumes). One pane is shown at a time.
 _Avoid_: tab, screen, page
+
+**Detail pane**:
+The right-hand half of the layout, always showing a view of the current selection. For containers it has two detail tabs (Logs, Inspect); images and volumes have Inspect only.
+
+**Focus**:
+Which side of the layout receives input — the entity list or the detail pane. Enter moves focus into the detail pane; Esc returns it to the list.
+
+**Zoom**:
+Toggling the focused pane to fullscreen and back.
+
+**Filter**:
+Fuzzy narrowing of the current entity list; Esc clears it.
+_Avoid_: search
+
+**Action menu**:
+The bottom sheet opened with `space`, listing the valid actions for the current selection alongside their direct keys.
+_Avoid_: context menu, palette
+
+**Bottom bar**:
+The persistent bar of context-sensitive key hints plus the status cluster (service state, CLI version, poll spinner).
+_Avoid_: status bar (ambiguous with the status cluster)
+
+**Message log**:
+The scrollback of recent errors and notices, holding the full stderr behind each status-bar one-liner.
+_Avoid_: console
+
+**Splash**:
+The animated launch screen that plays only while the startup probes run; any key skips it, and it never adds latency of its own.
+_Avoid_: intro, loading screen
 
 **Action**:
 A keybound operation on the selected entity.
