@@ -75,11 +75,24 @@ _Avoid_: attach, shell into
 **Prune**:
 The CLI's own bulk-cleanup action per entity (stopped containers, unused images, unreferenced volumes). bushel's only bulk operation.
 
+**Pending**:
+The state of an entity whose action is in flight. An entity can have at most one pending action; pending clears when a poll tick confirms the outcome.
+_Avoid_: busy, locked
+
+**External stop**:
+A container leaving the running state without a bushel action. The only external change bushel announces; all others update the lists silently.
+
 ### Engine
 
 **Runner**:
 The mockable seam through which every `container` CLI invocation passes.
-_Avoid_: client, executor
+_Avoid_: executor
+
+**Client**:
+The typed layer above the Runner that builds commands, parses their output into entities, and classifies their errors. All version fragility lives here.
+
+**Engine**:
+The headless core that owns application state, the poll loop, pending actions, and the follow subprocess. It knows nothing about rendering.
 
 **Poll tick**:
 One iteration of the periodic refresh loop that re-lists entities and samples stats. Apple Containers has no event API, so polling is the only refresh model.
