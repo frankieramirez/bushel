@@ -165,6 +165,7 @@ mod tests {
             volumes: vec![],
             cpu_percent: None,
             mem_bytes: None,
+            telemetry: std::collections::VecDeque::new(),
             pending: None,
         });
         s.clamp_selection();

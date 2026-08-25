@@ -1,7 +1,7 @@
 //! `AppState`: the single state tree the UI renders from. Mutated only by the
 //! Engine's update loop; the UI never writes to it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use crate::client::model::{ContainerJson, ImageJson, StatsJson, VolumeJson};
@@ -9,6 +9,8 @@ use crate::client::model::{ContainerJson, ImageJson, StatsJson, VolumeJson};
 /// Ring-buffer caps.
 pub const LOG_RING_CAP: usize = 10_000;
 pub const MESSAGE_LOG_CAP: usize = 1_000;
+/// 5 minutes of telemetry at the 1s poll cadence; one sample per column.
+pub const TELEMETRY_HISTORY: usize = 300;
 /// Poll ticks a finished action may wait for state confirmation.
 pub const CONFIRM_TICKS: u8 = 2;
 /// Consecutive containers-poll parse failures before the degraded banner.
@@ -151,7 +153,31 @@ pub struct ContainerEntry {
     pub volumes: Vec<String>,
     pub cpu_percent: Option<f64>,
     pub mem_bytes: Option<u64>,
+    /// Newest-first derived samples for the strip. Empty until the second stats poll.
+    pub telemetry: VecDeque<TelemetrySample>,
     pub pending: Option<Pending>,
+}
+
+/// One derived stats sample. Rates are first-differences of cumulative counters.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TelemetrySample {
+    pub cpu: Option<f64>,
+    pub mem: Option<f64>,
+    pub rx: Option<u64>,
+    pub tx: Option<u64>,
+    pub r: Option<u64>,
+    pub w: Option<u64>,
+}
+
+/// The previous stats poll's raw counters, used to first-difference the next tick.
+#[derive(Debug, Clone, Copy)]
+pub struct StatsSnapshot {
+    pub at: Instant,
+    pub cpu_usage_usec: u64,
+    pub network_rx_bytes: u64,
+    pub network_tx_bytes: u64,
+    pub block_read_bytes: u64,
+    pub block_write_bytes: u64,
 }
 
 impl ContainerEntry {
@@ -527,6 +553,7 @@ impl AppState {
                 volumes: c.volume_sources().map(|s| s.to_string()).collect(),
                 cpu_percent: None,
                 mem_bytes: None,
+                telemetry: VecDeque::new(),
                 pending: None,
             })
             .collect();
@@ -536,6 +563,7 @@ impl AppState {
             if let Some(old) = self.containers.iter().find(|o| o.id == entry.id) {
                 entry.cpu_percent = old.cpu_percent;
                 entry.mem_bytes = old.mem_bytes;
+                entry.telemetry = old.telemetry.clone();
                 entry.pending = old.pending;
                 if old.state != entry.state {
                     diffs.push(format!("{}: {} → {}", entry.id, old.state, entry.state));
@@ -649,25 +677,67 @@ impl AppState {
         }
     }
 
-    /// Apply a stats sample: mem directly; CPU% from consecutive cumulative samples.
+    /// Apply a stats sample: mem directly; CPU% and byte rates from consecutive
+    /// cumulative counters. The first sample for an id is swallowed (baseline only).
     pub fn apply_stats(
         &mut self,
         stats: &[StatsJson],
-        prev: &HashMap<String, (u64, Instant)>,
+        prev: &HashMap<String, StatsSnapshot>,
         now: Instant,
-    ) -> HashMap<String, (u64, Instant)> {
+    ) -> HashMap<String, StatsSnapshot> {
         let mut next = HashMap::new();
         for s in stats {
-            next.insert(s.id.clone(), (s.cpu_usage_usec, now));
-            if let Some(c) = self.containers.iter_mut().find(|c| c.id == s.id) {
-                c.mem_bytes = Some(s.memory_usage_bytes);
-                if let Some((prev_usec, prev_at)) = prev.get(&s.id) {
-                    let wall_usec = now.duration_since(*prev_at).as_micros() as f64;
-                    if wall_usec > 0.0 && s.cpu_usage_usec >= *prev_usec {
-                        let delta = (s.cpu_usage_usec - prev_usec) as f64;
-                        c.cpu_percent = Some((delta / wall_usec * 100.0).min(999.0));
-                    }
-                }
+            let snap = StatsSnapshot {
+                at: now,
+                cpu_usage_usec: s.cpu_usage_usec,
+                network_rx_bytes: s.network_rx_bytes,
+                network_tx_bytes: s.network_tx_bytes,
+                block_read_bytes: s.block_read_bytes,
+                block_write_bytes: s.block_write_bytes,
+            };
+            next.insert(s.id.clone(), snap);
+            let Some(c) = self.containers.iter_mut().find(|c| c.id == s.id) else {
+                continue;
+            };
+            c.mem_bytes = Some(s.memory_usage_bytes);
+            let Some(prev) = prev.get(&s.id) else {
+                continue; // swallow the first sample
+            };
+            let elapsed = now.duration_since(prev.at);
+            if elapsed.is_zero() {
+                continue;
+            }
+            let wall_usec = elapsed.as_micros() as f64;
+            let elapsed_secs = elapsed.as_secs_f64();
+
+            let cpu = if wall_usec > 0.0 && s.cpu_usage_usec >= prev.cpu_usage_usec {
+                let delta = (s.cpu_usage_usec - prev.cpu_usage_usec) as f64;
+                Some((delta / wall_usec * 100.0).min(999.0))
+            } else {
+                None
+            };
+            if let Some(pct) = cpu {
+                c.cpu_percent = Some(pct);
+            }
+
+            let mem = (s.memory_limit_bytes > 0)
+                .then(|| s.memory_usage_bytes as f64 / s.memory_limit_bytes as f64 * 100.0);
+
+            let rate = |cur: u64, old: u64| {
+                (cur >= old && elapsed_secs > 0.0)
+                    .then(|| ((cur - old) as f64 / elapsed_secs).round() as u64)
+            };
+
+            c.telemetry.push_front(TelemetrySample {
+                cpu,
+                mem,
+                rx: rate(s.network_rx_bytes, prev.network_rx_bytes),
+                tx: rate(s.network_tx_bytes, prev.network_tx_bytes),
+                r: rate(s.block_read_bytes, prev.block_read_bytes),
+                w: rate(s.block_write_bytes, prev.block_write_bytes),
+            });
+            while c.telemetry.len() > TELEMETRY_HISTORY {
+                c.telemetry.pop_back();
             }
         }
         next

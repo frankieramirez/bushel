@@ -27,7 +27,7 @@ pub struct Engine<R: Runner> {
     client: Client<R>,
     tx: mpsc::Sender<AppEvent>,
 
-    stats_prev: HashMap<String, (u64, Instant)>,
+    stats_prev: HashMap<String, StatsSnapshot>,
     follower: Option<(String, KillHandle)>,
     follow_buffer: Vec<String>,
     pull_kill: Option<KillHandle>,

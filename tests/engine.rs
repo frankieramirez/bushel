@@ -709,6 +709,201 @@ engine_test!(
     }
 );
 
+engine_test!(first_stats_sample_is_swallowed, || {
+    let mut state = AppState::new(true);
+    let ls: Vec<bushel::client::model::ContainerJson> =
+        serde_json::from_slice(&fixture("ls.json")).unwrap();
+    state.update_containers(&ls);
+
+    let stats: Vec<bushel::client::model::StatsJson> = serde_json::from_str(
+        r#"[{"id":"qtest","cpuUsageUsec":1000000,"memoryUsageBytes":100,"memoryLimitBytes":1000,"networkRxBytes":1000,"networkTxBytes":200,"blockReadBytes":300,"blockWriteBytes":400}]"#,
+    )
+    .unwrap();
+    let prev = state.apply_stats(&stats, &HashMap::new(), Instant::now());
+
+    let qtest = state.containers.iter().find(|c| c.id == "qtest").unwrap();
+    assert!(qtest.cpu_percent.is_none(), "first sample has no CPU%");
+    assert!(
+        qtest.telemetry.is_empty(),
+        "first sample is swallowed, no history"
+    );
+    assert!(
+        prev.contains_key("qtest"),
+        "baseline is kept for the next tick"
+    );
+});
+
+engine_test!(
+    second_stats_sample_first_differences_rates_into_the_ring,
+    || {
+        let mut state = AppState::new(true);
+        let ls: Vec<bushel::client::model::ContainerJson> =
+            serde_json::from_slice(&fixture("ls.json")).unwrap();
+        state.update_containers(&ls);
+
+        let now = Instant::now();
+        let earlier = now - Duration::from_secs(1);
+        let mut prev = HashMap::new();
+        prev.insert(
+            "qtest".to_string(),
+            bushel::engine::StatsSnapshot {
+                at: earlier,
+                cpu_usage_usec: 1_000_000,
+                network_rx_bytes: 1_000,
+                network_tx_bytes: 200,
+                block_read_bytes: 300,
+                block_write_bytes: 400,
+            },
+        );
+
+        // 1.5s of CPU over 1s wall → 150%; byte counters advance by known amounts.
+        let stats: Vec<bushel::client::model::StatsJson> = serde_json::from_str(
+            r#"[{"id":"qtest","cpuUsageUsec":2500000,"memoryUsageBytes":200,"memoryLimitBytes":1000,"networkRxBytes":3000,"networkTxBytes":700,"blockReadBytes":1300,"blockWriteBytes":400}]"#,
+        )
+        .unwrap();
+        state.apply_stats(&stats, &prev, now);
+
+        let qtest = state.containers.iter().find(|c| c.id == "qtest").unwrap();
+        let cpu = qtest.cpu_percent.expect("cpu% set");
+        assert!((cpu - 150.0).abs() < 5.0, "cpu% ≈ 150, got {cpu}");
+        assert_eq!(qtest.mem_bytes, Some(200));
+        assert_eq!(qtest.telemetry.len(), 1);
+        let s = qtest.telemetry[0];
+        assert!((s.cpu.unwrap() - 150.0).abs() < 5.0, "spark cpu ≈ 150");
+        assert!((s.mem.unwrap() - 20.0).abs() < 0.01, "mem 200/1000 = 20%");
+        assert_eq!(s.rx, Some(2_000));
+        assert_eq!(s.tx, Some(500));
+        assert_eq!(s.r, Some(1_000));
+        assert_eq!(s.w, Some(0));
+    }
+);
+
+fn stats_json(
+    cpu: u64,
+    mem: u64,
+    limit: u64,
+    rx: u64,
+    tx: u64,
+    r: u64,
+    w: u64,
+) -> Vec<bushel::client::model::StatsJson> {
+    serde_json::from_str(&format!(
+        r#"[{{"id":"qtest","cpuUsageUsec":{cpu},"memoryUsageBytes":{mem},"memoryLimitBytes":{limit},"networkRxBytes":{rx},"networkTxBytes":{tx},"blockReadBytes":{r},"blockWriteBytes":{w}}}]"#
+    ))
+    .unwrap()
+}
+
+fn seeded_containers() -> AppState {
+    let mut state = AppState::new(true);
+    let ls: Vec<bushel::client::model::ContainerJson> =
+        serde_json::from_slice(&fixture("ls.json")).unwrap();
+    state.update_containers(&ls);
+    state
+}
+
+engine_test!(elapsed_zero_does_not_record_a_sample, || {
+    let mut state = seeded_containers();
+    let now = Instant::now();
+    let prev = state.apply_stats(
+        &stats_json(1_000, 100, 1000, 1000, 0, 0, 0),
+        &HashMap::new(),
+        now,
+    );
+    state.apply_stats(&stats_json(2_000, 100, 1000, 2000, 0, 0, 0), &prev, now);
+
+    let qtest = state.containers.iter().find(|c| c.id == "qtest").unwrap();
+    assert!(
+        qtest.telemetry.is_empty(),
+        "elapsed 0 must not first-difference: {:?}",
+        qtest.telemetry
+    );
+    assert!(qtest.cpu_percent.is_none());
+});
+
+engine_test!(counter_reset_skips_that_rate_and_rebaselines, || {
+    let mut state = seeded_containers();
+    let t0 = Instant::now();
+    let t1 = t0 + Duration::from_secs(1);
+    let t2 = t1 + Duration::from_secs(1);
+
+    let prev = state.apply_stats(
+        &stats_json(1_000, 100, 1000, 5_000, 200, 300, 400),
+        &HashMap::new(),
+        t0,
+    );
+    let prev = state.apply_stats(&stats_json(2_000, 100, 1000, 100, 300, 400, 500), &prev, t1);
+
+    let qtest = state.containers.iter().find(|c| c.id == "qtest").unwrap();
+    let s = qtest.telemetry[0];
+    assert_eq!(s.rx, None, "rx reset 5000→100 is not a rate");
+    assert_eq!(s.tx, Some(100), "tx 200→300 over 1s");
+    assert_eq!(s.r, Some(100));
+    assert_eq!(s.w, Some(100));
+
+    state.apply_stats(
+        &stats_json(3_000, 100, 1000, 1_100, 400, 500, 600),
+        &prev,
+        t2,
+    );
+    let qtest = state.containers.iter().find(|c| c.id == "qtest").unwrap();
+    assert_eq!(
+        qtest.telemetry[0].rx,
+        Some(1_000),
+        "next tick diffs against the reset baseline"
+    );
+});
+
+engine_test!(telemetry_ring_caps_at_five_minutes, || {
+    let mut state = seeded_containers();
+    let mut at = Instant::now();
+    let mut prev = HashMap::new();
+    // first sample swallowed, then 301 diffs → cap 300
+    for i in 0..302u64 {
+        let stats = stats_json(i * 1_000, 100, 1000, i * 10, 0, 0, 0);
+        prev = state.apply_stats(&stats, &prev, at);
+        at += Duration::from_secs(1);
+    }
+    let qtest = state.containers.iter().find(|c| c.id == "qtest").unwrap();
+    assert_eq!(qtest.telemetry.len(), bushel::engine::TELEMETRY_HISTORY);
+    // newest-first: the last diff used i=301 vs i=300 → rx 10 B/s
+    assert_eq!(qtest.telemetry[0].rx, Some(10));
+    // oldest kept is the sample from i=2 (first kept diff); i=1 was the first
+    // diff and would have been evicted if we went one past the cap.
+    assert_eq!(qtest.telemetry.back().unwrap().rx, Some(10));
+});
+
+engine_test!(telemetry_survives_a_containers_poll, || {
+    let mut state = seeded_containers();
+    let t0 = Instant::now();
+    let prev = state.apply_stats(
+        &stats_json(1_000, 100, 1000, 1_000, 0, 0, 0),
+        &HashMap::new(),
+        t0,
+    );
+    state.apply_stats(
+        &stats_json(2_000, 100, 1000, 2_000, 0, 0, 0),
+        &prev,
+        t0 + Duration::from_secs(1),
+    );
+    assert_eq!(
+        state
+            .containers
+            .iter()
+            .find(|c| c.id == "qtest")
+            .unwrap()
+            .telemetry
+            .len(),
+        1
+    );
+
+    let ls: Vec<bushel::client::model::ContainerJson> =
+        serde_json::from_slice(&fixture("ls.json")).unwrap();
+    state.update_containers(&ls);
+    let qtest = state.containers.iter().find(|c| c.id == "qtest").unwrap();
+    assert_eq!(qtest.telemetry.len(), 1);
+    assert_eq!(qtest.telemetry[0].rx, Some(1_000));
+});
+
 engine_test!(
     stats_derive_cpu_percent_from_consecutive_cumulative_samples,
     || {
@@ -720,7 +915,17 @@ engine_test!(
         let now = Instant::now();
         let earlier = now - Duration::from_secs(1);
         let mut prev = HashMap::new();
-        prev.insert("qtest".to_string(), (1_000_000u64, earlier));
+        prev.insert(
+            "qtest".to_string(),
+            bushel::engine::StatsSnapshot {
+                at: earlier,
+                cpu_usage_usec: 1_000_000,
+                network_rx_bytes: 0,
+                network_tx_bytes: 0,
+                block_read_bytes: 0,
+                block_write_bytes: 0,
+            },
+        );
 
         // 1.5s of CPU over ~1s wall → ~150%
         let stats: Vec<bushel::client::model::StatsJson> = serde_json::from_str(
