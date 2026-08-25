@@ -62,7 +62,7 @@ The persistent bar of context-sensitive key hints plus the status cluster (servi
 _Avoid_: status bar (ambiguous with the status cluster)
 
 **Message log**:
-The scrollback of recent errors and notices, holding the full stderr behind each status-bar one-liner. Every toast writes through it, so it is a superset of what the bottom bar showed. Last 1,000 entries.
+The scrollback of recent errors and notices, holding the full stderr behind each one-line gist on the bottom bar. Every toast writes through it, so it is a superset of what the bottom bar showed. Last 1,000 entries.
 _Avoid_: console
 
 **Splash**:
