@@ -3,6 +3,7 @@
 
 pub mod draw;
 pub mod keymap;
+pub mod layout;
 pub mod log_view;
 pub mod theme;
 
