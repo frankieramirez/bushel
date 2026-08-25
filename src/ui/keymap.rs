@@ -510,6 +510,19 @@ mod tests {
         }
     }
 
+    /// `?` is exempt from the sweep above because it opens the cheatsheet and
+    /// the cheatsheet does not list itself. That exemption is only safe while
+    /// the binding still exists — the README tells readers about `?` in prose,
+    /// which is a claim nothing else checks.
+    #[test]
+    fn the_question_mark_opens_the_cheatsheet() {
+        let s = main_state();
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('?')), &drawn(0, 0)),
+            vec![Command::OpenHelp]
+        );
+    }
+
     /// The other direction: a row that promises a key which no longer works is
     /// the same drift, read the other way round.
     #[test]

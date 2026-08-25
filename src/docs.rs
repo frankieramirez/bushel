@@ -1,12 +1,19 @@
-//! `docs.json` — bushel's keymap and config reference as data, for the website.
+//! bushel's keymap and config reference, rendered for the places that document
+//! it: `docs.json` for the website, Markdown for the README.
 //!
 //! bushel.sh builds on Cloudflare's Linux builders and cannot run bushel (macOS
 //! 26, Apple silicon), so the docs pages cannot shell out for their reference
 //! tables. Instead the release publishes this file as an asset and the site
 //! fetches it at build time. Every value here is read from the same source the
 //! running program reads — the cheatsheet in [`crate::ui::help`], the fields of
-//! [`Config`], the flags of [`Args`] — so the site cannot drift from the binary
-//! the way the README's hand-copied keymap did.
+//! [`Config`], the flags of [`Args`] — so neither the site nor the README can
+//! drift from the binary the way the README's hand-copied keymap did.
+//!
+//! The README is generated the same way but not from the same file: `docs.json`
+//! exists because the site builds on a machine that cannot run bushel, and the
+//! README is built by a machine that can. [`keys_markdown`] and
+//! [`options_markdown`] read the source directly; `tests/readme.rs` holds the
+//! file to what they render.
 
 use clap::CommandFactory as _;
 use serde::Serialize;
@@ -156,6 +163,41 @@ pub fn config() -> Result<ConfigDocs, DocsError> {
         path: Config::DOC_PATH,
         options,
     })
+}
+
+/// The keymap as Markdown, in the shape the README carries it: one bold label
+/// per cheatsheet group, one bullet per binding.
+///
+/// `?` is absent on purpose and stays absent — it opens the cheatsheet and the
+/// cheatsheet does not list itself (`ui::keymap` holds that rule and a test
+/// enforces it). The README says so in prose, outside the generated block,
+/// because a reader who has not started bushel yet needs to be told.
+pub fn keys_markdown() -> String {
+    let mut out = String::new();
+    for group in keymap() {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&format!("**{}**\n\n", group.group));
+        for b in group.bindings {
+            out.push_str(&format!("- `{}` — {}\n", b.keys, b.desc));
+        }
+    }
+    out
+}
+
+/// The flags and their config keys as Markdown, one bullet apiece. Both halves
+/// come from [`config`], so a flag whose help text changes changes the README.
+pub fn options_markdown() -> Result<String, DocsError> {
+    let docs = config()?;
+    let mut out = String::new();
+    for o in &docs.options {
+        out.push_str(&format!(
+            "- `{}` / `{} = {}` — {}\n",
+            o.flag, o.key, o.default, o.desc
+        ));
+    }
+    Ok(out)
 }
 
 pub fn build() -> Result<Docs, DocsError> {
