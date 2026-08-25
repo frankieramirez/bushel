@@ -11,18 +11,30 @@ bushel is a lazydocker-style TUI built in Rust with [Ratatui](https://github.com
 
 ## Install
 
+Homebrew:
+
 ```sh
 brew install frankieramirez/tap/bushel
 ```
 
-Or use the shell installer from the [releases page](../../releases), or build from source:
+Shell installer, no Homebrew required (installs to `$CARGO_HOME/bin`, default `~/.cargo/bin`):
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/frankieramirez/bushel/releases/latest/download/bushel-installer.sh | sh
+```
+
+`BUSHEL_INSTALL_DIR` picks a different prefix; `BUSHEL_NO_MODIFY_PATH=1` leaves your
+shell rc files alone. Prebuilt archives and checksums are on the [releases page](../../releases).
+
+From source — bushel isn't published to crates.io, so this needs `--git`:
 
 ```sh
 cargo install --git https://github.com/frankieramirez/bushel
 ```
 
-To upgrade, run `bushel update` — it self-updates shell-installer installs and
-delegates to `brew upgrade bushel` for Homebrew installs.
+To upgrade, run `bushel update` — it self-updates shell-installer installs,
+delegates to `brew upgrade bushel` for Homebrew installs, and prints the right
+command for anything else.
 
 ## Use
 

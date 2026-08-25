@@ -3,6 +3,7 @@
 //! render on event plus a frame ticker armed only while effects are active.
 
 use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -44,41 +45,98 @@ enum Cmd {
     Update,
 }
 
-/// Homebrew owns binaries under its prefix; self-replacing one desyncs brew's
-/// bookkeeping, so hand the upgrade back to brew instead.
-fn brew_managed() -> bool {
+/// How bushel got onto this machine, inferred from the binary's own path.
+/// Every install method owns the binaries it placed, so `update` hands the work
+/// back to whoever did the installing instead of self-replacing behind its back.
+#[derive(Debug, PartialEq, Eq)]
+enum InstallMethod {
+    Homebrew,
+    Nix,
+    Cargo,
+    /// Shell installer, or a hand-placed binary; axoupdater's receipt decides.
+    Receipt,
+}
+
+fn classify(exe: &Path, cargo_bin: Option<&Path>) -> InstallMethod {
+    if exe
+        .components()
+        .any(|c| c.as_os_str() == "Cellar" || c.as_os_str() == "homebrew")
+    {
+        return InstallMethod::Homebrew;
+    }
+    if exe.starts_with("/nix/store") {
+        return InstallMethod::Nix;
+    }
+    if cargo_bin.is_some_and(|bin| exe.parent() == Some(bin)) {
+        return InstallMethod::Cargo;
+    }
+    InstallMethod::Receipt
+}
+
+/// `CARGO_HOME` relocates the bin dir, so honor it before falling back to `~/.cargo`.
+fn cargo_bin_dir() -> Option<PathBuf> {
+    let home = match std::env::var_os("CARGO_HOME") {
+        Some(h) => PathBuf::from(h),
+        None => dirs::home_dir()?.join(".cargo"),
+    };
+    std::fs::canonicalize(home.join("bin")).ok()
+}
+
+fn install_method() -> InstallMethod {
     std::env::current_exe()
         .and_then(std::fs::canonicalize)
-        .map(|p| {
-            p.components()
-                .any(|c| c.as_os_str() == "Cellar" || c.as_os_str() == "homebrew")
-        })
-        .unwrap_or(false)
+        .map(|exe| classify(&exe, cargo_bin_dir().as_deref()))
+        .unwrap_or(InstallMethod::Receipt)
 }
 
 async fn self_update() -> i32 {
-    if brew_managed() {
-        println!("bushel was installed via Homebrew; running `brew upgrade bushel`…");
-        return match std::process::Command::new("brew")
-            .args(["upgrade", "bushel"])
-            .status()
-        {
-            Ok(s) if s.success() => 0,
-            Ok(_) => 1,
-            Err(e) => {
-                eprintln!("failed to run brew: {e}");
-                1
-            }
-        };
+    let method = install_method();
+    match method {
+        InstallMethod::Homebrew => {
+            println!("bushel was installed via Homebrew; running `brew upgrade bushel`…");
+            return match std::process::Command::new("brew")
+                .args(["upgrade", "bushel"])
+                .status()
+            {
+                Ok(s) if s.success() => 0,
+                Ok(_) => 1,
+                Err(e) => {
+                    eprintln!("failed to run brew: {e}");
+                    1
+                }
+            };
+        }
+        // The store is read-only and the derivation is the source of truth.
+        InstallMethod::Nix => {
+            eprintln!(
+                "bushel lives in the read-only Nix store and can't update itself.\n\
+                 Update the flake or channel that provides it, then rebuild."
+            );
+            return 1;
+        }
+        // The shell installer's default prefix is $CARGO_HOME too, so the path
+        // alone can't tell it from `cargo install` — only the receipt below can.
+        InstallMethod::Cargo | InstallMethod::Receipt => {}
     }
 
     let mut updater = axoupdater::AxoUpdater::new_for("bushel");
     if updater.load_receipt().is_err() {
-        eprintln!(
-            "no install receipt found — bushel wasn't installed via the shell installer.\n\
-             Reinstall with the installer from the latest GitHub release, or use your\n\
-             original install method to upgrade."
-        );
+        // No receipt, so the shell installer didn't put this here. `cargo install
+        // --git` can't tell new from current without a full rebuild, so print the
+        // command rather than burn minutes on a likely no-op.
+        if method == InstallMethod::Cargo {
+            eprintln!(
+                "bushel was installed with cargo; upgrade with:\n  \
+                 cargo install --git {} --force",
+                env!("CARGO_PKG_REPOSITORY")
+            );
+        } else {
+            eprintln!(
+                "no install receipt found — bushel wasn't installed via the shell installer.\n\
+                 Upgrade with whatever placed the binary, or reinstall with the installer\n\
+                 from the latest GitHub release."
+            );
+        }
         return 1;
     }
     match updater.run().await {
@@ -214,4 +272,70 @@ async fn main() -> std::io::Result<()> {
     engine.shutdown();
     ratatui::restore();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cargo_bin() -> PathBuf {
+        PathBuf::from("/Users/x/.cargo/bin")
+    }
+
+    #[test]
+    fn homebrew_cellar_wins() {
+        assert_eq!(
+            classify(
+                Path::new("/opt/homebrew/Cellar/bushel/0.3.0/bin/bushel"),
+                Some(&cargo_bin())
+            ),
+            InstallMethod::Homebrew
+        );
+    }
+
+    #[test]
+    fn nix_store_is_nix() {
+        assert_eq!(
+            classify(
+                Path::new("/nix/store/abc123-bushel-0.3.0/bin/bushel"),
+                Some(&cargo_bin())
+            ),
+            InstallMethod::Nix
+        );
+    }
+
+    #[test]
+    fn binary_in_cargo_bin_is_cargo() {
+        assert_eq!(
+            classify(Path::new("/Users/x/.cargo/bin/bushel"), Some(&cargo_bin())),
+            InstallMethod::Cargo
+        );
+    }
+
+    #[test]
+    fn nested_below_cargo_bin_is_not_cargo() {
+        assert_eq!(
+            classify(
+                Path::new("/Users/x/.cargo/bin/nested/bushel"),
+                Some(&cargo_bin())
+            ),
+            InstallMethod::Receipt
+        );
+    }
+
+    #[test]
+    fn shell_installer_falls_through_to_receipt() {
+        assert_eq!(
+            classify(Path::new("/Users/x/.local/bin/bushel"), Some(&cargo_bin())),
+            InstallMethod::Receipt
+        );
+    }
+
+    #[test]
+    fn no_cargo_home_still_classifies() {
+        assert_eq!(
+            classify(Path::new("/Users/x/.cargo/bin/bushel"), None),
+            InstallMethod::Receipt
+        );
+    }
 }
