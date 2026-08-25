@@ -1,8 +1,8 @@
-# bushel v0.1 — specification
+# bushel — specification
 
 A lazydocker-style TUI for Apple Containers. bushel wraps the `container` CLI (1.2.0+, macOS 26) as a subprocess and manages what already exists — it is a manager, not a launcher. It never links Apple's Containerization framework.
 
-This spec is the output of the [wayfinder map](https://github.com/frankieramirez/bushel/issues/1); each section links the decision ticket that holds its full rationale. The domain vocabulary used throughout is defined in [CONTEXT.md](CONTEXT.md). Build sessions should be able to execute from this document without fundamental questions.
+v0.1 (scope, architecture, motion) is the output of the [v0.1 wayfinder map](https://github.com/frankieramirez/bushel/issues/1). The responsive visual UI (unified rail, telemetry strip, log wrap) is the output of [Wayfinder map: bushel responsive visual UI](https://github.com/frankieramirez/bushel/issues/14). Each section links the decision ticket that holds its full rationale. The domain vocabulary is defined in [CONTEXT.md](CONTEXT.md). Build sessions should be able to execute from this document without fundamental questions.
 
 ## Positioning
 
@@ -23,6 +23,12 @@ Three entities, one pane each: **containers** (primary), **images**, **volumes**
 - No image push/tag/save/load/build; no volume create
 - No compose emulation
 
+**Non-goals for the responsive visual UI** (settled on [Wayfinder map: bushel responsive visual UI](https://github.com/frankieramirez/bushel/issues/14)):
+
+- No full visual-identity pass (splash, overlay restyling, inspect chrome). ADR 0001 already covers identity.
+- No monitoring product: no long or configurable history, no poll-cadence config, no dedicated overview screen.
+- No image/volume detail visuals (size bars, in-use maps). The strip is container-only.
+
 ## Feature cut
 
 Full detail: [v0.1 feature cut](https://github.com/frankieramirez/bushel/issues/4).
@@ -31,7 +37,7 @@ Full detail: [v0.1 feature cut](https://github.com/frankieramirez/bushel/issues/
 
 - **List**: all containers, running + stopped; running-first then alphabetical. Columns include lightweight **CPU% / mem**, sampled per poll tick from `stats --no-stream --format json`, CPU% derived client-side from consecutive cumulative samples.
 - **Inspect**: scrollable pretty-printed JSON.
-- **Logs**: bounded tail (~last 1000 lines) with **follow** toggle. bushel owns and kills its `logs -f` subprocesses (they never exit on their own when a container stops).
+- **Logs**: bounded tail (~last 1000 lines) with **follow** toggle and **wrap** (on by default, `w` toggles). bushel owns and kills its `logs -f` subprocesses (they never exit on their own when a container stops).
 - **Lifecycle**: start, stop, kill (default signal, no picker), delete, prune, plus **synthetic restart** (stop → start; the CLI has no restart subcommand).
 - **Exec**: suspend the TUI, `container exec -it <id> /bin/sh` inheriting stdio (single attempt, no bash fallback in v0.1), restore on exit.
 
@@ -52,27 +58,52 @@ Full detail: [v0.1 feature cut](https://github.com/frankieramirez/bushel/issues/
 
 ## UX skeleton
 
-Full detail: [UX skeleton](https://github.com/frankieramirez/bushel/issues/5). Validated end-to-end by the [layout prototype](https://github.com/frankieramirez/bushel/issues/7) with **no changes** — the prototype branch [`prototype/layout-mock`](https://github.com/frankieramirez/bushel/tree/prototype/layout-mock/prototype-layout) is the living reference for look and feel.
+v0.1 layout and motion: [UX skeleton](https://github.com/frankieramirez/bushel/issues/5), validated by [Prototype: v0.1 layout mock in Ratatui](https://github.com/frankieramirez/bushel/issues/7). The rail, strip, wrap, and overlay-floor behavior supersede the 45/55 one-pane-at-a-time split. Living references: [`prototype/unified-rail-ladder`](https://github.com/frankieramirez/bushel/tree/prototype/unified-rail-ladder/prototype-rail) and [`prototype/telemetry-strip`](https://github.com/frankieramirez/bushel/tree/prototype/telemetry-strip/prototype-rail) (throwaway, steal look not code).
 
-### Layout
+### Layout ([ADR 0002](docs/adr/0002-unified-rail.md), [Prototype: the unified rail ladder](https://github.com/frankieramirez/bushel/issues/15))
 
-- Hybrid lazydocker split: persistent left entity list (~45%) + right **detail pane** (~55%); `f` zooms the focused pane fullscreen.
-- One pane at a time: `1/2/3` jump to containers/images/volumes, `Tab` cycles.
-- Detail tabs: containers get `Logs | Inspect` (Logs default, `l`/`i` jump); images and volumes have Inspect only.
-- Focus: `Enter` moves focus into the detail pane, `Esc` returns; PgUp/PgDn scroll the detail pane without switching focus.
+- **Always the rail**: all three panes present. Inactive panes collapse; the active panel takes the flexible space. No tabs-vs-rail mode split.
+- **Placement**: body width under 80 stacks the rail **above** the detail pane; otherwise the rail sits **beside** it.
+- **Rail width cap**: 36 columns. Spare width belongs to logs.
+- **Collapse**: tight (stacked, or rail height under 16) is a 1-row `2 images 5`. Roomy is shrink-to-fit names, cap `max(8, height/4)`.
+- **`1`/`2`/`3` expand** that pane; `Tab` cycles. Filter applies only to the active panel. Each pane remembers its selection.
+- **Header**: `1`/`2`/`3` pane switcher without counts. Counts live on the rail.
+- **Zoom** (`f`): fullscreens the active panel's table (or the detail pane), not the whole rail.
+- **Detail tabs**: containers get `Logs | Inspect` (Logs default, `l`/`i` jump); images and volumes have Inspect only. At the 55×20 floor the tab row is not drawn; the keys still work.
+- **Focus**: `Enter` moves focus into the detail pane, `Esc` returns; PgUp/PgDn scroll the detail pane without switching focus.
+- **55×20 floor**: 1-row header, no table headers, no tab row, no status cluster. Nothing else is dropped.
+
+### Telemetry strip ([Prototype: the telemetry strip](https://github.com/frankieramirez/bushel/issues/17), glyphs from [Research: telemetry rendering](https://github.com/frankieramirez/bushel/issues/16))
+
+Persistent at the top of the detail pane for the selected container, on both Logs and Inspect. Manager-first: glanceable seasoning, not a monitoring product. The list stays numeric.
+
+- **3 rows**: cpu spark, mem spark, net+disk as one text row (`↑ 1.2M/s ↓ 340K/s`, `r`/`w` likewise). No rate sparklines.
+- **Glyphs**: ratatui eighth-block Sparkline. No braille. `--ascii` uses the ` .:-=+*#` ramp. Newest-first, `RightToLeft`. Sparks auto-scale to the window; the number stays the true percent.
+- **Window**: 5 minutes at 1s poll cadence; one second per column, so a 62-col pane shows about a minute of that buffer.
+- **Collapse**: the strip yields when the detail inner is shorter than strip height + 4 log rows. Height decision, not a no-data decision. Empty values render as `-`.
+- **Build-phase plumbing** (no design fork): 300-sample ring, first-difference rates from cumulative counters (swallow the first sample), auto-scale at render.
+
+### Log wrap ([Grilling: log wrap semantics](https://github.com/frankieramirez/bushel/issues/18))
+
+- Default **wrapped**. `w` toggles. One global mode; resize does not change it.
+- Following: stay on the tail across a toggle. Paused: keep the raw log line that was at the top of the viewport.
+- Indicator: `── following · wrap (w) ──` / `── paused · truncated (w) ──`, plus `w wrap` / `w unwrap` on the bottom bar. No per-line ellipsis.
+- Session-global, like follow. Not in `config.toml`. A new process starts wrapped.
 
 ### Input
 
-- Vim-flavored (`j/k`, `g/G`) plus arrows; `/` fuzzy filter over name/image/status, `Esc` clears.
+- Vim-flavored (`j/k`, `g/G`) plus arrows; `/` fuzzy filter over name/image/status, `Esc` clears. Filter only hits the active panel.
 - Direct action keys everywhere, plus the **`space` action menu**: a bottom sheet listing valid actions for the selection with their keys, destructive ones tinted. Doubles as key discovery.
 - `?` help overlay: complete grouped cheatsheet. The bottom bar is the primary discovery path.
 
-### Confirmations, errors, resilience
+### Confirmations, errors, resilience ([Grilling: overlay behavior at the 55×20 floor](https://github.com/frankieramirez/bushel/issues/20))
 
-- Destructive confirm: centered modal, the exact command as its body, `y` runs / `Esc` cancels.
+- Destructive confirm: centered 7-row modal, the exact command as its body, `y` runs / `Esc` cancels. If the command is longer than the box, wrap it inside; do not grow the modal.
+- **Action menu at the floor**: covers the detail pane only, never the rail. Height `min(n+2, 9)`. Omit `l`/`i` from the floor sheet (keys still work). Direct action keys unchanged.
+- **Help**: one cheatsheet, clamp to the frame, scroll if it overflows. At 55×20 that is effectively full-screen. No second shorter list.
 - Errors: status-bar one-liner with the stderr gist; a **message log** scrollback (`m`) holds full stderr. No modal-per-error.
 - Service down: full-screen takeover with one-key start, output streamed. Version mismatch: dismissible banner, never blocking.
-- Bottom bar: context-sensitive key hints + right-aligned status cluster (service dot, CLI version, poll spinner).
+- Bottom bar: context-sensitive key hints + right-aligned status cluster (service dot, CLI version, poll spinner). At the 55×20 floor the status cluster is dropped.
 - Pull: modal input; progress streams in the detail pane with a status-bar spinner.
 - Pending actions show a spinner on the entity's row until a poll confirms the outcome.
 
@@ -137,6 +168,7 @@ Settled at spec assembly:
 
 ## Build-phase pointers
 
-- The prototype branch [`prototype/layout-mock`](https://github.com/frankieramirez/bushel/tree/prototype/layout-mock/prototype-layout) is throwaway — steal its look and feel, not its code. It never merges.
+- Throwaway prototypes, steal look not code, never merge: [`prototype/layout-mock`](https://github.com/frankieramirez/bushel/tree/prototype/layout-mock/prototype-layout) (v0.1 motion), [`prototype/unified-rail-ladder`](https://github.com/frankieramirez/bushel/tree/prototype/unified-rail-ladder/prototype-rail) (rail), [`prototype/telemetry-strip`](https://github.com/frankieramirez/bushel/tree/prototype/telemetry-strip/prototype-rail) (strip, auto-scale on `23c23fe`).
+- Telemetry history: 300-sample ring at 1s, first-difference rates from the stats poll's cumulative counters (swallow the first sample, guard elapsed 0 and counter reset), auto-scale sparks at render. List columns stay numeric.
 - Capture real `container` 1.2.x JSON fixtures early; they anchor the Client tests and the tested-version constant.
 - Known CLI traps to honor from day one ([research](https://github.com/frankieramirez/bushel/issues/3)): `logs -f` never exits on container stop; stopped containers record no exit code; bare `system start` blocks on an interactive prompt; JSON shapes are patch-stable only.
