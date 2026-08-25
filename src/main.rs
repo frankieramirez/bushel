@@ -7,43 +7,18 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use clap::{Parser, Subcommand};
+use clap::Parser as _;
 use crossterm::event::{Event, EventStream, KeyEventKind};
 use futures::StreamExt as _;
 use tokio::sync::mpsc;
 
+use bushel::cli::{Args, Cmd};
 use bushel::client::Client;
 use bushel::config::Config;
 use bushel::engine::{Command, Engine};
 use bushel::runner::{CONTAINER_BIN, CliRunner};
 use bushel::ui::theme::Theme;
 use bushel::ui::{Ui, keymap};
-
-#[derive(Parser, Debug)]
-#[command(
-    name = "bushel",
-    version,
-    about = "A lazydocker-style TUI for Apple Containers"
-)]
-struct Args {
-    #[command(subcommand)]
-    command: Option<Cmd>,
-    /// Skip the splash screen
-    #[arg(long)]
-    no_splash: bool,
-    /// Disable all animation and effects
-    #[arg(long)]
-    reduced_motion: bool,
-    /// ASCII icons and spinners (no Unicode glyphs)
-    #[arg(long)]
-    ascii: bool,
-}
-
-#[derive(Subcommand, Debug)]
-enum Cmd {
-    /// Update bushel to the latest release
-    Update,
-}
 
 /// How bushel got onto this machine, inferred from the binary's own path.
 /// Every install method owns the binaries it placed, so `update` hands the work

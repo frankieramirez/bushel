@@ -14,3 +14,5 @@ Thanks for your interest. bushel is built primarily for the author's own workflo
 - `cargo fmt`, `cargo clippy -- -D warnings`, and `cargo test` must pass.
 - New Client parsing needs fixture coverage; new Engine behavior needs a headless test.
 - Any animation must obey ADR 0001's hard rules: ≤150ms, interruptible, disabled by `reduced-motion`.
+- New keybindings go in `src/ui/help.rs` — the cheatsheet is the only keymap the docs read, and tests fail both ways if a binding and its row disagree.
+- New config options need a matching `--flag` on `bushel::cli::Args`; `docs.json` pairs them by name and refuses to build if one is missing.
