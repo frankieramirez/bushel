@@ -1,4 +1,4 @@
-# 200×50
+# 200×50 logs, 3-row strip
 
 beside  rail 36×47  detail 164×47  collapse=roomy  cap=36  stack<80  log_cols=162  active=containers
 
@@ -7,14 +7,17 @@ beside  rail 36×47  detail 164×47  collapse=roomy  cap=36  stack<80  log_cols=
 
 ╭ containers 8 ────────────────────╮╭ detail ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │name                 cpu    mem   ││  Logs [l]  │  Inspect [i]                                                                                                                                        │
-│● redis               1.2%    48M ││2026-08-24T18:02:11.441Z INFO  postgres  checkpoint complete: wrote 214 buffers (1.6%); 0 WAL file(s) added, 0 removed, 1 recycled; write=0.215 s, sync=0.031 s, t│
-│● postgres            4.8%   256M ││2026-08-24T18:02:12.018Z INFO  redis     replica 192.168.64.4:6379 asks for sync, starting BGSAVE                                                                 │
-│● caddy               0.3%    12M ││2026-08-24T18:02:12.441Z INFO  caddy     192.168.64.1 - GET /health 200 1.2ms                                                                                     │
-│● bushel-smoke        0.1%     4M ││2026-08-24T18:02:13.102Z WARN  postgres  could not serialize access due to concurrent update                                                                      │
-│● github-actions-run 12.4%   512M ││2026-08-24T18:02:13.880Z INFO  runner    job 1842 queued: build / test (aarch64-apple-darwin)                                                                     │
-│○ worker-a            0.0%     0M ││2026-08-24T18:02:14.201Z INFO  redis     10000 changes in 60 seconds. Saving...                                                                                   │
-│○ worker-b            0.0%     0M ││2026-08-24T18:02:14.990Z INFO  postgres  statement: SELECT * FROM orders WHERE created_at > now() - interval '5 minutes' AND status IN ('pending','paid')         │
-│○ old-migrate         0.0%     0M ││2026-08-24T18:02:15.441Z INFO  caddy     192.168.64.8 - POST /webhooks/github 204 42.8ms                                                                          │
+│● redis               1.2%    48M ││cpu  33.0% ▂▂▂▂▃▃▃▃▃▃▆▃▃▃▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁          ▄                          ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▂▂▂▂▂▂▂▂▂▂▆▂▂▂▂▂▂▂▂▂▂▂▂▃▃▃▃▃▃▃▃▃▃▂▂▂▂▂▂▂▂▂▂▂▂│
+│● postgres            4.8%   256M ││mem    42% ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃│
+│● caddy               0.3%    12M ││net ↑11.7K/s ↓3.9K/s   dsk r 2.0K/s  w 7.8K/s                                                                                                                     │
+│● bushel-smoke        0.1%     4M ││2026-08-24T18:02:11.441Z INFO  postgres  checkpoint complete: wrote 214 buffers (1.6%); 0 WAL file(s) added, 0 removed, 1 recycled; write=0.215 s, sync=0.031 s, t│
+│● github-actions-run 12.4%   512M ││2026-08-24T18:02:12.018Z INFO  redis     replica 192.168.64.4:6379 asks for sync, starting BGSAVE                                                                 │
+│○ worker-a            0.0%     0M ││2026-08-24T18:02:12.441Z INFO  caddy     192.168.64.1 - GET /health 200 1.2ms                                                                                     │
+│○ worker-b            0.0%     0M ││2026-08-24T18:02:13.102Z WARN  postgres  could not serialize access due to concurrent update                                                                      │
+│○ old-migrate         0.0%     0M ││2026-08-24T18:02:13.880Z INFO  runner    job 1842 queued: build / test (aarch64-apple-darwin)                                                                     │
+│                                  ││2026-08-24T18:02:14.201Z INFO  redis     10000 changes in 60 seconds. Saving...                                                                                   │
+│                                  ││2026-08-24T18:02:14.990Z INFO  postgres  statement: SELECT * FROM orders WHERE created_at > now() - interval '5 minutes' AND status IN ('pending','paid')         │
+│                                  ││2026-08-24T18:02:15.441Z INFO  caddy     192.168.64.8 - POST /webhooks/github 204 42.8ms                                                                          │
 │                                  ││2026-08-24T18:02:16.002Z INFO  runner    cloning github.com/frankieramirez/bushel@frankieramirez/issue-14-wayfinder                                               │
 │                                  ││2026-08-24T18:02:16.771Z ERROR postgres  FATAL:  remaining connection slots are reserved for non-replication superuser connections                                │
 │                                  ││2026-08-24T18:02:17.110Z INFO  redis     DB saved on disk                                                                                                         │
@@ -36,9 +39,6 @@ beside  rail 36×47  detail 164×47  collapse=roomy  cap=36  stack<80  log_cols=
 │                                  ││                                                                                                                                                                  │
 │                                  ││                                                                                                                                                                  │
 │                                  ││                                                                                                                                                                  │
-│                                  ││                                                                                                                                                                  │
-│                                  ││                                                                                                                                                                  │
-│                                  ││                                                                                                                                                                  │
 ╰──────────────────────────────────╯│                                                                                                                                                                  │
 ╭ images 5 ────────────────────────╮│                                                                                                                                                                  │
 │docker.io/library/postgres:16     ││                                                                                                                                                                  │
@@ -51,6 +51,6 @@ beside  rail 36×47  detail 164×47  collapse=roomy  cap=36  stack<80  log_cols=
 │pg-data                   in use  ││                                                                                                                                                                  │
 │redis-data                in use  ││                                                                                                                                                                  │
 │leftover                  -       ││                                                                                                                                                                  │
-╰──────────────────────────────────╯╰ 162 cols ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- 1/2/3 expand  j/k move  enter focus  / filter  f zoom  ? help                                                                                                           ● service  container 1.2.0  ⠋
+╰──────────────────────────────────╯╰ 162 cols · strip 3 · last 162s of 5m ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ 1/2/3 expand  j/k move  enter focus  / filter  s strip  a ascii  ? help                                                                                                 ● service  container 1.2.0  ⠋
 ```

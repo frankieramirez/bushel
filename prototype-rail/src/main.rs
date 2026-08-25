@@ -1,17 +1,18 @@
 //! PROTOTYPE — throwaway. Do not merge.
 //!
-//! Question: does the always-present three-panel rail feel right in a real
-//! terminal at every tier (55×20 / 100×30 / 200×50)?
+//! Question: what does the persistent telemetry strip actually look like?
+//! Hosted in the locked unified-rail layout so collapse at 55×20 is honest.
 //!
-//! Layout model (settled at charting, numbers here are the starting proposal):
-//!   - all three panels always present; inactive collapse
-//!   - body width < 80 → rail above the detail pane; else beside it
-//!   - rail width capped at 36; spare columns belong to logs
-//!   - 55×20 drops table headers, the Logs/Inspect tab row, and a header line
+//! Starting proposal (research #16):
+//!   - 3 rows: cpu spark, mem spark, net+disk as text
+//!   - Sparkline eighth-blocks, newest-first + RightToLeft, .max(100) on cpu/mem
+//!   - `--ascii` / `a` swaps a custom " .:-=+*#" bar set
+//!   - strip yields when the detail inner has fewer than strip_h + 4 rows
 
+use std::collections::VecDeque;
 use std::io::{self, stdout};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
@@ -21,8 +22,12 @@ use crossterm::terminal::{
 use ratatui::backend::{CrosstermBackend, TestBackend};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Cell, Clear, Paragraph, Row, Table, TableState, Tabs};
+use ratatui::widgets::{
+    Block, BorderType, Cell, Clear, Paragraph, RenderDirection, Row, Sparkline, Table, TableState,
+    Tabs,
+};
 use ratatui::{Frame, Terminal};
 
 // ── starting numbers to react to ──────────────────────────────────────────
@@ -35,6 +40,20 @@ const TIGHT_RAIL_H: u16 = 16;
 const PRESET_FLOOR: (u16, u16) = (55, 20);
 const PRESET_MED: (u16, u16) = (100, 30);
 const PRESET_WIDE: (u16, u16) = (200, 50);
+
+const HISTORY: usize = 300; // 5 minutes at 1s
+const STRIP_MIN_LOG: u16 = 4; // logs the strip must leave
+const ASCII_BARS: symbols::bar::Set = symbols::bar::Set {
+    full: "#",
+    seven_eighths: "#",
+    three_quarters: "*",
+    five_eighths: "+",
+    half: "=",
+    three_eighths: "-",
+    one_quarter: ":",
+    one_eighth: ".",
+    empty: " ",
+};
 
 const ACCENT_A: (u8, u8, u8) = (0x7e, 0xe7, 0x87);
 const ACCENT_B: (u8, u8, u8) = (0xff, 0x7b, 0x72);
@@ -173,6 +192,16 @@ struct Volume {
     in_use: bool,
 }
 
+#[derive(Clone, Copy)]
+struct Sample {
+    cpu: f64,
+    mem: f64,
+    rx: u64,
+    tx: u64,
+    r: u64,
+    w: u64,
+}
+
 struct State {
     pane: Pane,
     focus: Focus,
@@ -188,6 +217,11 @@ struct State {
     images: Vec<Image>,
     volumes: Vec<Volume>,
     logs: Vec<String>,
+    telemetry: VecDeque<Sample>,
+    ascii: bool,
+    /// 2, 3 (default), or 4 rows.
+    strip_kind: u8,
+    tick: u32,
 }
 
 fn seed() -> State {
@@ -321,6 +355,56 @@ fn seed() -> State {
         images,
         volumes,
         logs,
+        telemetry: history(HISTORY as u32),
+        ascii: false,
+        strip_kind: 3,
+        tick: HISTORY as u32,
+    }
+}
+
+fn sample_at(i: u32) -> Sample {
+    let t = i as f64;
+    let cpu = 22.0 + 16.0 * (t / 20.0).sin() + if i % 53 == 0 { 45.0 } else { 0.0 };
+    let mem = 46.0 + 8.0 * (t / 70.0).sin() + t * 0.01;
+    let burst = i % 40 < 5;
+    let disk = i % 70 < 3;
+    Sample {
+        cpu: cpu.clamp(0.0, 99.0),
+        mem: mem.clamp(0.0, 96.0),
+        rx: if burst { 1_400_000 } else { 12_000 },
+        tx: if burst { 220_000 } else { 4_000 },
+        r: if disk { 800_000 } else { 2_000 },
+        w: if disk { 1_100_000 } else { 8_000 },
+    }
+}
+
+fn history(end: u32) -> VecDeque<Sample> {
+    let mut q = VecDeque::with_capacity(HISTORY);
+    let start = end.saturating_sub(HISTORY as u32);
+    for i in start..end {
+        q.push_front(sample_at(i));
+    }
+    q
+}
+
+fn human_rate(bps: u64) -> String {
+    const K: f64 = 1024.0;
+    if bps < 1024 {
+        format!("{bps}B/s")
+    } else if (bps as f64) < K * K {
+        format!("{:.1}K/s", bps as f64 / K)
+    } else {
+        format!("{:.1}M/s", bps as f64 / (K * K))
+    }
+}
+
+fn cpu_color(pct: f64) -> Color {
+    if pct > 90.0 {
+        TH.red()
+    } else if pct > 70.0 {
+        TH.yellow()
+    } else {
+        TH.accent()
     }
 }
 
@@ -397,6 +481,31 @@ impl State {
             Pane::Volumes => self.volumes.get(i).map(|v| v.name.to_string()),
         }
         .unwrap_or_else(|| "—".into())
+    }
+
+    fn selected_running(&self) -> bool {
+        let rows = self.visible(Pane::Containers);
+        let i = *rows.get(self.selected[0]).unwrap_or(&0);
+        self.containers.get(i).map(|c| c.running).unwrap_or(false)
+    }
+
+    fn latest(&self) -> Sample {
+        self.telemetry.front().copied().unwrap_or(Sample {
+            cpu: 0.0,
+            mem: 0.0,
+            rx: 0,
+            tx: 0,
+            r: 0,
+            w: 0,
+        })
+    }
+
+    fn push_sample(&mut self) {
+        self.tick += 1;
+        self.telemetry.push_front(sample_at(self.tick));
+        while self.telemetry.len() > HISTORY {
+            self.telemetry.pop_back();
+        }
     }
 }
 
@@ -846,10 +955,21 @@ fn draw_detail(frame: &mut Frame, state: &State, area: Rect, compact: bool) {
     }
     let focused = state.focus == Focus::Detail;
     let log_cols = area.width.saturating_sub(2);
-    let extra = Some(Line::from(Span::styled(
-        format!(" {log_cols} cols "),
-        Style::new().fg(TH.dim()),
-    )));
+    let extra = {
+        let mut bits = format!(" {log_cols} cols");
+        if state.pane == Pane::Containers {
+            let inner_h = area.height.saturating_sub(2);
+            let want = state.strip_kind as u16;
+            let shown = inner_h >= want + STRIP_MIN_LOG;
+            if shown {
+                bits.push_str(&format!(" · strip {want} · last {log_cols}s of 5m"));
+            } else {
+                bits.push_str(" · strip collapsed");
+            }
+        }
+        bits.push(' ');
+        Some(Line::from(Span::styled(bits, Style::new().fg(TH.dim()))))
+    };
     let block = pane_block("detail", focused, extra);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -873,6 +993,17 @@ fn draw_detail(frame: &mut Frame, state: &State, area: Rect, compact: bool) {
         );
     }
 
+    if state.pane == Pane::Containers {
+        let want = state.strip_kind as u16;
+        let shown = content.height >= want + STRIP_MIN_LOG;
+        if shown && content.height >= want {
+            let parts =
+                Layout::vertical([Constraint::Length(want), Constraint::Min(1)]).split(content);
+            draw_strip(frame, state, parts[0]);
+            content = parts[1];
+        }
+    }
+
     let lines = if state.pane == Pane::Containers && state.tab == DetailTab::Logs {
         log_lines(state)
     } else {
@@ -891,6 +1022,261 @@ fn draw_detail(frame: &mut Frame, state: &State, area: Rect, compact: bool) {
     };
 
     frame.render_widget(Paragraph::new(lines), content);
+}
+
+fn bar_set(ascii: bool) -> symbols::bar::Set<'static> {
+    if ascii {
+        ASCII_BARS
+    } else {
+        symbols::bar::NINE_LEVELS
+    }
+}
+
+fn draw_spark(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    value: String,
+    value_style: Style,
+    data: &[u64],
+    max: Option<u64>,
+    ascii: bool,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let parts = Layout::horizontal([
+        Constraint::Length(4),
+        Constraint::Length(7),
+        Constraint::Min(1),
+    ])
+    .split(area);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("{label:<4}"),
+            Style::new().fg(TH.dim()),
+        ))),
+        parts[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(value, value_style))),
+        parts[1],
+    );
+    if parts[2].width == 0 || data.is_empty() {
+        return;
+    }
+    let mut sp = Sparkline::default()
+        .data(data.iter().copied())
+        .direction(RenderDirection::RightToLeft)
+        .bar_set(bar_set(ascii))
+        .style(Style::new().fg(TH.accent()));
+    if let Some(m) = max {
+        sp = sp.max(m);
+    }
+    frame.render_widget(sp, parts[2]);
+}
+
+fn draw_rates(frame: &mut Frame, area: Rect, s: Sample, running: bool, ascii: bool) {
+    if area.width == 0 {
+        return;
+    }
+    let up = if ascii { "^" } else { "↑" };
+    let dn = if ascii { "v" } else { "↓" };
+    let net = if running {
+        format!(
+            "net {up}{:<7} {dn}{:<7}",
+            human_rate(s.rx),
+            human_rate(s.tx)
+        )
+    } else {
+        format!("net {up}-       {dn}-")
+    };
+    let dsk = if running {
+        format!("dsk r {:<7} w {:<7}", human_rate(s.r), human_rate(s.w))
+    } else {
+        "dsk r -       w -".into()
+    };
+    let line = Line::from(vec![
+        Span::styled(net, Style::new().fg(TH.text())),
+        Span::styled("  ", Style::new()),
+        Span::styled(dsk, Style::new().fg(TH.dim())),
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+fn draw_strip(frame: &mut Frame, state: &State, area: Rect) {
+    let running = state.selected_running();
+    let cur = state.latest();
+    let cpu: Vec<u64> = state
+        .telemetry
+        .iter()
+        .map(|s| s.cpu.round().clamp(0.0, 100.0) as u64)
+        .collect();
+    let mem: Vec<u64> = state
+        .telemetry
+        .iter()
+        .map(|s| s.mem.round().clamp(0.0, 100.0) as u64)
+        .collect();
+    let rx: Vec<u64> = state.telemetry.iter().map(|s| s.rx).collect();
+    let tx: Vec<u64> = state.telemetry.iter().map(|s| s.tx).collect();
+    let (cpu_v, mem_v) = if running {
+        (format!("{:>5.1}%", cur.cpu), format!("{:>5.0}%", cur.mem))
+    } else {
+        ("    -".into(), "    -".into())
+    };
+    let cpu_style = Style::new()
+        .fg(if running {
+            cpu_color(cur.cpu)
+        } else {
+            TH.dim()
+        })
+        .bold();
+    let mem_style = Style::new().fg(if running { TH.text() } else { TH.dim() });
+
+    match state.strip_kind {
+        2 => {
+            let halves =
+                Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+                    .split(area);
+            let left =
+                Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(halves[0]);
+            let right =
+                Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(halves[1]);
+            draw_spark(
+                frame,
+                left[0],
+                "cpu",
+                cpu_v,
+                cpu_style,
+                &cpu,
+                Some(100),
+                state.ascii,
+            );
+            draw_spark(
+                frame,
+                right[0],
+                "mem",
+                mem_v,
+                mem_style,
+                &mem,
+                Some(100),
+                state.ascii,
+            );
+            draw_rates(
+                frame,
+                Rect {
+                    x: left[1].x,
+                    y: left[1].y,
+                    width: left[1].width + right[1].width,
+                    height: 1,
+                },
+                cur,
+                running,
+                state.ascii,
+            );
+        }
+        4 => {
+            let rows = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(1),
+            ])
+            .split(area);
+            draw_spark(
+                frame,
+                rows[0],
+                "cpu",
+                cpu_v,
+                cpu_style,
+                &cpu,
+                Some(100),
+                state.ascii,
+            );
+            draw_spark(
+                frame,
+                rows[1],
+                "mem",
+                mem_v,
+                mem_style,
+                &mem,
+                Some(100),
+                state.ascii,
+            );
+            let net_max = rx
+                .iter()
+                .copied()
+                .max()
+                .unwrap_or(1)
+                .max(tx.iter().copied().max().unwrap_or(1));
+            let net_v = if running {
+                format!("{:>5}", human_rate(cur.rx + cur.tx))
+            } else {
+                "    -".into()
+            };
+            draw_spark(
+                frame,
+                rows[2],
+                "net",
+                net_v,
+                Style::new().fg(TH.text()),
+                &rx,
+                Some(net_max),
+                state.ascii,
+            );
+            let dsk_max = state
+                .telemetry
+                .iter()
+                .map(|s| s.w.max(s.r))
+                .max()
+                .unwrap_or(1);
+            let dsk: Vec<u64> = state.telemetry.iter().map(|s| s.w).collect();
+            let dsk_v = if running {
+                format!("{:>5}", human_rate(cur.w))
+            } else {
+                "    -".into()
+            };
+            draw_spark(
+                frame,
+                rows[3],
+                "dsk",
+                dsk_v,
+                Style::new().fg(TH.dim()),
+                &dsk,
+                Some(dsk_max),
+                state.ascii,
+            );
+        }
+        _ => {
+            let rows = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(1),
+            ])
+            .split(area);
+            draw_spark(
+                frame,
+                rows[0],
+                "cpu",
+                cpu_v,
+                cpu_style,
+                &cpu,
+                Some(100),
+                state.ascii,
+            );
+            draw_spark(
+                frame,
+                rows[1],
+                "mem",
+                mem_v,
+                mem_style,
+                &mem,
+                Some(100),
+                state.ascii,
+            );
+            draw_rates(frame, rows[2], cur, running, state.ascii);
+        }
+    }
 }
 
 fn log_lines(state: &State) -> Vec<Line<'static>> {
@@ -932,7 +1318,8 @@ fn draw_bottom(frame: &mut Frame, state: &State, plan: &Plan) {
             ("j/k", "move"),
             ("enter", "focus"),
             ("/", "filter"),
-            ("f", "zoom"),
+            ("s", "strip"),
+            ("a", "ascii"),
             ("?", "help"),
         ]
     } else {
@@ -982,37 +1369,39 @@ fn draw_help(frame: &mut Frame, area: Rect) {
     let text = vec![
         Line::from(""),
         Line::from(Span::styled(
-            "  1. Breakpoint",
+            "  1. Height / layout",
             Style::new().fg(TH.accent()).bold(),
         )),
         Line::from(
-            "     F1 vs F2 vs a live resize through ~70–90. Is 80 where the rail should climb?",
+            "     `s` cycles 2 / 3 / 4 rows. Default 3: cpu spark, mem spark, net+disk text.",
         ),
         Line::from(Span::styled(
-            "  2. Inactive collapse",
+            "  2. Glyphs + ascii",
             Style::new().fg(TH.accent()).bold(),
         )),
-        Line::from("     Tight = 1-row title+count. Roomy = shrink-to-fit names. Enough?"),
+        Line::from("     Eighth-blocks. `a` swaps the ASCII ramp. Does --ascii still read?"),
         Line::from(Span::styled(
-            "  3. Width cap",
+            "  3. Collapse",
             Style::new().fg(TH.accent()).bold(),
         )),
         Line::from(
-            "     F2/F3: spare columns go to logs (detail title shows col count). 36 greedy?",
+            "     Strip yields when detail inner < strip_h + 4. F1 + `s` to 4-row forces it.",
         ),
         Line::from(Span::styled(
-            "  4. 1/2/3 as expand",
+            "  4. Logs vs Inspect",
             Style::new().fg(TH.accent()).bold(),
         )),
-        Line::from("     Panels stay; the active one grows. Filter + per-panel selection memory."),
+        Line::from("     Same strip on both tabs (`l` / `i`). Does Inspect want it too?"),
         Line::from(Span::styled(
-            "  5. 55×20 floor",
+            "  5. Five minutes",
             Style::new().fg(TH.accent()).bold(),
         )),
-        Line::from("     Dropped: table headers, Logs/Inspect tab row, a header line. What else?"),
+        Line::from(
+            "     Sparkline is one second per column, newest on the right. Detail title shows window.",
+        ),
         Line::from(""),
         Line::from(Span::styled(
-            "  F1 55×20   F2 100×30   F3 200×50   F4 live terminal",
+            "  F1 55×20  F2 100×30  F3 200×50  s layout  a ascii",
             Style::new().fg(TH.yellow()),
         )),
     ];
@@ -1077,6 +1466,14 @@ fn handle(state: &mut State, key: KeyEvent) -> bool {
         }
         KeyCode::Char('l') => state.tab = DetailTab::Logs,
         KeyCode::Char('i') => state.tab = DetailTab::Inspect,
+        KeyCode::Char('a') => state.ascii = !state.ascii,
+        KeyCode::Char('s') => {
+            state.strip_kind = match state.strip_kind {
+                2 => 3,
+                3 => 4,
+                _ => 2,
+            };
+        }
         KeyCode::Char('j') | KeyCode::Down => {
             if state.focus == Focus::List {
                 state.move_sel(1);
@@ -1124,6 +1521,9 @@ fn dump_size(state: &State, w: u16, h: u16) -> (String, String) {
             s.filter = state.filter.clone();
             s.selected = state.selected;
             s.preset = None;
+            s.ascii = state.ascii;
+            s.strip_kind = state.strip_kind;
+            s.telemetry = state.telemetry.clone();
             draw(f, &s, None);
         })
         .unwrap();
@@ -1139,30 +1539,37 @@ fn dump_size(state: &State, w: u16, h: u16) -> (String, String) {
 fn dump_all() -> io::Result<()> {
     let dir = Path::new("dumps");
     std::fs::create_dir_all(dir)?;
-    let state = seed();
-    let mut index = String::from("# unified rail ladder — static dumps\n\n");
-    for (name, (w, h)) in [
-        ("55x20", PRESET_FLOOR),
-        ("100x30", PRESET_MED),
-        ("200x50", PRESET_WIDE),
-    ] {
-        let (summary, frame) = dump_size(&state, w, h);
-        let body = format!("# {w}×{h}\n\n{summary}\n\n```\n{frame}```\n");
+    let mut index = String::from("# telemetry strip — static dumps\n\n");
+    let mut write = |name: &str, title: &str, s: &State, w: u16, h: u16| -> io::Result<()> {
+        let (summary, frame) = dump_size(s, w, h);
+        let body = format!("# {title}\n\n{summary}\n\n```\n{frame}```\n");
         std::fs::write(dir.join(format!("{name}.txt")), &body)?;
-        index.push_str(&format!("## {w}×{h}\n\n{summary}\n\n```\n{frame}```\n\n"));
-        eprintln!("{w}×{h}: {summary}");
-    }
-    let mut images = seed();
-    images.pane = Pane::Images;
-    let (summary, frame) = dump_size(&images, PRESET_FLOOR.0, PRESET_FLOOR.1);
-    std::fs::write(
-        dir.join("55x20-images.txt"),
-        format!("# 55×20 images expanded\n\n{summary}\n\n```\n{frame}```\n"),
+        index.push_str(&format!("## {title}\n\n{summary}\n\n```\n{frame}```\n\n"));
+        eprintln!("{name}: {summary}");
+        Ok(())
+    };
+    let base = seed();
+    write("55x20", "55×20 logs, 3-row strip", &base, 55, 20)?;
+    let mut inspect = seed();
+    inspect.tab = DetailTab::Inspect;
+    write(
+        "55x20-inspect",
+        "55×20 inspect, 3-row strip",
+        &inspect,
+        55,
+        20,
     )?;
-    index.push_str(&format!(
-        "## 55×20 images expanded (`2`)\n\n{summary}\n\n```\n{frame}```\n\n"
-    ));
-    eprintln!("55×20 images: {summary}");
+    write("100x30", "100×30 logs, 3-row strip", &base, 100, 30)?;
+    write("200x50", "200×50 logs, 3-row strip", &base, 200, 50)?;
+    let mut ascii = seed();
+    ascii.ascii = true;
+    write("100x30-ascii", "100×30 ascii glyphs", &ascii, 100, 30)?;
+    let mut four = seed();
+    four.strip_kind = 4;
+    write("55x20-4row", "55×20 4-row (should collapse)", &four, 55, 20)?;
+    let mut two = seed();
+    two.strip_kind = 2;
+    write("100x30-2row", "100×30 2-row layout", &two, 100, 30)?;
     std::fs::write(dir.join("INDEX.md"), index)?;
     eprintln!("wrote dumps/ to {}", dir.canonicalize()?.display());
     Ok(())
@@ -1177,6 +1584,9 @@ fn main() -> io::Result<()> {
     }
 
     let mut state = seed();
+    if args.iter().any(|a| a == "--ascii") {
+        state.ascii = true;
+    }
     if let Some(arg) = args.iter().find(|a| a.starts_with("--size=")) {
         state.preset = match arg.split('=').nth(1).unwrap_or("") {
             "55x20" | "floor" => Some(PRESET_FLOOR),
@@ -1190,10 +1600,15 @@ fn main() -> io::Result<()> {
     let mut stdout = stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
+    let mut last_tick = Instant::now();
     let result = (|| -> io::Result<()> {
         loop {
+            if last_tick.elapsed() >= Duration::from_millis(400) {
+                state.push_sample();
+                last_tick = Instant::now();
+            }
             terminal.draw(|f| draw(f, &state, state.preset))?;
-            if event::poll(Duration::from_millis(200))? {
+            if event::poll(Duration::from_millis(80))? {
                 match event::read()? {
                     Event::Key(k) => {
                         if handle(&mut state, k) {

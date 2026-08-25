@@ -1,4 +1,4 @@
-# 55×20 logs, 3-row strip
+# 55×20 inspect, 3-row strip
 
 stacked  rail 55×9  detail 55×9  collapse=tight  cap=36  stack<80  log_cols=53  active=containers
 
@@ -17,10 +17,10 @@ stacked  rail 55×9  detail 55×9  collapse=tight  cap=36  stack<80  log_cols=53
 │cpu  33.0% ▂▂▂▂▂▂▂▆▂▂▂▂▂▂▂▂▂▂▂▂▃▃▃▃▃▃▃▃▃▃▂▂▂▂▂▂▂▂▂▂▂▂│
 │mem    42% ▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃│
 │net ↑11.7K/s ↓3.9K/s   dsk r 2.0K/s  w 7.8K/s        │
-│2026-08-24T18:02:11.441Z INFO  postgres  checkpoint c│
-│2026-08-24T18:02:12.018Z INFO  redis     replica 192.│
-│2026-08-24T18:02:12.441Z INFO  caddy     192.168.64.1│
-│2026-08-24T18:02:13.102Z WARN  postgres  could not se│
+│{                                                    │
+│  "id": "redis",                                     │
+│  "image": "postgres:16",                            │
+│  "state": "running"                                 │
 ╰ 53 cols · strip 3 · last 53s of 5m ─────────────────╯
  1/2/3 expand  j/k move  / filter  f zoom
 ```
