@@ -57,6 +57,9 @@ enum InstallMethod {
     Receipt,
 }
 
+/// Order matters: brew's `bin` entries are symlinks into `Cellar`, so a
+/// canonicalized brew path always trips the first check, and a cargo dir only
+/// counts as the exe's immediate parent (cargo never nests binaries).
 fn classify(exe: &Path, cargo_bins: &[PathBuf]) -> InstallMethod {
     if exe
         .components()
@@ -92,6 +95,8 @@ fn cargo_bin_candidates(
         .collect()
 }
 
+/// The candidates that actually exist on disk, canonicalized so they compare
+/// against the equally canonical exe path.
 fn cargo_bin_dirs() -> Vec<PathBuf> {
     cargo_bin_candidates(
         std::env::var_os("CARGO_INSTALL_ROOT").map(PathBuf::from),
@@ -105,6 +110,8 @@ fn cargo_bin_dirs() -> Vec<PathBuf> {
     .collect()
 }
 
+/// An unresolvable exe path falls back to `Receipt`, whose missing-receipt
+/// message is generic enough to be safe when we know nothing about the install.
 fn install_method() -> InstallMethod {
     std::env::current_exe()
         .and_then(std::fs::canonicalize)
