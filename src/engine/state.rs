@@ -13,6 +13,9 @@ pub const MESSAGE_LOG_CAP: usize = 1_000;
 pub const CONFIRM_TICKS: u8 = 2;
 /// Consecutive containers-poll parse failures before the degraded banner.
 pub const DEGRADED_THRESHOLD: u32 = 3;
+/// The very first launch holds the splash for this long — the one deliberate
+/// exception to "the splash never adds latency". Any key still skips.
+pub const FIRST_RUN_DWELL: std::time::Duration = std::time::Duration::from_millis(1000);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -287,6 +290,11 @@ pub struct AppState {
 
     /// True once the first containers poll has landed (splash may dissolve).
     pub first_data: bool,
+    /// When the app came up; the splash only becomes visible if the startup
+    /// probes are still running after a grace period (no sub-100ms flash).
+    pub started_at: Instant,
+    /// Very first launch: the splash shows immediately and dwells FIRST_RUN_DWELL.
+    pub first_run: bool,
     pub tick: u64,
     pub last_poll_at: Option<Instant>,
     /// Exec request the outer loop must service (suspend TUI, run, restore).
@@ -334,11 +342,19 @@ impl AppState {
             service_output: Vec::new(),
             service_starting: false,
             first_data: false,
+            started_at: Instant::now(),
+            first_run: false,
             tick: 0,
             last_poll_at: None,
             exec_request: None,
             confirmations: Vec::new(),
         }
+    }
+
+    /// May the splash dissolve into the layout? Data must have arrived, and on
+    /// the very first launch the dwell must also have elapsed.
+    pub fn splash_may_dissolve(&self) -> bool {
+        self.first_data && (!self.first_run || self.started_at.elapsed() >= FIRST_RUN_DWELL)
     }
 
     // ---- messages -------------------------------------------------------

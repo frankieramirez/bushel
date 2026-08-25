@@ -50,7 +50,16 @@ pub fn draw(frame: &mut Frame, state: &AppState, th: &Theme) -> DrawInfo {
     info
 }
 
+/// The splash never adds latency (spec): it dissolves the instant data arrives.
+/// On fast startups that would mean a jarring sub-100ms flash of the mark, so it
+/// only becomes visible once the probes have been running for a grace period —
+/// fast start → straight into the layout, slow start → proper splash.
+const SPLASH_GRACE: std::time::Duration = std::time::Duration::from_millis(150);
+
 fn draw_splash(frame: &mut Frame, state: &AppState, th: &Theme) {
+    if !state.first_run && state.started_at.elapsed() < SPLASH_GRACE {
+        return; // just the ground color — the layout takes over if data beats us
+    }
     let art = [
         r"   ,--./,-.                                     ",
         r"  / #   ,--\        _               _          _ ",

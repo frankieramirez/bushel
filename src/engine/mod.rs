@@ -342,9 +342,7 @@ impl<R: Runner> Engine<R> {
                 }
                 self.announce_confirmations();
                 self.state.recompute_in_use();
-                if self.state.screen == Screen::Splash {
-                    self.state.screen = Screen::Main;
-                }
+                self.maybe_dissolve_splash();
                 self.sync_follower();
                 self.ensure_inspect();
             }
@@ -534,6 +532,14 @@ impl<R: Runner> Engine<R> {
             }
         }
         if self.state.screen == Screen::Splash {
+            self.state.screen = Screen::Main;
+        }
+    }
+
+    /// Dissolve the splash once data has landed — and, on the very first launch,
+    /// once the dwell has elapsed. Called on poll results and every render tick.
+    pub fn maybe_dissolve_splash(&mut self) {
+        if self.state.screen == Screen::Splash && self.state.splash_may_dissolve() {
             self.state.screen = Screen::Main;
         }
     }
