@@ -34,7 +34,7 @@ _Avoid_: focused pane (Focus is list vs detail)
 The shrinking of an inactive rail pane: shrink-to-fit names when roomy, a 1-row title+count when tight.
 
 **Tier**:
-A layout size band. The ladder has two placements: stacked (body width under 80) and beside (otherwise). The floor is about 55×20.
+A layout size band. The ladder has two placements: stacked (body width under 80) and beside (otherwise). Below that sits the **floor**: a frame of 22 rows or fewer, or 60 columns or fewer, where chrome is shed. Nothing refuses to draw at any size.
 
 **Detail pane**:
 The view of the current selection. Beside the rail on medium and wide terminals; below it when stacked. For containers it has two detail tabs (Logs, Inspect) and the strip; images and volumes have Inspect only.
@@ -62,11 +62,11 @@ The persistent bar of context-sensitive key hints plus the status cluster (servi
 _Avoid_: status bar (ambiguous with the status cluster)
 
 **Message log**:
-The scrollback of recent errors and notices, holding the full stderr behind each status-bar one-liner.
+The scrollback of recent errors and notices, holding the full stderr behind each one-line gist on the bottom bar. Every toast writes through it, so it is a superset of what the bottom bar showed. Last 1,000 entries.
 _Avoid_: console
 
 **Splash**:
-The animated launch screen that plays only while the startup probes run; any key skips it, and it never adds latency of its own.
+The animated launch screen that plays only while the startup probes run; any key skips it, and it never adds latency of its own — except on the very first launch on a machine, where it dwells for up to a second so the mark is seen once. `--no-splash` and `--reduced-motion` skip that too.
 _Avoid_: intro, loading screen
 
 **Action**:

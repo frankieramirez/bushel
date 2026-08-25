@@ -1,5 +1,15 @@
 # bushel — specification
 
+> **This is a record, not a description of current behaviour.** It holds the
+> decisions taken for v0.1 and for the responsive visual UI, each linked to the
+> ticket that argued it, and it is not kept in step with what ships — bushel has
+> moved past it in places, and the numbers in it are the numbers that were agreed,
+> not the numbers in the code. For what bushel does today, read
+> [bushel.sh/docs](https://bushel.sh/docs); for what is generated from source and
+> cannot drift, [the keymap](https://bushel.sh/docs/keys) and [the config
+> reference](https://bushel.sh/docs/config). What does not expire here is the
+> rationale and the ticket links, which is why it stays as written.
+
 A lazydocker-style TUI for Apple Containers. bushel wraps the `container` CLI (1.2.0+, macOS 26) as a subprocess and manages what already exists — it is a manager, not a launcher. It never links Apple's Containerization framework.
 
 v0.1 (scope, architecture, motion) is the output of the [v0.1 wayfinder map](https://github.com/frankieramirez/bushel/issues/1). The responsive visual UI (unified rail, telemetry strip, log wrap) is the output of [Wayfinder map: bushel responsive visual UI](https://github.com/frankieramirez/bushel/issues/14). Each section links the decision ticket that holds its full rationale. The domain vocabulary is defined in [CONTEXT.md](CONTEXT.md). Build sessions should be able to execute from this document without fundamental questions.

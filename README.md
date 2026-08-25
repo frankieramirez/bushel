@@ -17,22 +17,11 @@ Homebrew:
 brew install frankieramirez/tap/bushel
 ```
 
-Shell installer, no Homebrew required (installs to `$CARGO_HOME/bin`, default `~/.cargo/bin`):
+Shell installer, no Homebrew required:
 
 ```sh
 curl -LsSf https://bushel.sh/install | sh
 ```
-
-`https://bushel.sh/install` is a 302 to the installer attached to the latest GitHub
-release. To skip the redirect, or to pin the hardened curl flags, fetch the asset
-directly:
-
-```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/frankieramirez/bushel/releases/latest/download/bushel-installer.sh | sh
-```
-
-`BUSHEL_INSTALL_DIR` picks a different prefix; `BUSHEL_NO_MODIFY_PATH=1` leaves your
-shell rc files alone. Prebuilt archives and checksums are on the [releases page](../../releases).
 
 From source — bushel isn't published to crates.io, so this needs `--git`:
 
@@ -40,9 +29,14 @@ From source — bushel isn't published to crates.io, so this needs `--git`:
 cargo install --git https://github.com/frankieramirez/bushel
 ```
 
-To upgrade, run `bushel update`. Shell-installer installs replace themselves in
-place; Homebrew installs hand off to `brew upgrade bushel`; cargo, Nix, and
-hand-placed binaries are told how to upgrade themselves instead.
+`https://bushel.sh/install` is a 302 to the checksummed installer attached to the
+latest GitHub release; the domain never hosts a copy. To upgrade, run `bushel
+update` — it works out how bushel was installed and hands the job back to
+whatever did the installing.
+
+The rest — `BUSHEL_INSTALL_DIR`, `BUSHEL_NO_MODIFY_PATH`, the hardened-curl
+direct-asset form, pinning a version, and what `bushel update` does per install
+method — is on **[bushel.sh/docs/install](https://bushel.sh/docs/install)**.
 
 ## Use
 
@@ -50,24 +44,61 @@ hand-placed binaries are told how to upgrade themselves instead.
 bushel
 ```
 
-- `1`/`2`/`3` or `Tab` — expand containers, images, or volumes (the others stay on the rail)
-- `j`/`k`, `g`/`G` — move; `/` fuzzy filter; `Enter` focus the detail pane
-- `space` — action menu for the selection (destructive actions tinted, always confirmed with the exact `container …` command about to run)
-- `s` start/stop · `r` restart · `K` kill · `d` delete · `P` prune · `e` exec a shell
-- `l`/`i` — Logs / Inspect detail tabs; `F` toggles log follow; `w` toggles wrap
-- `m` — message log (full stderr of anything that failed) · `?` — help
+Press `?` for the cheatsheet, `space` for the actions valid on whatever is
+selected. Everything below is generated from bushel's own source — the same list
+the help overlay draws — so it cannot drift from the binary you are running.
 
-Flags: `--no-splash`, `--reduced-motion`, `--ascii`. The same settings live in `~/.config/bushel/config.toml`:
+<!-- keys:start -->
 
-```toml
-no_splash = false
-reduced_motion = false
-ascii = false
-```
+**global**
+
+- `1/2/3, tab` — expand pane (containers / images / volumes)
+- `f` — zoom focused side
+- `m` — message log
+- `b` — dismiss version banner
+- `q` — quit
+
+**list**
+
+- `j/k g/G` — move / top / bottom
+- `/` — fuzzy filter (esc clears)
+- `enter` — focus detail pane
+- `space` — action menu
+- `s r K d P e` — start/stop · restart · kill · delete · prune · exec
+- `u` — pull image (images pane)
+
+**detail**
+
+- `l / i` — logs / inspect tab (containers)
+- `F` — toggle follow
+- `w` — toggle wrap / truncated
+- `pgup/pgdn` — scroll without switching focus
+- `esc` — back to list
+<!-- keys:end -->
+
+Flags, and the `~/.config/bushel/config.toml` keys that set the same things:
+
+<!-- options:start -->
+
+- `--no-splash` / `no_splash = false` — Skip the splash screen
+- `--reduced-motion` / `reduced_motion = false` — Disable all animation and effects
+- `--ascii` / `ascii = false` — ASCII icons and spinners (no Unicode glyphs)
+<!-- options:end -->
+
+A flag can only switch something on; it is ORed with the file. Full reference:
+**[bushel.sh/docs/keys](https://bushel.sh/docs/keys)** and
+**[bushel.sh/docs/config](https://bushel.sh/docs/config)**.
 
 ## Design
 
-The v0.1 scope, architecture, and rationale live in [SPEC.md](SPEC.md); the domain vocabulary in [CONTEXT.md](CONTEXT.md). The design was worked out in the open on the [wayfinder map](../../issues/1).
+The docs live at **[bushel.sh/docs](https://bushel.sh/docs)** — install, keys,
+config, troubleshooting, and [why bushel is shaped the way it
+is](https://bushel.sh/docs/why).
+
+For contributors: the v0.1 scope, architecture, and rationale are in
+[SPEC.md](SPEC.md), the domain vocabulary in [CONTEXT.md](CONTEXT.md), and the
+decisions that outlived their tickets in [docs/adr](docs/adr). The design was
+worked out in the open on the [wayfinder map](../../issues/1).
 
 ## License
 
