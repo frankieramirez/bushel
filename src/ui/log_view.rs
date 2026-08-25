@@ -13,22 +13,20 @@ pub fn split_line(s: &str, wrap: bool, width: u16) -> Vec<String> {
 }
 
 /// Display-row index where raw line `idx` starts.
-pub fn display_start(lines: &[String], wrap: bool, width: u16, idx: usize) -> u16 {
-    let sum: usize = lines
+pub fn display_start(lines: &[String], wrap: bool, width: u16, idx: usize) -> usize {
+    lines
         .iter()
         .take(idx)
         .map(|l| split_line(l, wrap, width).len())
-        .sum();
-    sum.min(u16::MAX as usize) as u16
+        .sum()
 }
 
 /// Raw log line that owns display row `row`. Clamps to the last line.
-pub fn raw_index(lines: &[String], wrap: bool, width: u16, row: u16) -> usize {
+pub fn raw_index(lines: &[String], wrap: bool, width: u16, row: usize) -> usize {
     if lines.is_empty() {
         return 0;
     }
     let mut acc: usize = 0;
-    let row = row as usize;
     for (i, l) in lines.iter().enumerate() {
         let n = split_line(l, wrap, width).len();
         if row < acc.saturating_add(n) {
@@ -40,7 +38,7 @@ pub fn raw_index(lines: &[String], wrap: bool, width: u16, row: u16) -> usize {
 }
 
 /// Follow-tail display scroll: last `height` rows of `total`.
-pub fn tail_scroll(total: u16, height: u16) -> u16 {
+pub fn tail_scroll(total: usize, height: usize) -> usize {
     total.saturating_sub(height)
 }
 
@@ -155,12 +153,29 @@ mod tests {
         assert_eq!(tail_scroll(5, 3), 2);
         // wrap of a 10-char line at width 4 is 3 rows; 2 short lines + that + marker
         let lines = ["aa", "bbbbbbbbbb", "cc"];
-        let display: u16 = lines
-            .iter()
-            .map(|l| split_line(l, true, 4).len() as u16)
-            .sum();
+        let display: usize = lines.iter().map(|l| split_line(l, true, 4).len()).sum();
         assert_eq!(display, 1 + 3 + 1);
         assert_eq!(tail_scroll(display + 1, 3), 3); // +1 marker
+    }
+
+    #[test]
+    fn wrapped_display_rows_can_exceed_u16_max() {
+        // 10k raw lines of 700 chars at width 80 → 9 display rows each = 90_000.
+        let width = 80u16;
+        let n = 10_000;
+        let lines = vec!["x".repeat(700); n];
+        let rows_per = split_line(&lines[0], true, width).len();
+        assert_eq!(rows_per, 9);
+        let total = n * rows_per;
+        assert!(total > u16::MAX as usize);
+
+        let last = n - 1;
+        let start = display_start(&lines, true, width, last);
+        assert_eq!(start, last * rows_per);
+        assert_eq!(raw_index(&lines, true, width, start), last);
+        assert_eq!(raw_index(&lines, true, width, start + rows_per - 1), last);
+        assert_eq!(raw_index(&lines, true, width, total - 1), last);
+        assert_eq!(tail_scroll(total, 24), total - 24);
     }
 
     #[test]

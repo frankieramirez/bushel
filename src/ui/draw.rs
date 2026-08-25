@@ -544,29 +544,35 @@ fn draw_detail(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, info
     };
 
     let logs = state.pane == Pane::Containers && state.detail_tab == DetailTab::Logs;
-    let total = lines.len() as u16;
-    let h = content_area.height;
-    let width = content_area.width;
-    let prefix = if logs && state.logs_loading { 1 } else { 0 };
-    let scroll = if logs && follow_tail {
-        log_view::tail_scroll(total, h)
-    } else if logs {
-        let raw = (state.detail_scroll as usize).min(state.log_lines.len().saturating_sub(1));
-        log_view::display_start(&state.log_lines, state.wrap, width, raw)
-            .saturating_add(prefix)
-            .min(total.saturating_sub(1))
-    } else {
-        state.detail_scroll.min(total.saturating_sub(1))
-    };
     if logs {
+        // Wrap can push display rows past u16::MAX; Paragraph::scroll is (u16, u16),
+        // so rebase onto a pane-height window and render that at scroll 0.
+        let total = lines.len();
+        let h = content_area.height as usize;
+        let width = content_area.width;
+        let prefix = if state.logs_loading { 1 } else { 0 };
+        let scroll = if follow_tail {
+            log_view::tail_scroll(total, h)
+        } else {
+            let raw = (state.detail_scroll as usize).min(state.log_lines.len().saturating_sub(1));
+            log_view::display_start(&state.log_lines, state.wrap, width, raw)
+                .saturating_add(prefix)
+                .min(total.saturating_sub(1))
+        };
         info.log_scroll = log_view::raw_index(
             &state.log_lines,
             state.wrap,
             width,
             scroll.saturating_sub(prefix),
         ) as u16;
+        let end = scroll.saturating_add(h).min(total);
+        let window = lines.get(scroll..end).unwrap_or(&[]).to_vec();
+        frame.render_widget(Paragraph::new(window), content_area);
+    } else {
+        let total = lines.len() as u16;
+        let scroll = state.detail_scroll.min(total.saturating_sub(1));
+        frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), content_area);
     }
-    frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), content_area);
 }
 
 fn draw_bottom_bar(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect) {
