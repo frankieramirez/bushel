@@ -66,7 +66,7 @@ impl Pane {
         }
     }
 
-    pub fn all() -> [Pane; 3] {
+    pub const fn all() -> [Pane; 3] {
         [Pane::Containers, Pane::Images, Pane::Volumes]
     }
 }

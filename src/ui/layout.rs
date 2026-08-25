@@ -15,6 +15,9 @@ pub const TIGHT_RAIL_H: u16 = 16;
 /// table headers, no tab row, no status cluster.
 const FLOOR_H: u16 = 22;
 const FLOOR_W: u16 = 60;
+/// The rail's own floor: one collapsed row per pane. Under this there is not a
+/// row each to give, and the active panel takes what the rail has.
+const RAIL_MIN_H: u16 = Pane::all().len() as u16;
 /// The action sheet never grows past this, at any size.
 pub const SHEET_MAX_H: u16 = 9;
 /// Destructive confirm is a fixed 7-row box; a long command wraps inside it.
@@ -116,8 +119,11 @@ impl LayoutPlan {
 
         let (rail, detail) = if stacked {
             let rail_h = stacked_rail_height(body.height, facts.visible[facts.active.index()]);
+            // Fill, not Min(3): on a body under 6 rows a minimum would outbid the
+            // rail's length and silently drop the rail off the plan. The split is
+            // this function's decision to make; the detail pane takes the rest.
             let parts =
-                Layout::vertical([Constraint::Length(rail_h), Constraint::Min(3)]).split(body);
+                Layout::vertical([Constraint::Length(rail_h), Constraint::Fill(1)]).split(body);
             (parts[0], parts[1])
         } else {
             let rail_w = RAIL_MAX;
@@ -208,23 +214,40 @@ pub fn centered(area: Rect, w: u16, h: u16) -> Rect {
     )
 }
 
+/// Rows the stacked rail takes off the top of the body.
+///
+/// It wants one row per collapsed pane plus the active panel's table, takes at
+/// most half the body, and leaves the detail pane 4 rows. Under 12 frame rows
+/// the last two cross: a 9-row body has 5 rows to spare once the detail pane's
+/// 4 are set aside, under the 6 the rail asks for, and clamping to inverted
+/// bounds is what panicked. So the rail's want gives way first, down to
+/// `RAIL_MIN_H` and then below it. What the rail never takes is the body's
+/// last row, so the detail pane is the side that survives every size; on a
+/// 1-row body it is all there is. Nothing refuses to draw (#52).
 fn stacked_rail_height(body_h: u16, active_rows: u16) -> u16 {
     let inactive = 2u16;
     let active_h = (active_rows + 2).clamp(4, 8);
     let want = inactive + active_h;
-    let cap = (body_h / 2).max(6);
-    want.clamp(6, cap.min(body_h.saturating_sub(4)))
+    // What the body can spare: half of it, and not the detail pane's 4 rows.
+    let spare = (body_h / 2).max(6).min(body_h.saturating_sub(4));
+    // What the rail holds out for, until the body cannot spare even that.
+    let least = RAIL_MIN_H.min(body_h.saturating_sub(1));
+    want.clamp(least, spare.max(least))
 }
 
 fn rail_slots(rail: Rect, facts: LayoutFacts, tight: bool) -> [Rect; 3] {
     let panes = Pane::all();
+    // A rail with fewer rows than panes spends them all on the active panel
+    // rather than collapsing it away: the header still names all three panes
+    // by their switcher keys, and the active panel is the one taking input.
+    let collapsed_rows = if rail.height < RAIL_MIN_H { 0 } else { 1 };
     let constraints: Vec<Constraint> = panes
         .iter()
         .map(|&p| {
             if p == facts.active {
                 Constraint::Fill(1)
             } else if tight {
-                Constraint::Length(1)
+                Constraint::Length(collapsed_rows)
             } else {
                 let need = facts.visible[p.index()] + 2;
                 let cap = (rail.height / 4).max(8);
@@ -457,6 +480,111 @@ mod tests {
         // roomy: the box grows to the content and stops at HELP_W
         let roomy = super::help_modal(Rect::new(0, 0, 200, 50), 21);
         assert_eq!((roomy.width, roomy.height), (HELP_W, 23));
+    }
+
+    #[test]
+    fn tiny_frames_split_the_body_instead_of_panicking() {
+        // #52: under 80 columns and under 12 rows the rail's floor crossed its
+        // cap and `clamp` panicked. Every size has to produce a tiling plan.
+        // Widths only decide stacked-vs-beside (80) and floor chrome (60); the
+        // crossing bounds were on the height axis, so that one is swept whole.
+        for h in 1..=40u16 {
+            for w in [1, 2, 20, 40, 55, 59, 60, 61, 79, 80, 81, 100] {
+                let p = plan(w, h);
+                if p.stacked {
+                    assert_eq!(
+                        p.rail.height + p.detail.height,
+                        p.body.height,
+                        "{w}x{h}: rail {:?} + detail {:?} must tile body {:?}",
+                        p.rail,
+                        p.detail,
+                        p.body
+                    );
+                } else {
+                    assert_eq!(
+                        p.rail.width + p.detail.width,
+                        p.body.width,
+                        "{w}x{h}: rail {:?} + detail {:?} must tile body {:?}",
+                        p.rail,
+                        p.detail,
+                        p.body
+                    );
+                }
+                assert!(
+                    p.rail.y >= p.body.y && p.rail.bottom() <= p.body.bottom(),
+                    "{w}x{h}: rail {:?} escapes body {:?}",
+                    p.rail,
+                    p.body
+                );
+                assert!(
+                    p.detail.y >= p.body.y && p.detail.bottom() <= p.body.bottom(),
+                    "{w}x{h}: detail {:?} escapes body {:?}",
+                    p.detail,
+                    p.body
+                );
+                if p.body.height >= 1 {
+                    assert!(
+                        p.detail.height >= 1,
+                        "{w}x{h}: detail pane lost the body's last row: {:?}",
+                        p.detail
+                    );
+                }
+                if p.body.height >= 2 {
+                    assert!(
+                        p.rail.height >= 1,
+                        "{w}x{h}: rail vanished from a {}-row body",
+                        p.body.height
+                    );
+                }
+                let slots: u16 = p.slots.iter().map(|s| s.height).sum();
+                assert_eq!(
+                    slots, p.rail.height,
+                    "{w}x{h}: slots {:?} must tile rail {:?}",
+                    p.slots, p.rail
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_stacked_rail_leaves_the_detail_pane_a_row_on_a_short_body() {
+        // 79x11 from the issue's repro table: 1-row header, 1-row bottom, so
+        // the body is 9 rows and cannot give the detail pane its usual 4.
+        let p = plan(79, 11);
+        assert!(p.stacked);
+        assert_eq!(p.body.height, 9);
+        assert!(p.rail.height > 0, "rail vanished: {:?}", p.rail);
+        assert!(p.detail.height > 0, "detail vanished: {:?}", p.detail);
+        assert_eq!(p.rail.bottom(), p.detail.y, "rail and detail must tile");
+        assert_eq!(p.detail.bottom(), p.body.bottom());
+    }
+
+    #[test]
+    fn a_rail_too_short_for_three_panes_keeps_the_active_one() {
+        // 40x5: header 1 + bottom 1 leaves a 3-row body, so the rail gets 2 —
+        // one row short of a collapsed row per pane. The active panel takes
+        // them; the header still names all three panes and their counts.
+        let p = plan(40, 5);
+        assert!(p.stacked);
+        assert_eq!(p.rail.height, 2);
+        assert_eq!(p.detail.height, 1);
+        assert_eq!(p.slots[Pane::Containers.index()].height, 2);
+        assert_eq!(p.slots[Pane::Images.index()].height, 0);
+        assert_eq!(p.slots[Pane::Volumes.index()].height, 0);
+    }
+
+    #[test]
+    fn the_stacked_rail_never_shrinks_as_the_body_grows() {
+        let mut prev = 0;
+        for h in 1..=60u16 {
+            let p = plan(40, h);
+            assert!(
+                p.rail.height >= prev,
+                "rail shrank from {prev} to {} at height {h}",
+                p.rail.height
+            );
+            prev = p.rail.height;
+        }
     }
 
     #[test]

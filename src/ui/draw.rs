@@ -1242,6 +1242,69 @@ mod tests {
         out
     }
 
+    /// Every size the layout has to cope with, drawn for real: a frame that
+    /// plans without panicking is no use if painting it panics instead (#52).
+    #[test]
+    fn no_terminal_size_panics_the_renderer() {
+        let zoomed = || {
+            let mut s = sample();
+            s.zoom = true;
+            s
+        };
+        let logs = || {
+            let mut s = sample();
+            s.focus = Focus::Detail;
+            s.log_lines = (0..50).map(|i| format!("line {i}")).collect();
+            s
+        };
+        let telemetry = || {
+            let mut tel = VecDeque::new();
+            for _ in 0..40 {
+                tel.push_front(tel_sample());
+            }
+            with_telemetry(sample(), tel)
+        };
+        let splash = || {
+            let mut s = sample();
+            s.screen = Screen::Splash;
+            s.first_run = true; // otherwise the grace period paints nothing
+            s
+        };
+        let service_down = || {
+            let mut s = sample();
+            s.screen = Screen::ServiceDown;
+            s
+        };
+        let states: [&dyn Fn() -> AppState; 6] =
+            [&sample, &zoomed, &logs, &telemetry, &splash, &service_down];
+        let overlays = [
+            Overlay::None,
+            Overlay::ActionMenu,
+            Overlay::Help,
+            Overlay::MessageLog,
+            Overlay::PullInput {
+                text: "alpine:latest".into(),
+            },
+            Overlay::Confirm {
+                command: "container delete qtest".into(),
+                action: crate::engine::state::ActionKind::DeleteContainer,
+                target: "qtest".into(),
+            },
+        ];
+        for build in states {
+            for overlay in &overlays {
+                let mut s = build();
+                s.overlay = overlay.clone();
+                for h in [1, 2, 3, 4, 5, 8, 11, 12, 17, 20, 22, 23, 30] {
+                    for w in [1, 2, 10, 20, 40, 55, 60, 61, 79, 80, 100] {
+                        // a panic is the failure; painting the frame is the assertion
+                        render(w, h, &s);
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn floor_55x20_keeps_all_three_panes_and_drops_floor_chrome() {
         let frame = render(55, 20, &sample());
