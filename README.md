@@ -15,11 +15,14 @@ bushel is a lazydocker-style TUI built in Rust with [Ratatui](https://github.com
 brew install frankieramirez/tap/bushel
 ```
 
-Or grab a binary from the [releases page](../../releases), or build from source:
+Or use the shell installer from the [releases page](../../releases), or build from source:
 
 ```sh
 cargo install --git https://github.com/frankieramirez/bushel
 ```
+
+To upgrade, run `bushel update` — it self-updates shell-installer installs and
+delegates to `brew upgrade bushel` for Homebrew installs.
 
 ## Use
 
