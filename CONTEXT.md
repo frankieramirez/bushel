@@ -19,20 +19,38 @@ _Avoid_: mount
 ### Interaction
 
 **Pane**:
-One of the three entity views (containers, images, volumes). One pane is shown at a time.
+One of the three entity views (containers, images, volumes). All three are present in the rail; one is the active panel.
 _Avoid_: tab, screen, page
 
+**Rail**:
+The always-present column of all three panes. Inactive panes collapse; the active panel takes the flexible space.
+_Avoid_: sidebar, stack
+
+**Active panel**:
+The pane in the rail that currently receives list input and owns the detail pane's selection.
+_Avoid_: focused pane (Focus is list vs detail)
+
+**Collapse**:
+The shrinking of an inactive rail pane: shrink-to-fit names when roomy, a 1-row title+count when tight.
+
+**Tier**:
+A layout size band. The ladder has two placements: stacked (body width under 80) and beside (otherwise). The floor is about 55×20.
+
 **Detail pane**:
-The right-hand half of the layout, always showing a view of the current selection. For containers it has two detail tabs (Logs, Inspect); images and volumes have Inspect only.
+The view of the current selection. Beside the rail on medium and wide terminals; below it when stacked. For containers it has two detail tabs (Logs, Inspect) and the strip; images and volumes have Inspect only.
+
+**Strip**:
+The persistent telemetry view at the top of the detail pane for the selected container: cpu and memory sparks, plus network and disk rates.
+_Avoid_: dashboard, graph (the sparkline is the glyph, not the view)
 
 **Focus**:
-Which side of the layout receives input — the entity list or the detail pane. Enter moves focus into the detail pane; Esc returns it to the list.
+Which side of the layout receives input — the rail's active panel or the detail pane. Enter moves focus into the detail pane; Esc returns it to the list.
 
 **Zoom**:
-Toggling the focused pane to fullscreen and back.
+Toggling the focused side to fullscreen and back. Zoom fullscreens the active panel's table, not the whole rail.
 
 **Filter**:
-Fuzzy narrowing of the current entity list; Esc clears it.
+Fuzzy narrowing of the active panel's list; Esc clears it. Inactive rail panes stay unfiltered.
 _Avoid_: search
 
 **Action menu**:
@@ -67,6 +85,10 @@ The synthetic stop-then-start action. The `container` CLI has no restart subcomm
 **Follow**:
 The live-tailing mode of the logs view, backed by a `logs -f` subprocess that bushel owns and kills.
 _Avoid_: stream, watch
+
+**Wrap**:
+The logs-view mode in which a raw log line occupies as many display rows as the pane width requires. On by default. Opposite of truncated.
+_Avoid_: word wrap, soft wrap
 
 **Exec**:
 Suspending the TUI and attaching the terminal to a shell inside the selected container, restoring the TUI on exit.
