@@ -341,3 +341,12 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+
+  custom-deploy-site:
+    needs:
+      - plan
+      - announce
+    uses: ./.github/workflows/deploy-site.yml
+    with:
+      plan: ${{ needs.plan.outputs.val }}
+    secrets: inherit

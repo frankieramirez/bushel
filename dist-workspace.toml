@@ -16,3 +16,14 @@ hosting = "github"
 # Publish the formula to the tap
 tap = "frankieramirez/homebrew-tap"
 publish-jobs = ["homebrew"]
+# Rebuild bushel.sh once the release is out, so the site picks up the new
+# docs.json and its version chip stops going stale.
+post-announce-jobs = ["./deploy-site"]
+
+# The docs site builds on Cloudflare's Linux builders and cannot run bushel, so
+# it reads the keymap and config reference from this asset instead. Emitted by
+# an example rather than a bin so it never ends up in anyone's PATH — see
+# examples/docs-json.rs.
+[[dist.extra-artifacts]]
+artifacts = ["docs.json"]
+build = ["cargo", "run", "--example", "docs-json", "--", "--out", "docs.json"]
