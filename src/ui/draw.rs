@@ -57,7 +57,7 @@ pub fn draw(frame: &mut Frame, state: &AppState, th: &Theme) -> DrawInfo {
 const SPLASH_GRACE: std::time::Duration = std::time::Duration::from_millis(150);
 
 fn draw_splash(frame: &mut Frame, state: &AppState, th: &Theme) {
-    if state.started_at.elapsed() < SPLASH_GRACE {
+    if !state.first_run && state.started_at.elapsed() < SPLASH_GRACE {
         return; // just the ground color — the layout takes over if data beats us
     }
     let art = [

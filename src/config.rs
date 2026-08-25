@@ -12,11 +12,22 @@ pub struct Config {
 }
 
 impl Config {
+    /// `~/.config/bushel/` (as documented) with the platform config dir as a
+    /// fallback — on macOS `dirs::config_dir()` is `~/Library/Application
+    /// Support`, which nobody expects a CLI tool to use.
+    pub fn dir() -> Option<std::path::PathBuf> {
+        if let Some(home) = dirs::home_dir() {
+            let xdg = home.join(".config").join("bushel");
+            return Some(xdg);
+        }
+        dirs::config_dir().map(|d| d.join("bushel"))
+    }
+
     pub fn load() -> Self {
-        let Some(dir) = dirs::config_dir() else {
+        let Some(dir) = Self::dir() else {
             return Self::default();
         };
-        let path = dir.join("bushel").join("config.toml");
+        let path = dir.join("config.toml");
         let Ok(text) = std::fs::read_to_string(&path) else {
             return Self::default();
         };

@@ -868,3 +868,61 @@ engine_test!(selection_is_anchored_by_id_across_polls, || {
 
     assert_eq!(h.state().selected[0].as_deref(), Some("old-batch"));
 });
+
+engine_test!(first_run_splash_dwells_until_the_beat_ends, || {
+    let mock = happy_mock();
+    let mut h = {
+        let mock = std::sync::Arc::new(mock);
+        let client = Client::new(std::sync::Arc::clone(&mock));
+        let (tx, rx) = tokio::sync::mpsc::channel(1024);
+        let mut engine = Engine::new(client, tx, false); // splash enabled
+        engine.state.first_run = true;
+        engine.start();
+        let mut h = Harness { engine, rx, mock };
+        h.pump();
+        h
+    };
+
+    // data has landed, but the dwell hasn't elapsed → still on the splash
+    assert!(h.state().first_data);
+    assert_eq!(h.state().screen, Screen::Splash);
+
+    // once the dwell has elapsed, the next check dissolves it
+    h.engine.state.started_at = Instant::now() - Duration::from_secs(2);
+    h.engine.maybe_dissolve_splash();
+    assert_eq!(h.state().screen, Screen::Main);
+});
+
+engine_test!(non_first_run_splash_dissolves_the_moment_data_lands, || {
+    let mock = happy_mock();
+    let mut h = {
+        let mock = std::sync::Arc::new(mock);
+        let client = Client::new(std::sync::Arc::clone(&mock));
+        let (tx, rx) = tokio::sync::mpsc::channel(1024);
+        let mut engine = Engine::new(client, tx, false); // splash enabled, not first run
+        engine.start();
+        let mut h = Harness { engine, rx, mock };
+        h.pump();
+        h
+    };
+    h.engine.maybe_dissolve_splash();
+    assert_eq!(h.state().screen, Screen::Main);
+});
+
+engine_test!(any_key_skips_the_first_run_dwell, || {
+    let mock = happy_mock();
+    let mut h = {
+        let mock = std::sync::Arc::new(mock);
+        let client = Client::new(std::sync::Arc::clone(&mock));
+        let (tx, rx) = tokio::sync::mpsc::channel(1024);
+        let mut engine = Engine::new(client, tx, false);
+        engine.state.first_run = true;
+        engine.start();
+        let mut h = Harness { engine, rx, mock };
+        h.pump();
+        h
+    };
+    assert_eq!(h.state().screen, Screen::Splash);
+    h.engine.dispatch(Command::SkipSplash);
+    assert_eq!(h.state().screen, Screen::Main);
+});
