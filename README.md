@@ -30,7 +30,7 @@ delegates to `brew upgrade bushel` for Homebrew installs.
 bushel
 ```
 
-- `1`/`2`/`3` or `Tab` — switch between containers, images, and volumes
+- `1`/`2`/`3` or `Tab` — expand containers, images, or volumes (the others stay on the rail)
 - `j`/`k`, `g`/`G` — move; `/` fuzzy filter; `Enter` focus the detail pane
 - `space` — action menu for the selection (destructive actions tinted, always confirmed with the exact `container …` command about to run)
 - `s` start/stop · `r` restart · `K` kill · `d` delete · `P` prune · `e` exec a shell
