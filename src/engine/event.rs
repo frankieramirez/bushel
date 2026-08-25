@@ -93,6 +93,8 @@ pub enum Command {
     ScrollDetail(isize),
     /// Absolute detail scroll (used when a scroll-up interrupts follow).
     SetDetailScroll(u16),
+    /// Absolute help-cheatsheet scroll; keymap clamps it to the drawn content.
+    SetHelpScroll(u16),
     ScrollTop,
     ScrollBottom,
     ToggleFollow,

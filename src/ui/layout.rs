@@ -3,7 +3,7 @@
 
 use ratatui::layout::{Constraint, Layout, Rect};
 
-use crate::engine::state::{AppState, Pane};
+use crate::engine::state::{ActionItem, AppState, Pane, UiAction};
 
 /// Body width under this stacks the rail above the detail pane.
 pub const STACK_BELOW: u16 = 80;
@@ -15,6 +15,13 @@ pub const TIGHT_RAIL_H: u16 = 16;
 /// table headers, no tab row, no status cluster.
 const FLOOR_H: u16 = 22;
 const FLOOR_W: u16 = 60;
+/// The action sheet never grows past this, at any size.
+pub const SHEET_MAX_H: u16 = 9;
+/// Destructive confirm is a fixed 7-row box; a long command wraps inside it.
+pub const CONFIRM_W: u16 = 48;
+pub const CONFIRM_H: u16 = 7;
+/// Help is one cheatsheet, clamped to the frame. At 55×20 that is full-screen.
+pub const HELP_W: u16 = 68;
 
 /// The facts layout needs from app state. Banner rows are filled in by draw.
 #[derive(Clone, Copy, Debug)]
@@ -134,6 +141,71 @@ impl LayoutPlan {
             zoom: false,
         }
     }
+}
+
+/// What the bottom sheet lists, given every action valid for the selection.
+///
+/// At the floor the sheet omits the detail-tab jumps (`l`/`i`) — the tab row is
+/// not drawn there either, and the sheet has no rows to spare. The sheet does
+/// not scroll, so anywhere else the list would still overflow the 9-row cap the
+/// jumps are trimmed from the end rather than let the cap clip a row. Both keys
+/// keep working; they just stop spending a row they cannot afford.
+pub fn sheet_items(mut actions: Vec<ActionItem>, floor: bool) -> Vec<ActionItem> {
+    let is_jump = |a: &ActionItem| matches!(a.action, UiAction::LogsTab | UiAction::InspectTab);
+    if floor {
+        actions.retain(|a| !is_jump(a));
+        return actions;
+    }
+    while actions.len() as u16 + 2 > SHEET_MAX_H {
+        match actions.iter().rposition(is_jump) {
+            Some(i) => {
+                actions.remove(i);
+            }
+            None => break,
+        }
+    }
+    actions
+}
+
+/// The action menu's bottom sheet: it hugs the floor of the *detail pane* and
+/// never covers the rail. Height `min(n + 2, 9)`, further clamped to the pane.
+pub fn action_sheet(detail: Rect, items: u16) -> Rect {
+    let h = (items + 2).min(SHEET_MAX_H).min(detail.height);
+    Rect {
+        x: detail.x,
+        y: detail.bottom().saturating_sub(h),
+        width: detail.width,
+        height: h,
+    }
+}
+
+/// The destructive confirm modal: fixed size, centered, clamped to the frame.
+pub fn confirm_modal(frame: Rect) -> Rect {
+    centered(frame, CONFIRM_W, CONFIRM_H)
+}
+
+/// The help cheatsheet: one box, centered, clamped to the frame. It grows to
+/// fit `content_rows` and stops at the frame; the content scrolls past that.
+pub fn help_modal(frame: Rect, content_rows: u16) -> Rect {
+    centered(frame, HELP_W, content_rows.saturating_add(2))
+}
+
+/// Columns the cheatsheet has to wrap into. Width is a frame decision, so it is
+/// known before the content it will hold.
+pub fn help_inner_width(frame: Rect) -> u16 {
+    HELP_W.min(frame.width).saturating_sub(2)
+}
+
+/// Centered rect, clamped to `area` on both axes.
+pub fn centered(area: Rect, w: u16, h: u16) -> Rect {
+    let w = w.min(area.width);
+    let h = h.min(area.height);
+    Rect::new(
+        area.x + (area.width - w) / 2,
+        area.y + (area.height - h) / 2,
+        w,
+        h,
+    )
 }
 
 fn stacked_rail_height(body_h: u16, active_rows: u16) -> u16 {
@@ -267,6 +339,124 @@ mod tests {
         assert!(plan(100, 22).floor);
         assert!(plan(60, 30).floor);
         assert!(!plan(61, 23).floor);
+    }
+
+    /// Every action a running container offers, in menu order.
+    fn running_actions() -> Vec<ActionItem> {
+        let mut s = AppState::new(true);
+        s.containers.push(crate::engine::state::ContainerEntry {
+            id: "web".into(),
+            image: "alpine:latest".into(),
+            state: "running".into(),
+            created: None,
+            cpus: None,
+            volumes: vec![],
+            cpu_percent: None,
+            mem_bytes: None,
+            telemetry: std::collections::VecDeque::new(),
+            pending: None,
+        });
+        s.clamp_selection();
+        s.available_actions()
+    }
+
+    fn keys(items: &[ActionItem]) -> Vec<char> {
+        items.iter().map(|i| i.key).collect()
+    }
+
+    #[test]
+    fn the_floor_sheet_omits_the_detail_tab_jumps() {
+        let items = sheet_items(running_actions(), true);
+        assert_eq!(keys(&items), vec!['s', 'r', 'K', 'd', 'P', 'e']);
+        assert!(items.len() as u16 + 2 <= SHEET_MAX_H);
+    }
+
+    #[test]
+    fn off_the_floor_the_sheet_trims_only_what_does_not_fit() {
+        // 8 actions would need 10 rows; trimming the last jump lands it on 9
+        let all = running_actions();
+        assert_eq!(all.len(), 8);
+        let items = sheet_items(all, false);
+        assert_eq!(items.len() as u16 + 2, SHEET_MAX_H);
+        assert!(
+            keys(&items).contains(&'l'),
+            "trim from the end: logs survives"
+        );
+        assert!(!keys(&items).contains(&'i'));
+    }
+
+    #[test]
+    fn off_the_floor_a_sheet_that_fits_keeps_every_jump() {
+        let mut s = AppState::new(true);
+        s.containers.push(crate::engine::state::ContainerEntry {
+            id: "old".into(),
+            image: "alpine:latest".into(),
+            state: "stopped".into(),
+            created: None,
+            cpus: None,
+            volumes: vec![],
+            cpu_percent: None,
+            mem_bytes: None,
+            telemetry: std::collections::VecDeque::new(),
+            pending: None,
+        });
+        s.clamp_selection();
+        let items = sheet_items(s.available_actions(), false);
+        assert_eq!(keys(&items), vec!['s', 'd', 'P', 'i']);
+    }
+
+    #[test]
+    fn action_sheet_hugs_the_detail_floor_and_never_the_rail() {
+        let p = plan(55, 20);
+        // 6 items at the floor (l/i omitted) → 8 rows
+        let sheet = super::action_sheet(p.detail, 6);
+        assert_eq!(sheet.height, 8);
+        assert_eq!(sheet.bottom(), p.detail.bottom());
+        assert_eq!(sheet.x, p.detail.x);
+        assert_eq!(sheet.width, p.detail.width);
+        assert!(
+            sheet.y >= p.rail.bottom(),
+            "sheet {sheet:?} must not cover the rail {:?}",
+            p.rail
+        );
+    }
+
+    #[test]
+    fn action_sheet_height_is_n_plus_2_capped_at_9() {
+        let detail = Rect::new(0, 0, 60, 30);
+        assert_eq!(super::action_sheet(detail, 1).height, 3);
+        assert_eq!(super::action_sheet(detail, 6).height, 8);
+        assert_eq!(super::action_sheet(detail, 7).height, SHEET_MAX_H);
+        assert_eq!(super::action_sheet(detail, 40).height, SHEET_MAX_H);
+    }
+
+    #[test]
+    fn action_sheet_never_outgrows_a_short_detail_pane() {
+        let detail = Rect::new(0, 10, 60, 4);
+        let sheet = super::action_sheet(detail, 8);
+        assert_eq!(sheet.height, 4);
+        assert_eq!(sheet.y, detail.y);
+    }
+
+    #[test]
+    fn confirm_modal_is_a_fixed_7_row_box_centered_in_the_frame() {
+        let a = super::confirm_modal(Rect::new(0, 0, 55, 20));
+        assert_eq!((a.width, a.height), (CONFIRM_W, CONFIRM_H));
+        let wide = super::confirm_modal(Rect::new(0, 0, 200, 50));
+        assert_eq!((wide.width, wide.height), (CONFIRM_W, CONFIRM_H));
+        assert_eq!(wide.x, (200 - CONFIRM_W) / 2);
+        assert_eq!(wide.y, (50 - CONFIRM_H) / 2);
+    }
+
+    #[test]
+    fn help_clamps_to_the_frame_and_is_full_screen_at_the_floor() {
+        // 24 content rows will not fit in a 20-row frame: clamp, then scroll
+        let floor = super::help_modal(Rect::new(0, 0, 55, 20), 24);
+        assert_eq!((floor.width, floor.height), (55, 20));
+        assert_eq!((floor.x, floor.y), (0, 0));
+        // roomy: the box grows to the content and stops at HELP_W
+        let roomy = super::help_modal(Rect::new(0, 0, 200, 50), 21);
+        assert_eq!((roomy.width, roomy.height), (HELP_W, 23));
     }
 
     #[test]

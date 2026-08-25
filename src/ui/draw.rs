@@ -16,7 +16,7 @@ use ratatui::widgets::{
 use crate::engine::state::{
     AppState, ContainerEntry, DetailTab, Focus, Overlay, Pane, Screen, TelemetrySample,
 };
-use crate::ui::layout::{LayoutFacts, LayoutPlan};
+use crate::ui::layout::{self, LayoutFacts, LayoutPlan, centered};
 use crate::ui::log_view;
 use crate::ui::theme::{ACCENT_A, ACCENT_B, Theme, human_size};
 
@@ -45,12 +45,8 @@ pub struct DrawInfo {
     pub header: Rect,
     pub bottom: Rect,
     pub log_scroll: u16,
-}
-
-pub fn centered(area: Rect, w: u16, h: u16) -> Rect {
-    let x = area.x + area.width.saturating_sub(w) / 2;
-    let y = area.y + area.height.saturating_sub(h) / 2;
-    Rect::new(x, y, w.min(area.width), h.min(area.height))
+    /// Largest useful `help_scroll` at the last draw; 0 when help fits or is closed.
+    pub help_max_scroll: u16,
 }
 
 fn spinner_frame() -> usize {
@@ -229,9 +225,9 @@ fn draw_main(frame: &mut Frame, state: &AppState, th: &Theme, info: &mut DrawInf
     draw_bottom_bar(frame, state, th, plan.bottom, plan.floor);
 
     match &state.overlay {
-        Overlay::ActionMenu => draw_action_menu(frame, state, th, plan.body, plan.bottom),
+        Overlay::ActionMenu => draw_action_menu(frame, state, th, plan.detail, plan.floor),
         Overlay::Confirm { command, .. } => draw_confirm(frame, th, command),
-        Overlay::Help => draw_help(frame, th),
+        Overlay::Help => info.help_max_scroll = draw_help(frame, state, th),
         Overlay::MessageLog => draw_message_log(frame, state, th),
         Overlay::PullInput { text } => draw_pull_input(frame, th, text),
         Overlay::None => {}
@@ -941,15 +937,11 @@ fn draw_bottom_bar(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, 
     );
 }
 
-fn draw_action_menu(frame: &mut Frame, state: &AppState, th: &Theme, body: Rect, bottom: Rect) {
-    let items = state.available_actions();
-    let h = items.len() as u16 + 2;
-    let area = Rect {
-        x: body.x,
-        y: bottom.y.saturating_sub(h),
-        width: body.width,
-        height: h,
-    };
+/// The action menu: a bottom sheet on the *detail pane*, never the rail.
+/// Height `min(n + 2, 9)`; `layout::sheet_items` decides what fits in it.
+fn draw_action_menu(frame: &mut Frame, state: &AppState, th: &Theme, detail: Rect, floor: bool) {
+    let items = layout::sheet_items(state.available_actions(), floor);
+    let area = layout::action_sheet(detail, items.len() as u16);
     frame.render_widget(Clear, area);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -984,32 +976,63 @@ fn draw_action_menu(frame: &mut Frame, state: &AppState, th: &Theme, body: Rect,
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+/// Destructive confirm: a fixed 7-row centered modal. A command longer than the
+/// box wraps inside it; the box never grows to fit the command.
 fn draw_confirm(frame: &mut Frame, th: &Theme, command: &str) {
-    let w = (command.chars().count() as u16 + 8)
-        .max(44)
-        .min(frame.area().width);
-    let area = centered(frame.area(), w, 7);
+    let area = layout::confirm_modal(frame.area());
     frame.render_widget(Clear, area);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(th.red()))
         .title(Span::styled(" confirm ", Style::new().fg(th.red()).bold()))
         .style(Style::new().bg(th.panel()));
-    let lines = vec![
-        Line::raw(""),
-        Line::from(vec![
-            Span::raw("  $ "),
-            Span::styled(command.to_string(), Style::new().fg(th.yellow()).bold()),
-        ]),
-        Line::raw(""),
-        Line::from(vec![
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height == 0 {
+        return;
+    }
+    // The keys row is pinned to the floor of the box so a wrapped command can
+    // never push it out; the command wraps into the rows above it.
+    let keys = Rect {
+        y: inner.bottom() - 1,
+        height: 1,
+        ..inner
+    };
+    let body = Rect {
+        height: inner.height - 1,
+        ..inner
+    };
+    let mut rows = log_view::split_line(command, true, body.width.saturating_sub(4));
+    // A command preview must never look complete when it is not: past the last
+    // row the box can hold, say so.
+    let room = body.height as usize;
+    let mut lines = Vec::new();
+    if rows.len() < room {
+        lines.push(Line::raw("")); // breathing room, but only when it is spare
+    } else if rows.len() > room {
+        rows.truncate(room);
+        if let Some(last) = rows.last_mut() {
+            last.pop();
+            last.push('…');
+        }
+    }
+    for (i, row) in rows.iter().enumerate() {
+        let prefix = if i == 0 { "  $ " } else { "    " };
+        lines.push(Line::from(vec![
+            Span::raw(prefix),
+            Span::styled(row.clone(), Style::new().fg(th.yellow()).bold()),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines), body);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
             Span::styled("  [y]", Style::new().fg(th.accent()).bold()),
             Span::raw(" run   "),
             Span::styled("[esc]", Style::new().fg(th.dim()).bold()),
             Span::raw(" cancel"),
-        ]),
-    ];
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+        ])),
+        keys,
+    );
 }
 
 fn draw_pull_input(frame: &mut Frame, th: &Theme, text: &str) {
@@ -1036,51 +1059,100 @@ fn draw_pull_input(frame: &mut Frame, th: &Theme, text: &str) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-fn draw_help(frame: &mut Frame, th: &Theme) {
-    let area = centered(frame.area(), 68, 23);
+/// One row of the cheatsheet: a group heading (`keys` empty) or a binding.
+struct HelpRow {
+    keys: &'static str,
+    desc: &'static str,
+}
+
+const fn head(desc: &'static str) -> HelpRow {
+    HelpRow { keys: "", desc }
+}
+const fn bind(keys: &'static str, desc: &'static str) -> HelpRow {
+    HelpRow { keys, desc }
+}
+
+/// One cheatsheet at every size — no shorter floor variant.
+const HELP: &[HelpRow] = &[
+    head(" global"),
+    bind("1/2/3, tab", "expand pane (containers / images / volumes)"),
+    bind("f", "zoom focused side"),
+    bind("m", "message log"),
+    bind("b", "dismiss version banner"),
+    bind("q", "quit"),
+    head(" list"),
+    bind("j/k g/G", "move / top / bottom"),
+    bind("/", "fuzzy filter (esc clears)"),
+    bind("enter", "focus detail pane"),
+    bind("space", "action menu"),
+    bind(
+        "s r K d P e",
+        "start/stop · restart · kill · delete · prune · exec",
+    ),
+    bind("u", "pull image (images pane)"),
+    head(" detail"),
+    bind("l / i", "logs / inspect tab (containers)"),
+    bind("F", "toggle follow"),
+    bind("w", "toggle wrap / truncated"),
+    bind("pgup/pgdn", "scroll without switching focus"),
+    bind("esc", "back to list"),
+];
+
+/// Width of the key column, including its leading pad.
+const HELP_KEY_COL: u16 = 14;
+
+/// Render the cheatsheet to `width` columns, wrapping long descriptions under
+/// the key column so nothing is clipped horizontally.
+fn help_lines(th: &Theme, width: u16) -> Vec<Line<'static>> {
+    let desc_w = width.saturating_sub(HELP_KEY_COL).max(8);
+    let mut out = Vec::new();
+    for row in HELP {
+        if row.keys.is_empty() {
+            out.push(Line::from(Span::styled(
+                row.desc.to_string(),
+                Style::new().fg(th.accent()).bold(),
+            )));
+            continue;
+        }
+        for (i, chunk) in log_view::split_line(row.desc, true, desc_w)
+            .into_iter()
+            .enumerate()
+        {
+            let key = if i == 0 { row.keys } else { "" };
+            out.push(Line::from(vec![
+                Span::styled(format!("  {key:<12}"), Style::new().fg(th.yellow())),
+                Span::raw(chunk),
+            ]));
+        }
+    }
+    out
+}
+
+/// Help is one cheatsheet clamped to the frame; it scrolls when it overflows.
+/// At 55×20 that clamp is effectively full-screen. Returns the largest useful
+/// scroll offset so key handling can stop at the end of the list.
+fn draw_help(frame: &mut Frame, state: &AppState, th: &Theme) -> u16 {
+    let full = frame.area();
+    // Measure against the width the box will actually have.
+    let lines = help_lines(th, layout::help_inner_width(full));
+    let area = layout::help_modal(full, lines.len() as u16);
     frame.render_widget(Clear, area);
-    let block = Block::bordered()
+    let visible = area.height.saturating_sub(2);
+    let max_scroll = (lines.len() as u16).saturating_sub(visible);
+    let scroll = state.help_scroll.min(max_scroll);
+    let mut block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(th.accent()))
         .title(Line::from(th.gradient_spans(" keys ", true)))
         .style(Style::new().bg(th.panel()));
-    let g = |s: &str| {
-        Line::from(Span::styled(
-            s.to_string(),
-            Style::new().fg(th.accent()).bold(),
-        ))
-    };
-    let k = |key: &str, desc: &str| {
-        Line::from(vec![
-            Span::styled(format!("  {key:<12}"), Style::new().fg(th.yellow())),
-            Span::raw(desc.to_string()),
-        ])
-    };
-    let lines = vec![
-        g(" global"),
-        k("1/2/3, tab", "expand pane (containers / images / volumes)"),
-        k("f", "zoom focused side"),
-        k("m", "message log"),
-        k("b", "dismiss version banner"),
-        k("q", "quit"),
-        g(" list"),
-        k("j/k g/G", "move / top / bottom"),
-        k("/", "fuzzy filter (esc clears)"),
-        k("enter", "focus detail pane"),
-        k("space", "action menu"),
-        k(
-            "s r K d P e",
-            "start/stop · restart · kill · delete · prune · exec",
-        ),
-        k("u", "pull image (images pane)"),
-        g(" detail"),
-        k("l / i", "logs / inspect tab (containers)"),
-        k("F", "toggle follow"),
-        k("w", "toggle wrap / truncated"),
-        k("pgup/pgdn", "scroll without switching focus"),
-        k("esc", "back to list"),
-    ];
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    if max_scroll > 0 {
+        block = block.title_bottom(Line::from(Span::styled(
+            " j/k scroll · esc close ",
+            Style::new().fg(th.dim()),
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), area);
+    max_scroll
 }
 
 fn draw_message_log(frame: &mut Frame, state: &AppState, th: &Theme) {
@@ -1467,5 +1539,219 @@ mod tests {
         assert!(view.contains("33.0%"), "{view}");
         assert!(view.contains("42%"), "{view}");
         assert!(!view.contains("mem  12.4"), "{view}");
+    }
+
+    fn confirming(command: &str) -> AppState {
+        let mut s = sample();
+        s.overlay = Overlay::Confirm {
+            command: command.into(),
+            action: crate::engine::ActionKind::DeleteContainer,
+            target: "qtest".into(),
+        };
+        s
+    }
+
+    /// Row and column where the box drawn with `title` starts.
+    fn box_origin(frame: &str, title: &str) -> (usize, usize) {
+        let head = format!("╭ {title} ");
+        frame
+            .lines()
+            .enumerate()
+            .find_map(|(y, line)| line.find(&head).map(|b| (y, line[..b].chars().count())))
+            .unwrap_or_else(|| panic!("no {title} box in:\n{frame}"))
+    }
+
+    /// The box drawn with `title`, as its rows of characters: from its top
+    /// border to its bottom one, clipped to its own left/right columns.
+    fn box_rows(frame: &str, title: &str) -> Vec<Vec<char>> {
+        let grid: Vec<Vec<char>> = frame.lines().map(|l| l.chars().collect()).collect();
+        let (top, left) = box_origin(frame, title);
+        let right = grid[top][left..]
+            .iter()
+            .position(|&c| c == '╮')
+            .map(|i| left + i)
+            .unwrap_or_else(|| panic!("unterminated {title} box in:\n{frame}"));
+        let mut rows = Vec::new();
+        for row in grid.into_iter().skip(top) {
+            let slice: Vec<char> = row.into_iter().skip(left).take(right - left + 1).collect();
+            let last = slice.last().copied();
+            rows.push(slice);
+            if last == Some('╯') {
+                break;
+            }
+        }
+        rows
+    }
+
+    #[test]
+    fn confirm_is_a_7_row_box_that_wraps_a_long_command_instead_of_growing() {
+        let short = render(80, 24, &confirming("container delete qtest"));
+        let long = render(
+            80,
+            24,
+            &confirming("container delete a-really-long-container-name-that-overflows"),
+        );
+        for frame in [&short, &long] {
+            let rows = box_rows(frame, "confirm");
+            assert_eq!(rows.len(), 7, "confirm must stay 7 rows:\n{frame}");
+            assert_eq!(
+                rows[0].len(),
+                48,
+                "confirm must not grow to the command:\n{frame}"
+            );
+            // y runs, esc cancels — and the keys row survives the wrap
+            assert!(frame.contains("[y] run"), "{frame}");
+            assert!(frame.contains("[esc] cancel"), "{frame}");
+        }
+        // the overflow wraps inside the box rather than being clipped away
+        assert!(
+            long.contains("container delete a-really-long-container-n"),
+            "{long}"
+        );
+        assert!(long.contains("ame-that-overflows"), "{long}");
+    }
+
+    #[test]
+    fn confirm_still_fits_and_wraps_at_the_floor() {
+        let frame = render(
+            55,
+            20,
+            &confirming("container delete a-really-long-container-name-that-overflows"),
+        );
+        assert_eq!(box_rows(&frame, "confirm").len(), 7, "{frame}");
+        assert!(frame.contains("ame-that-overflows"), "{frame}");
+        assert!(frame.contains("[y] run"), "{frame}");
+    }
+
+    #[test]
+    fn the_action_sheet_covers_the_detail_pane_only_never_the_rail() {
+        let mut s = sample();
+        s.overlay = Overlay::ActionMenu;
+        for (w, h) in [(55u16, 20u16), (100, 30), (200, 50)] {
+            let frame = render(w, h, &s);
+            let sheet = box_rows(&frame, "actions");
+            let (sheet_y, sheet_x) = box_origin(&frame, "actions");
+            let (_, detail_x) = box_origin(&frame, "detail");
+            assert!(
+                sheet.len() as u16 <= layout::SHEET_MAX_H,
+                "sheet is capped at 9 rows at {w}x{h}:\n{frame}"
+            );
+            // it starts where the detail pane starts and is as wide as it
+            assert_eq!(sheet_x, detail_x, "{w}x{h}:\n{frame}");
+            assert_eq!(
+                sheet[0].len(),
+                box_rows(&frame, "detail")[0].len(),
+                "{w}x{h}:\n{frame}"
+            );
+            // the rail's counts are still legible under the sheet
+            assert!(frame.contains("containers 1"), "{w}x{h}:\n{frame}");
+            assert!(frame.contains("images 1"), "{w}x{h}:\n{frame}");
+            assert!(frame.contains("volumes 1"), "{w}x{h}:\n{frame}");
+            // stacked, the rail sits above the detail pane: the sheet must
+            // start below every rail row
+            if w < 80 {
+                let rail_bottom = box_origin(&frame, "detail").0;
+                assert!(
+                    sheet_y >= rail_bottom,
+                    "sheet at row {sheet_y} covers the rail (detail starts at {rail_bottom}):\n{frame}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_floor_sheet_omits_l_and_i_but_lists_every_other_action() {
+        let mut s = sample();
+        s.overlay = Overlay::ActionMenu;
+        let frame = render(55, 20, &s);
+        for label in [
+            "stop",
+            "restart",
+            "kill",
+            "delete",
+            "prune stopped",
+            "exec shell",
+        ] {
+            assert!(frame.contains(label), "missing {label}:\n{frame}");
+        }
+        assert!(!frame.contains("  l  logs"), "{frame}");
+        assert!(!frame.contains("  i  inspect"), "{frame}");
+    }
+
+    #[test]
+    fn off_the_floor_the_sheet_still_lists_the_logs_jump() {
+        let mut s = sample();
+        s.overlay = Overlay::ActionMenu;
+        let frame = render(100, 30, &s);
+        assert!(frame.contains("l  logs"), "{frame}");
+        // the tab row carries inspect's key where the sheet cannot
+        assert!(frame.contains("Inspect [i]"), "{frame}");
+    }
+
+    #[test]
+    fn a_command_too_long_even_to_wrap_is_marked_not_silently_cut() {
+        let long = "container delete ".to_string() + &"x".repeat(400);
+        let frame = render(80, 24, &confirming(&long));
+        assert_eq!(box_rows(&frame, "confirm").len(), 7, "{frame}");
+        assert!(frame.contains('…'), "clipped preview must say so:\n{frame}");
+    }
+
+    #[test]
+    fn help_is_one_cheatsheet_clamped_to_the_frame_and_scrollable() {
+        let floor = render(55, 20, &{
+            let mut s = sample();
+            s.overlay = Overlay::Help;
+            s
+        });
+        // effectively full-screen at the floor
+        let rows = box_rows(&floor, "keys");
+        assert_eq!(rows.len(), 20, "{floor}");
+        assert_eq!(rows[0].len(), 55, "{floor}");
+        // long descriptions wrap to the pane width instead of being clipped
+        assert!(
+            floor.contains("expand pane (containers / images / volu"),
+            "{floor}"
+        );
+        assert!(floor.contains("mes)"), "{floor}");
+        assert!(floor.contains("j/k scroll"), "{floor}");
+        // the same list, scrolled: the tail is reachable
+        let mut scrolled = sample();
+        scrolled.overlay = Overlay::Help;
+        scrolled.help_scroll = 6;
+        let end = render(55, 20, &scrolled);
+        assert!(end.contains("back to list"), "{end}");
+        assert!(
+            !end.contains("dismiss version banner") || end.contains("esc"),
+            "{end}"
+        );
+        // roomy: one box, no scroll hint, whole list visible
+        let mut roomy = sample();
+        roomy.overlay = Overlay::Help;
+        let wide = render(100, 30, &roomy);
+        assert!(
+            wide.contains("expand pane (containers / images / volumes)"),
+            "{wide}"
+        );
+        assert!(wide.contains("back to list"), "{wide}");
+        assert!(!wide.contains("j/k scroll"), "{wide}");
+    }
+
+    #[test]
+    fn pull_input_and_the_message_log_are_unchanged_at_the_floor() {
+        let mut pull = sample();
+        pull.pane = Pane::Images;
+        pull.overlay = Overlay::PullInput {
+            text: "alpine".into(),
+        };
+        let frame = render(55, 20, &pull);
+        assert!(frame.contains("pull image"), "{frame}");
+        assert!(frame.contains("reference: alpine"), "{frame}");
+
+        let mut log = sample();
+        log.messages.push("boom: it failed".into());
+        log.overlay = Overlay::MessageLog;
+        let frame = render(55, 20, &log);
+        assert!(frame.contains("message log"), "{frame}");
+        assert!(frame.contains("boom: it failed"), "{frame}");
     }
 }

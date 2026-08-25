@@ -198,7 +198,7 @@ async fn main() -> std::io::Result<()> {
             key = keys.next() => {
                 match key {
                     Some(Ok(Event::Key(k))) if k.kind == KeyEventKind::Press => {
-                        for cmd in keymap::map_key(&engine.state, k, ui.last_info.log_scroll) {
+                        for cmd in keymap::map_key(&engine.state, k, &ui.last_info) {
                             engine.dispatch(cmd);
                         }
                     }

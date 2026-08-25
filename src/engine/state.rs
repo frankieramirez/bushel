@@ -297,6 +297,8 @@ pub struct AppState {
     pub filter_input: bool,
 
     pub detail_scroll: u16,
+    /// Scroll offset of the help cheatsheet; reset each time help opens.
+    pub help_scroll: u16,
     /// Auto-scroll the logs tab to the newest line.
     pub follow: bool,
     /// Logs wrap: a raw line occupies as many display rows as the pane width
@@ -357,6 +359,7 @@ impl AppState {
             zoom: false,
             detail_tab: DetailTab::Logs,
             overlay: Overlay::None,
+            help_scroll: 0,
             quit: false,
             containers: Vec::new(),
             images: Vec::new(),
@@ -1016,5 +1019,13 @@ mod tests {
         assert_eq!(s.selected[0].as_deref(), Some("old-batch"));
         s.pane = Pane::Images;
         assert_eq!(s.selected[1].as_deref(), Some("postgres:16"));
+    }
+
+    #[test]
+    fn the_detail_tab_jumps_stay_bound_as_direct_keys() {
+        let s = sample();
+        // direct action keys resolve off available_actions, not the sheet
+        assert!(s.available_actions().iter().any(|i| i.key == 'l'));
+        assert!(s.available_actions().iter().any(|i| i.key == 'i'));
     }
 }
