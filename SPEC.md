@@ -82,6 +82,7 @@ v0.1 layout and motion: [UX skeleton](https://github.com/frankieramirez/bushel/i
 - **Detail tabs**: containers get `Logs | Inspect` (Logs default, `l`/`i` jump); images and volumes have Inspect only. At the 55×20 floor the tab row is not drawn; the keys still work.
 - **Focus**: `Enter` moves focus into the detail pane, `Esc` returns; PgUp/PgDn scroll the detail pane without switching focus.
 - **55×20 floor**: 1-row header, no table headers, no tab row, no status cluster. Nothing else is dropped.
+- **Below the floor**: nothing refuses to draw. Where the body is too short for the rail's usual rows and the detail pane's four, the two split what there is: the rail keeps one row per pane where it can, under that the active panel takes what the rail has, and the detail pane always keeps a row.
 
 ### Telemetry strip ([Prototype: the telemetry strip](https://github.com/frankieramirez/bushel/issues/17), glyphs from [Research: telemetry rendering](https://github.com/frankieramirez/bushel/issues/16))
 

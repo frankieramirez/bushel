@@ -23,7 +23,7 @@ One of the three entity views (containers, images, volumes). All three are prese
 _Avoid_: tab, screen, page
 
 **Rail**:
-The always-present column of all three panes. Inactive panes collapse; the active panel takes the flexible space.
+The always-present column of all three panes. Inactive panes collapse; the active panel takes the flexible space. Below three rows there is not one row per pane to give, and the active panel takes what the rail has.
 _Avoid_: sidebar, stack
 
 **Active panel**:
