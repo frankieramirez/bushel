@@ -884,19 +884,6 @@ impl AppState {
 
     // ---- action menu -------------------------------------------------------------
 
-    /// Actions the bottom sheet lists. The sheet does not scroll, so when it
-    /// cannot show everything — always at the floor, and anywhere the list would
-    /// overflow the 9-row cap — it drops the detail-tab jumps (`l`/`i`) first.
-    /// Those keys still work; they just stop spending a row.
-    pub fn menu_actions(&self, floor: bool) -> Vec<ActionItem> {
-        let mut items = self.available_actions();
-        let overflows = items.len() as u16 + 2 > crate::ui::layout::SHEET_MAX_H;
-        if floor || overflows {
-            items.retain(|i| !matches!(i.action, UiAction::LogsTab | UiAction::InspectTab));
-        }
-        items
-    }
-
     /// Valid actions for the current selection, in menu order.
     pub fn available_actions(&self) -> Vec<ActionItem> {
         match self.pane {
@@ -1035,38 +1022,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sheet_omits_the_detail_tab_jumps_when_it_cannot_show_everything() {
-        let s = sample();
-        let floor: Vec<char> = s.menu_actions(true).iter().map(|i| i.key).collect();
-        assert!(!floor.contains(&'l'), "{floor:?}");
-        assert!(!floor.contains(&'i'), "{floor:?}");
-        // everything else survives, in order
-        assert_eq!(floor, vec!['s', 'r', 'K', 'd', 'P', 'e']);
-        // and the sheet still fits its 9-row cap
-        assert!(floor.len() as u16 + 2 <= crate::ui::layout::SHEET_MAX_H);
-        // off the floor it drops them too rather than let the cap clip a row
-        assert_eq!(
-            s.menu_actions(false)
-                .iter()
-                .map(|i| i.key)
-                .collect::<Vec<_>>(),
-            floor
-        );
-    }
-
-    #[test]
-    fn a_short_sheet_keeps_the_detail_tab_jumps_off_the_floor() {
-        let mut s = sample();
-        s.containers[0].state = "stopped".into();
-        let keys: Vec<char> = s.menu_actions(false).iter().map(|i| i.key).collect();
-        assert_eq!(keys, vec!['s', 'd', 'P', 'i']);
-        // at the floor they go regardless
-        let floor: Vec<char> = s.menu_actions(true).iter().map(|i| i.key).collect();
-        assert_eq!(floor, vec!['s', 'd', 'P']);
-    }
-
-    #[test]
-    fn omitting_l_and_i_from_the_sheet_leaves_the_keys_bound() {
+    fn the_detail_tab_jumps_stay_bound_as_direct_keys() {
         let s = sample();
         // direct action keys resolve off available_actions, not the sheet
         assert!(s.available_actions().iter().any(|i| i.key == 'l'));

@@ -938,14 +938,10 @@ fn draw_bottom_bar(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, 
 }
 
 /// The action menu: a bottom sheet on the *detail pane*, never the rail.
-/// Height `min(n + 2, 9)`. At the floor the sheet omits the detail-tab jumps
-/// (`l`/`i`) — those keys still work, they just do not spend a row.
+/// Height `min(n + 2, 9)`; `layout::sheet_items` decides what fits in it.
 fn draw_action_menu(frame: &mut Frame, state: &AppState, th: &Theme, detail: Rect, floor: bool) {
-    let items = state.menu_actions(floor);
+    let items = layout::sheet_items(state.available_actions(), floor);
     let area = layout::action_sheet(detail, items.len() as u16);
-    if area.height < 3 {
-        return;
-    }
     frame.render_widget(Clear, area);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -1006,8 +1002,20 @@ fn draw_confirm(frame: &mut Frame, th: &Theme, command: &str) {
         height: inner.height - 1,
         ..inner
     };
-    let rows = log_view::split_line(command, true, body.width.saturating_sub(4));
-    let mut lines = vec![Line::raw("")];
+    let mut rows = log_view::split_line(command, true, body.width.saturating_sub(4));
+    // A command preview must never look complete when it is not: past the last
+    // row the box can hold, say so.
+    let room = body.height as usize;
+    let mut lines = Vec::new();
+    if rows.len() < room {
+        lines.push(Line::raw("")); // breathing room, but only when it is spare
+    } else if rows.len() > room {
+        rows.truncate(room);
+        if let Some(last) = rows.last_mut() {
+            last.pop();
+            last.push('…');
+        }
+    }
     for (i, row) in rows.iter().enumerate() {
         let prefix = if i == 0 { "  $ " } else { "    " };
         lines.push(Line::from(vec![
@@ -1126,8 +1134,7 @@ fn help_lines(th: &Theme, width: u16) -> Vec<Line<'static>> {
 fn draw_help(frame: &mut Frame, state: &AppState, th: &Theme) -> u16 {
     let full = frame.area();
     // Measure against the width the box will actually have.
-    let inner_w = layout::HELP_W.min(full.width).saturating_sub(2);
-    let lines = help_lines(th, inner_w);
+    let lines = help_lines(th, layout::help_inner_width(full));
     let area = layout::help_modal(full, lines.len() as u16);
     frame.render_widget(Clear, area);
     let visible = area.height.saturating_sub(2);
@@ -1558,15 +1565,7 @@ mod tests {
     /// border to its bottom one, clipped to its own left/right columns.
     fn box_rows(frame: &str, title: &str) -> Vec<Vec<char>> {
         let grid: Vec<Vec<char>> = frame.lines().map(|l| l.chars().collect()).collect();
-        let head = format!("╭ {title} ");
-        let (top, left) = grid
-            .iter()
-            .enumerate()
-            .find_map(|(y, row)| {
-                let line: String = row.iter().collect();
-                line.find(&head).map(|b| (y, line[..b].chars().count()))
-            })
-            .unwrap_or_else(|| panic!("no {title} box in:\n{frame}"));
+        let (top, left) = box_origin(frame, title);
         let right = grid[top][left..]
             .iter()
             .position(|&c| c == '╮')
@@ -1677,6 +1676,24 @@ mod tests {
         }
         assert!(!frame.contains("  l  logs"), "{frame}");
         assert!(!frame.contains("  i  inspect"), "{frame}");
+    }
+
+    #[test]
+    fn off_the_floor_the_sheet_still_lists_the_logs_jump() {
+        let mut s = sample();
+        s.overlay = Overlay::ActionMenu;
+        let frame = render(100, 30, &s);
+        assert!(frame.contains("l  logs"), "{frame}");
+        // the tab row carries inspect's key where the sheet cannot
+        assert!(frame.contains("Inspect [i]"), "{frame}");
+    }
+
+    #[test]
+    fn a_command_too_long_even_to_wrap_is_marked_not_silently_cut() {
+        let long = "container delete ".to_string() + &"x".repeat(400);
+        let frame = render(80, 24, &confirming(&long));
+        assert_eq!(box_rows(&frame, "confirm").len(), 7, "{frame}");
+        assert!(frame.contains('…'), "clipped preview must say so:\n{frame}");
     }
 
     #[test]

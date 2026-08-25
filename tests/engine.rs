@@ -1180,12 +1180,8 @@ engine_test!(keys_the_floor_sheet_omits_still_work_from_the_sheet, || {
     let mut h = Harness::started(happy_mock());
     h.engine.dispatch(Command::OpenActionMenu);
     // the floor sheet does not list l/i …
-    assert!(
-        !h.state()
-            .menu_actions(true)
-            .iter()
-            .any(|i| i.key == 'l' || i.key == 'i')
-    );
+    let listed = bushel::ui::layout::sheet_items(h.state().available_actions(), true);
+    assert!(!listed.iter().any(|i| i.key == 'l' || i.key == 'i'));
     // … but the key still switches the detail tab from inside the sheet
     h.engine.dispatch(Command::OverlayChar('i'));
     assert_eq!(h.state().detail_tab, DetailTab::Inspect);

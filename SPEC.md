@@ -99,7 +99,7 @@ Persistent at the top of the detail pane for the selected container, on both Log
 ### Confirmations, errors, resilience ([Grilling: overlay behavior at the 55×20 floor](https://github.com/frankieramirez/bushel/issues/20))
 
 - Destructive confirm: centered 7-row modal, the exact command as its body, `y` runs / `Esc` cancels. If the command is longer than the box, wrap it inside; do not grow the modal.
-- **Action menu**: a bottom sheet on the detail pane only, never the rail. Height `min(n+2, 9)`. The sheet does not scroll, so when it cannot list everything it drops `l`/`i` first — always at the floor, and anywhere else the list would overflow the cap. Those keys still work. Direct action keys unchanged.
+- **Action menu**: a bottom sheet on the detail pane only, never the rail. Height `min(n+2, 9)`. Omit `l`/`i` from the floor sheet (keys still work). The sheet does not scroll, so where the list would still overflow the cap the tab jumps are trimmed from the end rather than let the cap clip a row. Direct action keys unchanged.
 - **Help**: one cheatsheet, clamp to the frame, scroll (`j/k`, PgUp/PgDn, `g/G`) if it overflows. At 55×20 that is effectively full-screen. No second shorter list. Long descriptions wrap to the pane width.
 - Errors: status-bar one-liner with the stderr gist; a **message log** scrollback (`m`) holds full stderr. No modal-per-error.
 - Service down: full-screen takeover with one-key start, output streamed. Version mismatch: dismissible banner, never blocking.
