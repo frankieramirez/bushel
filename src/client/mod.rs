@@ -474,8 +474,7 @@ mod real_capture_tests {
         // Captured 2026-08-24: mount `type` is a tagged object ({"virtiofs":{}},
         // {"volume":{"name":…}}), not a string, and a volume's name lives in the
         // tag body — the source is the host path to its volume.img.
-        let list: Vec<ContainerJson> =
-            serde_json::from_slice(&real("ls_mounts.json")).unwrap();
+        let list: Vec<ContainerJson> = serde_json::from_slice(&real("ls_mounts.json")).unwrap();
         let fixture = list.iter().find(|c| c.id == "bushel-fixture").unwrap();
         assert_eq!(
             fixture.volume_sources().collect::<Vec<_>>(),
