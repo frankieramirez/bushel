@@ -1,3 +1,6 @@
 /target
 prototype-layout/target
 prototype-layout/
+
+# Emitted by `cargo run --example docs-json`, and by dist as a release artifact.
+/docs.json

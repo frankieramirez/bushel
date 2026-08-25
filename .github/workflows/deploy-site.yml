@@ -1,0 +1,35 @@
+# Called by the release workflow as a post-announce job (see dist-workspace.toml).
+# Cloudflare Pages only rebuilds on a push to the *site* repo, so cutting a
+# bushel release would otherwise leave bushel.sh serving the previous release's
+# docs.json and a stale version chip. This is the nudge that closes that loop.
+name: Deploy site
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  deploy-site:
+    name: rebuild bushel.sh
+    runs-on: "ubuntu-22.04"
+    # A prerelease is not what `releases/latest/download/docs.json` resolves to,
+    # so rebuilding for one would republish the same content. Matches the guard
+    # dist puts on the Homebrew publish.
+    if: ${{ !fromJson(inputs.plan).announcement_is_prerelease }}
+    steps:
+      - name: Trigger the Cloudflare Pages deploy hook
+        env:
+          DEPLOY_HOOK: ${{ secrets.BUSHEL_SH_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$DEPLOY_HOOK" ]; then
+            echo "::error::BUSHEL_SH_DEPLOY_HOOK is not set; bushel.sh will serve the previous release's docs.json until someone redeploys it."
+            exit 1
+          fi
+          # --fail-with-body so a 4xx from Cloudflare fails the job loudly
+          # rather than being swallowed as a successful curl.
+          curl --fail-with-body -sS -X POST "$DEPLOY_HOOK"
+          echo
+          echo "bushel.sh rebuild queued"
