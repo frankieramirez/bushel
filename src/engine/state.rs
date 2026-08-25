@@ -57,6 +57,18 @@ impl Pane {
             Pane::Volumes => "volumes",
         }
     }
+
+    pub fn key(self) -> char {
+        match self {
+            Pane::Containers => '1',
+            Pane::Images => '2',
+            Pane::Volumes => '3',
+        }
+    }
+
+    pub fn all() -> [Pane; 3] {
+        [Pane::Containers, Pane::Images, Pane::Volumes]
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -287,6 +299,9 @@ pub struct AppState {
     pub detail_scroll: u16,
     /// Auto-scroll the logs tab to the newest line.
     pub follow: bool,
+    /// Logs wrap: a raw line occupies as many display rows as the pane width
+    /// requires. On by default. Opposite of truncated. Session-global.
+    pub wrap: bool,
     /// Ring buffer of log lines for the followed container.
     pub log_lines: Vec<String>,
     /// Which container the log buffer belongs to.
@@ -351,6 +366,7 @@ impl AppState {
             filter_input: false,
             detail_scroll: 0,
             follow: true,
+            wrap: true,
             log_lines: Vec::new(),
             log_owner: None,
             logs_loading: false,
@@ -419,10 +435,21 @@ impl AppState {
     }
 
     /// Indexes (into the entity vec) of rows matching the filter, display order.
-    /// Containers are stored pre-sorted (running first, then name).
+    /// Containers are stored pre-sorted (running first, then name). Filter hits
+    /// only the active panel; inactive rail panes stay unfiltered.
     pub fn visible_rows(&self) -> Vec<usize> {
-        let f = &self.filter;
-        match self.pane {
+        self.visible_rows_for(self.pane)
+    }
+
+    /// Visible rows for a rail pane. The filter applies only when `pane` is the
+    /// active panel.
+    pub fn visible_rows_for(&self, pane: Pane) -> Vec<usize> {
+        let f = if pane == self.pane {
+            self.filter.as_str()
+        } else {
+            ""
+        };
+        match pane {
             Pane::Containers => self
                 .containers
                 .iter()
@@ -447,6 +474,14 @@ impl AppState {
         }
     }
 
+    pub fn pane_len(&self, pane: Pane) -> usize {
+        match pane {
+            Pane::Containers => self.containers.len(),
+            Pane::Images => self.images.len(),
+            Pane::Volumes => self.volumes.len(),
+        }
+    }
+
     fn entity_id(&self, pane: Pane, idx: usize) -> Option<String> {
         match pane {
             Pane::Containers => self.containers.get(idx).map(|c| c.id.clone()),
@@ -457,10 +492,14 @@ impl AppState {
 
     /// Position of the selection within `visible_rows()`, if any.
     pub fn selected_pos(&self) -> Option<usize> {
-        let want = self.selected[self.pane.index()].as_deref()?;
-        self.visible_rows()
+        self.selected_pos_for(self.pane)
+    }
+
+    pub fn selected_pos_for(&self, pane: Pane) -> Option<usize> {
+        let want = self.selected[pane.index()].as_deref()?;
+        self.visible_rows_for(pane)
             .iter()
-            .position(|&i| self.entity_id(self.pane, i).as_deref() == Some(want))
+            .position(|&i| self.entity_id(pane, i).as_deref() == Some(want))
     }
 
     /// Index into the entity vec of the current selection.
@@ -886,5 +925,96 @@ impl AppState {
                 items
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample() -> AppState {
+        let mut s = AppState::new(true);
+        s.containers.extend([
+            ContainerEntry {
+                id: "qtest".into(),
+                image: "alpine:latest".into(),
+                state: "running".into(),
+                created: None,
+                cpus: None,
+                volumes: vec![],
+                cpu_percent: None,
+                mem_bytes: None,
+                telemetry: VecDeque::new(),
+                pending: None,
+            },
+            ContainerEntry {
+                id: "old-batch".into(),
+                image: "alpine:latest".into(),
+                state: "stopped".into(),
+                created: None,
+                cpus: None,
+                volumes: vec![],
+                cpu_percent: None,
+                mem_bytes: None,
+                telemetry: VecDeque::new(),
+                pending: None,
+            },
+        ]);
+        s.images.extend([
+            ImageEntry {
+                reference: "alpine:latest".into(),
+                size: Some(8),
+                created: None,
+                pending: None,
+            },
+            ImageEntry {
+                reference: "postgres:16".into(),
+                size: Some(16),
+                created: None,
+                pending: None,
+            },
+        ]);
+        s.volumes.extend([
+            VolumeEntry {
+                name: "qvol".into(),
+                in_use_by: vec![],
+                created: None,
+                pending: None,
+            },
+            VolumeEntry {
+                name: "scratch".into(),
+                in_use_by: vec![],
+                created: None,
+                pending: None,
+            },
+        ]);
+        s.clamp_selection();
+        s
+    }
+
+    #[test]
+    fn filter_hits_only_the_active_panel() {
+        let mut s = sample();
+        s.filter = "olbtc".into(); // subsequence of "old-batch"
+        let containers = s.visible_rows_for(Pane::Containers);
+        assert_eq!(containers.len(), 1);
+        assert_eq!(s.containers[containers[0]].id, "old-batch");
+        // inactive rail panes stay unfiltered
+        assert_eq!(s.visible_rows_for(Pane::Images).len(), 2);
+        assert_eq!(s.visible_rows_for(Pane::Volumes).len(), 2);
+    }
+
+    #[test]
+    fn each_pane_remembers_its_selection() {
+        let mut s = sample();
+        s.move_selection(1);
+        assert_eq!(s.selected[0].as_deref(), Some("old-batch"));
+        s.pane = Pane::Images;
+        s.move_selection(1);
+        assert_eq!(s.selected[1].as_deref(), Some("postgres:16"));
+        s.pane = Pane::Containers;
+        assert_eq!(s.selected[0].as_deref(), Some("old-batch"));
+        s.pane = Pane::Images;
+        assert_eq!(s.selected[1].as_deref(), Some("postgres:16"));
     }
 }

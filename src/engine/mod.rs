@@ -740,6 +740,7 @@ impl<R: Runner> Engine<R> {
             Command::ScrollTop => self.state.detail_scroll = 0,
             Command::ScrollBottom => self.state.detail_scroll = u16::MAX,
             Command::ToggleFollow => self.state.follow = !self.state.follow,
+            Command::ToggleWrap => self.state.wrap = !self.state.wrap,
             Command::StartService => self.start_service(),
         }
     }

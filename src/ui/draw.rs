@@ -16,6 +16,8 @@ use ratatui::widgets::{
 use crate::engine::state::{
     AppState, ContainerEntry, DetailTab, Focus, Overlay, Pane, Screen, TelemetrySample,
 };
+use crate::ui::layout::{LayoutFacts, LayoutPlan};
+use crate::ui::log_view;
 use crate::ui::theme::{ACCENT_A, ACCENT_B, Theme, human_size};
 
 /// 3-row strip: cpu spark, mem spark, net+disk text.
@@ -36,7 +38,7 @@ const ASCII_BARS: symbols::bar::Set = symbols::bar::Set {
 };
 
 /// Values draw computes that the rest of the UI needs (effect areas, the
-/// effective log scroll for follow-aware key handling).
+/// raw log line at the top of the viewport for follow-aware key handling).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DrawInfo {
     pub body: Rect,
@@ -192,41 +194,42 @@ fn draw_main(frame: &mut Frame, state: &AppState, th: &Theme, info: &mut DrawInf
         )));
     }
 
-    let mut constraints = vec![Constraint::Length(2)];
-    for _ in &banners {
-        constraints.push(Constraint::Length(1));
-    }
-    constraints.push(Constraint::Min(3));
-    constraints.push(Constraint::Length(1));
-    let chunks = Layout::vertical(constraints).split(frame.area());
-    let header = chunks[0];
-    let body = chunks[chunks.len() - 2];
-    let bottom = chunks[chunks.len() - 1];
-    info.header = header;
-    info.body = body;
-    info.bottom = bottom;
+    let mut facts = LayoutFacts::from_state(state);
+    facts.banner_rows = banners.len() as u16;
+    let plan = LayoutPlan::compute(frame.area(), facts);
+    info.header = plan.header;
+    info.body = plan.body;
+    info.bottom = plan.bottom;
 
-    draw_header(frame, state, th, header);
+    draw_header(frame, state, th, plan.header);
     for (i, b) in banners.into_iter().enumerate() {
-        frame.render_widget(Paragraph::new(b), chunks[1 + i]);
+        let area = Rect {
+            y: plan.banners.y + i as u16,
+            height: 1,
+            ..plan.banners
+        };
+        frame.render_widget(Paragraph::new(b), area);
     }
 
-    if state.zoom {
+    if plan.zoom {
         match state.focus {
-            Focus::List => draw_list(frame, state, th, body),
-            Focus::Detail => draw_detail(frame, state, th, body, info),
+            Focus::List => {
+                draw_list_pane(frame, state, th, state.pane, plan.body, false, plan.floor)
+            }
+            Focus::Detail => draw_detail(frame, state, th, plan.body, info, plan.floor),
         }
     } else {
-        let halves = Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)])
-            .split(body);
-        draw_list(frame, state, th, halves[0]);
-        draw_detail(frame, state, th, halves[1], info);
+        for (i, pane) in Pane::all().into_iter().enumerate() {
+            let tight = pane != state.pane && plan.tight;
+            draw_list_pane(frame, state, th, pane, plan.slots[i], tight, plan.floor);
+        }
+        draw_detail(frame, state, th, plan.detail, info, plan.floor);
     }
 
-    draw_bottom_bar(frame, state, th, bottom);
+    draw_bottom_bar(frame, state, th, plan.bottom, plan.floor);
 
     match &state.overlay {
-        Overlay::ActionMenu => draw_action_menu(frame, state, th, body, bottom),
+        Overlay::ActionMenu => draw_action_menu(frame, state, th, plan.body, plan.bottom),
         Overlay::Confirm { command, .. } => draw_confirm(frame, th, command),
         Overlay::Help => draw_help(frame, th),
         Overlay::MessageLog => draw_message_log(frame, state, th),
@@ -238,23 +241,19 @@ fn draw_main(frame: &mut Frame, state: &AppState, th: &Theme, info: &mut DrawInf
 fn draw_header(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect) {
     let mut spans = th.gradient_spans(" bushel ", true);
     spans.push(Span::raw("  "));
-    for (i, (label, pane)) in [
-        ("1 containers", Pane::Containers),
-        ("2 images", Pane::Images),
-        ("3 volumes", Pane::Volumes),
-    ]
-    .iter()
-    .enumerate()
-    {
+    for (i, pane) in Pane::all().into_iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled("  ·  ", Style::new().fg(th.dim())));
         }
-        let style = if state.pane == *pane {
+        let style = if state.pane == pane {
             Style::new().fg(th.accent()).bold().underlined()
         } else {
             Style::new().fg(th.dim())
         };
-        spans.push(Span::styled(*label, style));
+        spans.push(Span::styled(
+            format!("{} {}", pane.key(), pane.title()),
+            style,
+        ));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -297,9 +296,46 @@ fn pending_span(th: &Theme, pending: bool) -> Option<Span<'static>> {
     })
 }
 
-fn draw_list(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect) {
-    let focused = state.focus == Focus::List;
-    let filter_line = if state.filter_input || !state.filter.is_empty() {
+fn draw_list_pane(
+    frame: &mut Frame,
+    state: &AppState,
+    th: &Theme,
+    pane: Pane,
+    area: Rect,
+    tight: bool,
+    floor: bool,
+) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let active = pane == state.pane;
+    let focused = active && state.focus == Focus::List;
+    let n = state.pane_len(pane);
+
+    if tight {
+        let style_key = if active {
+            Style::new().fg(th.accent()).bold()
+        } else {
+            Style::new().fg(th.dim())
+        };
+        let style_rest = if active {
+            Style::new().fg(th.text())
+        } else {
+            Style::new().fg(th.dim())
+        };
+        let line = Line::from(vec![
+            Span::styled(format!(" {} ", pane.key()), style_key),
+            Span::styled(pane.title().to_string(), style_rest),
+            Span::styled(format!(" {n}"), Style::new().fg(th.text())),
+        ]);
+        frame.render_widget(
+            Paragraph::new(line).style(Style::new().bg(th.panel())),
+            area,
+        );
+        return;
+    }
+
+    let filter_line = if active && (state.filter_input || !state.filter.is_empty()) {
         let cursor = if state.filter_input { "▏" } else { "" };
         Some(Line::from(vec![
             Span::styled(" /", Style::new().fg(th.accent()).bold()),
@@ -311,14 +347,19 @@ fn draw_list(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect) {
     } else {
         None
     };
-    let block = pane_block(th, state.pane.title(), focused, filter_line);
+    let title = format!("{} {n}", pane.title());
+    let block = pane_block(th, &title, focused, filter_line);
+    let inner_h = area.height.saturating_sub(2);
+    let show_header = !floor && inner_h >= 6 && active;
 
-    let rows_idx = state.visible_rows();
-    let sel = state.selected_pos().unwrap_or(0);
+    let rows_idx = state.visible_rows_for(pane);
+    let sel = state.selected_pos_for(pane).unwrap_or(0);
     let highlight = Style::new().bg(th.highlight()).fg(th.text()).bold();
 
-    let (header, rows, widths): (Row, Vec<Row>, Vec<Constraint>) = match state.pane {
+    let (header, rows, widths): (Row, Vec<Row>, Vec<Constraint>) = match pane {
         Pane::Containers => {
+            let wide = area.width >= 50 && active;
+            let mid = area.width >= 32 && active;
             let rows = rows_idx
                 .iter()
                 .map(|&i| {
@@ -346,28 +387,58 @@ fn draw_list(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect) {
                         .mem_bytes
                         .map(|v| format!("{:>5.0}M", v as f64 / 1_000_000.0))
                         .unwrap_or_else(|| "-".into());
-                    Row::new(vec![
-                        Cell::from(Line::from(name_spans)),
-                        Cell::from(cpu),
-                        Cell::from(mem),
-                        Cell::from(c.image.clone()),
-                    ])
-                    .style(style)
+                    if wide {
+                        Row::new(vec![
+                            Cell::from(Line::from(name_spans)),
+                            Cell::from(cpu),
+                            Cell::from(mem),
+                            Cell::from(c.image.clone()),
+                        ])
+                        .style(style)
+                    } else if mid {
+                        Row::new(vec![
+                            Cell::from(Line::from(name_spans)),
+                            Cell::from(cpu),
+                            Cell::from(mem),
+                        ])
+                        .style(style)
+                    } else {
+                        Row::new(vec![Cell::from(Line::from(name_spans))]).style(style)
+                    }
                 })
                 .collect();
-            (
-                Row::new(vec!["name", "cpu", "mem", "image"])
-                    .style(Style::new().fg(th.dim()).bold()),
-                rows,
-                vec![
-                    Constraint::Min(18),
-                    Constraint::Length(6),
-                    Constraint::Length(7),
-                    Constraint::Min(12),
-                ],
-            )
+            if wide {
+                (
+                    Row::new(vec!["name", "cpu", "mem", "image"])
+                        .style(Style::new().fg(th.dim()).bold()),
+                    rows,
+                    vec![
+                        Constraint::Min(14),
+                        Constraint::Length(6),
+                        Constraint::Length(7),
+                        Constraint::Min(10),
+                    ],
+                )
+            } else if mid {
+                (
+                    Row::new(vec!["name", "cpu", "mem"]).style(Style::new().fg(th.dim()).bold()),
+                    rows,
+                    vec![
+                        Constraint::Min(14),
+                        Constraint::Length(6),
+                        Constraint::Length(7),
+                    ],
+                )
+            } else {
+                (
+                    Row::new(vec!["name"]).style(Style::new().fg(th.dim()).bold()),
+                    rows,
+                    vec![Constraint::Min(10)],
+                )
+            }
         }
         Pane::Images => {
+            let with_size = active && area.width >= 40;
             let rows = rows_idx
                 .iter()
                 .map(|&i| {
@@ -377,15 +448,27 @@ fn draw_list(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect) {
                         spans.push(s);
                     }
                     spans.push(Span::raw(im.reference.clone()));
-                    let size = im.size.map(human_size).unwrap_or_else(|| "-".into());
-                    Row::new(vec![Cell::from(Line::from(spans)), Cell::from(size)])
+                    if with_size {
+                        let size = im.size.map(human_size).unwrap_or_else(|| "-".into());
+                        Row::new(vec![Cell::from(Line::from(spans)), Cell::from(size)])
+                    } else {
+                        Row::new(vec![Cell::from(Line::from(spans))])
+                    }
                 })
                 .collect();
-            (
-                Row::new(vec!["reference", "size"]).style(Style::new().fg(th.dim()).bold()),
-                rows,
-                vec![Constraint::Min(24), Constraint::Length(9)],
-            )
+            if with_size {
+                (
+                    Row::new(vec!["reference", "size"]).style(Style::new().fg(th.dim()).bold()),
+                    rows,
+                    vec![Constraint::Min(16), Constraint::Length(9)],
+                )
+            } else {
+                (
+                    Row::new(vec!["reference"]).style(Style::new().fg(th.dim()).bold()),
+                    rows,
+                    vec![Constraint::Min(10)],
+                )
+            }
         }
         Pane::Volumes => {
             let rows = rows_idx
@@ -411,22 +494,34 @@ fn draw_list(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect) {
             (
                 Row::new(vec!["name", ""]).style(Style::new().fg(th.dim()).bold()),
                 rows,
-                vec![Constraint::Min(20), Constraint::Length(8)],
+                vec![Constraint::Min(10), Constraint::Length(8)],
             )
         }
     };
 
-    let table = Table::new(rows, widths)
-        .header(header)
+    let mut table = Table::new(rows, widths)
         .block(block)
         .row_highlight_style(highlight)
         .highlight_symbol("");
+    if show_header {
+        table = table.header(header);
+    }
     let mut ts = TableState::default();
     ts.select((!rows_idx.is_empty()).then_some(sel));
     frame.render_stateful_widget(table, area, &mut ts);
 }
 
-fn draw_detail(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, info: &mut DrawInfo) {
+fn draw_detail(
+    frame: &mut Frame,
+    state: &AppState,
+    th: &Theme,
+    area: Rect,
+    info: &mut DrawInfo,
+    floor: bool,
+) {
+    if area.height == 0 {
+        return;
+    }
     let focused = state.focus == Focus::Detail;
     let block = pane_block(th, "detail", focused, None);
     let inner = block.inner(area);
@@ -467,11 +562,9 @@ fn draw_detail(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, info
     }
 
     let mut content_area = inner;
-    if state.pane == Pane::Containers {
-        let tabs_area = Rect {
-            height: 1.min(inner.height),
-            ..inner
-        };
+    let show_tabs = !floor && state.pane == Pane::Containers && inner.height >= 6;
+    if show_tabs {
+        let tabs_area = Rect { height: 1, ..inner };
         content_area = Rect {
             y: inner.y + 1,
             height: inner.height.saturating_sub(1),
@@ -522,6 +615,7 @@ fn draw_detail(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, info
     let (lines, follow_tail): (Vec<Line>, bool) = match state.pane {
         Pane::Containers => match state.detail_tab {
             DetailTab::Logs => {
+                let width = content_area.width;
                 let mut l: Vec<Line> = Vec::new();
                 if state.logs_loading {
                     l.push(Line::from(Span::styled(
@@ -529,12 +623,12 @@ fn draw_detail(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, info
                         Style::new().fg(th.dim()),
                     )));
                 }
-                l.extend(
-                    state
-                        .log_lines
-                        .iter()
-                        .map(|s| Line::from(Span::styled(s.clone(), Style::new().fg(th.text())))),
-                );
+                let log_style = Style::new().fg(th.text());
+                for s in &state.log_lines {
+                    for row in log_view::split_line(s, state.wrap, width) {
+                        l.push(Line::from(Span::styled(row, log_style)));
+                    }
+                }
                 let marker = if state.selected_container().is_none() {
                     Span::styled("── no selection ──", Style::new().fg(th.dim()))
                 } else if state.log_owner.is_none() {
@@ -544,10 +638,13 @@ fn draw_detail(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, info
                     )
                 } else if state.follow_ended {
                     Span::styled("── follow ended ──", Style::new().fg(th.dim()))
-                } else if state.follow {
-                    Span::styled("── following (F to pause) ──", Style::new().fg(th.accent()))
                 } else {
-                    Span::styled("── paused (F to follow) ──", Style::new().fg(th.dim()))
+                    let style = if state.follow {
+                        Style::new().fg(th.accent())
+                    } else {
+                        Style::new().fg(th.dim())
+                    };
+                    Span::styled(log_view::follow_marker(state.follow, state.wrap), style)
                 };
                 l.push(Line::from(marker));
                 (l, state.follow)
@@ -567,18 +664,36 @@ fn draw_detail(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, info
         ),
     };
 
-    let total = lines.len() as u16;
-    let h = content_area.height;
-    let scroll =
-        if state.pane == Pane::Containers && state.detail_tab == DetailTab::Logs && follow_tail {
-            total.saturating_sub(h)
+    let logs = state.pane == Pane::Containers && state.detail_tab == DetailTab::Logs;
+    if logs {
+        // Wrap can push display rows past u16::MAX; Paragraph::scroll is (u16, u16),
+        // so rebase onto a pane-height window and render that at scroll 0.
+        let total = lines.len();
+        let h = content_area.height as usize;
+        let width = content_area.width;
+        let prefix = if state.logs_loading { 1 } else { 0 };
+        let scroll = if follow_tail {
+            log_view::tail_scroll(total, h)
         } else {
-            state.detail_scroll.min(total.saturating_sub(1))
+            let raw = (state.detail_scroll as usize).min(state.log_lines.len().saturating_sub(1));
+            log_view::display_start(&state.log_lines, state.wrap, width, raw)
+                .saturating_add(prefix)
+                .min(total.saturating_sub(1))
         };
-    if state.pane == Pane::Containers && state.detail_tab == DetailTab::Logs {
-        info.log_scroll = scroll;
+        info.log_scroll = log_view::raw_index(
+            &state.log_lines,
+            state.wrap,
+            width,
+            scroll.saturating_sub(prefix),
+        ) as u16;
+        let end = scroll.saturating_add(h).min(total);
+        let window = lines.get(scroll..end).unwrap_or(&[]).to_vec();
+        frame.render_widget(Paragraph::new(window), content_area);
+    } else {
+        let total = lines.len() as u16;
+        let scroll = state.detail_scroll.min(total.saturating_sub(1));
+        frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), content_area);
     }
-    frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), content_area);
 }
 
 fn bar_set(ascii: bool) -> symbols::bar::Set<'static> {
@@ -743,7 +858,7 @@ fn draw_strip(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect) {
     draw_rates(frame, th, rows[2], cur, running);
 }
 
-fn draw_bottom_bar(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect) {
+fn draw_bottom_bar(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, floor: bool) {
     let hint_style = Style::new().fg(th.dim());
     let key_style = Style::new().fg(th.accent());
     let mut spans: Vec<Span> = Vec::new();
@@ -765,29 +880,31 @@ fn draw_bottom_bar(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect) 
             Style::new().fg(th.yellow()),
         ));
     } else {
-        let hints: &[(&str, &str)] = match (state.focus, state.pane) {
-            (Focus::List, Pane::Containers) => &[
+        let hints: &[(&str, &str)] = if floor {
+            &[
+                ("1/2/3", "expand"),
+                ("j/k", "move"),
+                ("/", "filter"),
+                ("f", "zoom"),
+            ]
+        } else if state.focus == Focus::List {
+            &[
+                ("1/2/3", "expand"),
                 ("j/k", "move"),
                 ("enter", "focus"),
-                ("space", "actions"),
                 ("/", "filter"),
                 ("f", "zoom"),
                 ("?", "help"),
-            ],
-            (Focus::List, _) => &[
-                ("j/k", "move"),
-                ("enter", "focus"),
-                ("space", "actions"),
-                ("/", "filter"),
-                ("?", "help"),
-            ],
-            (Focus::Detail, _) => &[
+            ]
+        } else {
+            &[
                 ("j/k", "scroll"),
                 ("l/i", "tabs"),
                 ("F", "follow"),
+                ("w", log_view::wrap_hint(state.wrap)),
                 ("esc", "back"),
                 ("f", "zoom"),
-            ],
+            ]
         };
         for (k, v) in hints {
             spans.push(Span::styled(format!(" {k}"), key_style));
@@ -795,24 +912,29 @@ fn draw_bottom_bar(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect) 
         }
     }
 
-    // status cluster, right-aligned: service dot, CLI version, poll spinner
-    let service_up = state.screen != Screen::ServiceDown;
-    let version = state.cli_version.clone().unwrap_or_else(|| "?".into());
-    let sp = th.spinner(spinner_frame());
-    let cluster_len = format!("● service  container {version}  {sp} ")
-        .chars()
-        .count();
-    let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-    let pad = (area.width as usize).saturating_sub(used + cluster_len);
-    spans.push(Span::raw(" ".repeat(pad)));
-    spans.push(Span::styled(
-        if th.ascii { "* " } else { "● " },
-        Style::new().fg(if service_up { th.accent() } else { th.red() }),
-    ));
-    spans.push(Span::styled("service  ", hint_style));
-    spans.push(Span::styled(format!("container {version}  "), hint_style));
-    spans.push(Span::styled(sp.to_string(), Style::new().fg(th.dim())));
-    spans.push(Span::raw(" "));
+    // status cluster, right-aligned: service dot, CLI version, poll spinner.
+    // Dropped at the 55×20 floor and whenever it wouldn't fit.
+    if !floor {
+        let service_up = state.screen != Screen::ServiceDown;
+        let version = state.cli_version.clone().unwrap_or_else(|| "?".into());
+        let sp = th.spinner(spinner_frame());
+        let cluster_len = format!("● service  container {version}  {sp} ")
+            .chars()
+            .count();
+        let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+        if (area.width as usize) > used + cluster_len {
+            let pad = (area.width as usize).saturating_sub(used + cluster_len);
+            spans.push(Span::raw(" ".repeat(pad)));
+            spans.push(Span::styled(
+                if th.ascii { "* " } else { "● " },
+                Style::new().fg(if service_up { th.accent() } else { th.red() }),
+            ));
+            spans.push(Span::styled("service  ", hint_style));
+            spans.push(Span::styled(format!("container {version}  "), hint_style));
+            spans.push(Span::styled(sp.to_string(), Style::new().fg(th.dim())));
+            spans.push(Span::raw(" "));
+        }
+    }
     frame.render_widget(
         Paragraph::new(Line::from(spans)).style(Style::new().bg(th.bar())),
         area,
@@ -915,7 +1037,7 @@ fn draw_pull_input(frame: &mut Frame, th: &Theme, text: &str) {
 }
 
 fn draw_help(frame: &mut Frame, th: &Theme) {
-    let area = centered(frame.area(), 68, 22);
+    let area = centered(frame.area(), 68, 23);
     frame.render_widget(Clear, area);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -936,8 +1058,8 @@ fn draw_help(frame: &mut Frame, th: &Theme) {
     };
     let lines = vec![
         g(" global"),
-        k("1/2/3, tab", "switch pane (containers / images / volumes)"),
-        k("f", "zoom focused pane"),
+        k("1/2/3, tab", "expand pane (containers / images / volumes)"),
+        k("f", "zoom focused side"),
         k("m", "message log"),
         k("b", "dismiss version banner"),
         k("q", "quit"),
@@ -954,6 +1076,7 @@ fn draw_help(frame: &mut Frame, th: &Theme) {
         g(" detail"),
         k("l / i", "logs / inspect tab (containers)"),
         k("F", "toggle follow"),
+        k("w", "toggle wrap / truncated"),
         k("pgup/pgdn", "scroll without switching focus"),
         k("esc", "back to list"),
     ];
@@ -998,27 +1121,43 @@ fn draw_message_log(frame: &mut Frame, state: &AppState, th: &Theme) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::state::ContainerEntry;
+    use crate::engine::state::{ContainerEntry, ImageEntry, VolumeEntry};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use std::collections::VecDeque;
 
-    fn entry(running: bool, telemetry: VecDeque<TelemetrySample>) -> ContainerEntry {
-        ContainerEntry {
+    fn sample() -> AppState {
+        let mut s = AppState::new(true);
+        s.cli_version = Some("1.2.0".into());
+        s.containers.push(ContainerEntry {
             id: "qtest".into(),
             image: "alpine:latest".into(),
-            state: if running { "running" } else { "stopped" }.into(),
+            state: "running".into(),
             created: None,
             cpus: None,
             volumes: vec![],
-            cpu_percent: Some(12.4),
-            mem_bytes: Some(48_000_000),
-            telemetry,
+            cpu_percent: Some(1.2),
+            mem_bytes: Some(4_000_000),
+            telemetry: VecDeque::new(),
             pending: None,
-        }
+        });
+        s.images.push(ImageEntry {
+            reference: "alpine:latest".into(),
+            size: Some(8_300_000),
+            created: None,
+            pending: None,
+        });
+        s.volumes.push(VolumeEntry {
+            name: "qvol".into(),
+            in_use_by: vec!["qtest".into()],
+            created: None,
+            pending: None,
+        });
+        s.clamp_selection();
+        s
     }
 
-    fn sample() -> TelemetrySample {
+    fn tel_sample() -> TelemetrySample {
         TelemetrySample {
             cpu: Some(33.0),
             mem: Some(42.0),
@@ -1029,44 +1168,175 @@ mod tests {
         }
     }
 
-    fn state_with(pane: Pane, tab: DetailTab, telemetry: VecDeque<TelemetrySample>) -> AppState {
-        let mut s = AppState::new(true);
-        s.screen = Screen::Main;
-        s.pane = pane;
-        s.detail_tab = tab;
-        s.containers.push(entry(true, telemetry));
-        s.clamp_selection();
+    fn with_telemetry(mut s: AppState, tel: VecDeque<TelemetrySample>) -> AppState {
+        s.containers[0].telemetry = tel;
+        s.containers[0].cpu_percent = Some(12.4);
+        s.containers[0].mem_bytes = Some(48_000_000);
         s
     }
 
-    fn render(state: &AppState, w: u16, h: u16, ascii: bool) -> String {
-        let backend = TestBackend::new(w, h);
-        let mut terminal = Terminal::new(backend).unwrap();
+    fn render_theme(w: u16, h: u16, state: &AppState, ascii: bool) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         let th = Theme {
             truecolor: false,
             ascii,
         };
         terminal
             .draw(|f| {
-                let _ = draw(f, state, &th);
+                draw(f, state, &th);
             })
             .unwrap();
-        terminal.backend().to_string()
+        buffer_to_string(terminal.backend().buffer())
+    }
+
+    fn render(w: u16, h: u16, state: &AppState) -> String {
+        render_theme(w, h, state, true)
+    }
+
+    fn buffer_to_string(buf: &ratatui::buffer::Buffer) -> String {
+        let area = buf.area();
+        let mut out = String::new();
+        for y in area.top()..area.bottom() {
+            let mut line = String::new();
+            for x in area.left()..area.right() {
+                let cell = &buf[(x, y)];
+                let sym = cell.symbol();
+                if !sym.is_empty() {
+                    line.push_str(sym);
+                }
+            }
+            out.push_str(line.trim_end());
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn floor_55x20_keeps_all_three_panes_and_drops_floor_chrome() {
+        let frame = render(55, 20, &sample());
+        // header is a pane switcher without counts
+        let header = frame.lines().next().unwrap();
+        assert!(header.contains("1 containers"), "{header}");
+        assert!(header.contains("2 images"), "{header}");
+        assert!(header.contains("3 volumes"), "{header}");
+        assert!(
+            !header.contains("containers 1"),
+            "counts live on the rail, not the header: {header}"
+        );
+        // 1-row header: the next line is the rail, not a blank
+        let second = frame.lines().nth(1).unwrap();
+        assert!(
+            second.contains("containers"),
+            "expected 1-row header then rail, got {second:?}"
+        );
+        // counts live on the rail; inactive panes collapse to 1-row title+count
+        assert!(frame.contains("containers 1"), "{frame}");
+        assert!(frame.contains("2 images 1"), "{frame}");
+        assert!(frame.contains("3 volumes 1"), "{frame}");
+        // no table headers, no Logs/Inspect tab row, no status cluster
+        assert!(
+            !frame.contains("name"),
+            "no table headers at the floor: {frame}"
+        );
+        assert!(!frame.contains("Logs [l]"), "{frame}");
+        assert!(!frame.contains("Inspect [i]"), "{frame}");
+        assert!(!frame.contains("service"), "{frame}");
+        // strip still fits (height decision): 3-row just leaves 4 log rows
+        assert!(frame.contains("cpu"), "{frame}");
+        assert!(frame.contains("dsk r"), "{frame}");
+    }
+
+    #[test]
+    fn wide_200x50_keeps_the_rail_cap() {
+        let frame = render(200, 50, &sample());
+        assert!(frame.contains("containers 1"), "{frame}");
+        assert!(frame.contains("images 1"), "{frame}");
+        assert!(frame.contains("volumes 1"), "{frame}");
+        assert!(frame.contains("Logs [l]"), "{frame}");
+        assert!(frame.contains("service"), "{frame}");
+        // spare width belongs to logs: the rail's top-right corner is at col 36
+        let body = frame.lines().nth(2).unwrap();
+        let rail_end = body.chars().position(|c| c == '╮').expect(body);
+        assert!(
+            rail_end < 36,
+            "rail should cap at 36, first ╮ at {rail_end}: {body}"
+        );
+    }
+
+    #[test]
+    fn medium_100x30_sits_beside_with_roomy_collapse() {
+        let frame = render(100, 30, &sample());
+        assert!(frame.contains("containers 1"), "{frame}");
+        assert!(frame.contains("images 1"), "{frame}");
+        assert!(frame.contains("volumes 1"), "{frame}");
+        assert!(frame.contains("Logs [l]"), "{frame}");
+        assert!(frame.contains("service"), "{frame}");
+        // table headers on the active panel
+        assert!(frame.contains("cpu"), "{frame}");
+        // 1-row header is not used: a blank line sits under the switcher
+        let second = frame.lines().nth(1).unwrap();
+        assert!(
+            second.trim().is_empty(),
+            "expected 2-row header, got {second:?}"
+        );
+    }
+
+    #[test]
+    fn zoom_fullscreens_the_active_panel_table_not_the_rail() {
+        let mut s = sample();
+        s.zoom = true;
+        s.focus = Focus::List;
+        let frame = render(100, 30, &s);
+        assert!(frame.contains("containers 1"), "{frame}");
+        assert!(!frame.contains("images 1"), "{frame}");
+        assert!(!frame.contains("volumes 1"), "{frame}");
+        assert!(!frame.contains("Logs [l]"), "{frame}");
+    }
+
+    #[test]
+    fn zoom_detail_fullscreens_the_detail_pane() {
+        let mut s = sample();
+        s.zoom = true;
+        s.focus = Focus::Detail;
+        let frame = render(100, 30, &s);
+        assert!(frame.contains("Logs [l]"), "{frame}");
+        assert!(!frame.contains("containers 1"), "{frame}");
+        assert!(!frame.contains("images 1"), "{frame}");
+    }
+
+    #[test]
+    fn images_and_volumes_have_inspect_only() {
+        let mut s = sample();
+        s.pane = Pane::Images;
+        let frame = render(100, 30, &s);
+        assert!(frame.contains("images 1"), "{frame}");
+        assert!(!frame.contains("Logs [l]"), "{frame}");
+        assert!(!frame.contains("dsk r"), "{frame}");
+        assert!(!frame.contains("net ^"), "{frame}");
+    }
+
+    #[test]
+    fn expanding_a_pane_keeps_the_others_on_the_rail() {
+        let mut s = sample();
+        s.pane = Pane::Images;
+        let frame = render(55, 20, &s);
+        assert!(frame.contains("images 1"), "{frame}");
+        assert!(frame.contains("1 containers 1"), "{frame}");
+        assert!(frame.contains("3 volumes 1"), "{frame}");
+        assert!(!frame.contains("Logs [l]"), "{frame}");
+        assert!(!frame.contains("dsk r"), "{frame}");
     }
 
     #[test]
     fn strip_on_logs_and_inspect_shows_three_rows() {
         let mut tel = VecDeque::new();
-        tel.push_front(sample());
-        let logs = state_with(Pane::Containers, DetailTab::Logs, tel.clone());
-        let inspect = {
-            let mut s = state_with(Pane::Containers, DetailTab::Inspect, tel);
-            s.detail_tab = DetailTab::Inspect;
-            s
-        };
+        tel.push_front(tel_sample());
+        let logs = with_telemetry(sample(), tel.clone());
+        let mut inspect = with_telemetry(sample(), tel);
+        inspect.detail_tab = DetailTab::Inspect;
         for view in [
-            render(&logs, 100, 30, false),
-            render(&inspect, 100, 30, false),
+            render_theme(100, 30, &logs, false),
+            render_theme(100, 30, &inspect, false),
         ] {
             assert!(view.contains("cpu"), "{view}");
             assert!(view.contains("33.0%"), "{view}");
@@ -1078,41 +1348,10 @@ mod tests {
     }
 
     #[test]
-    fn images_and_volumes_have_no_strip() {
-        let mut tel = VecDeque::new();
-        tel.push_front(sample());
-        let mut images = state_with(Pane::Images, DetailTab::Inspect, tel.clone());
-        images.pane = Pane::Images;
-        images.images.push(crate::engine::state::ImageEntry {
-            reference: "alpine:latest".into(),
-            size: Some(1000),
-            created: None,
-            pending: None,
-        });
-        images.clamp_selection();
-        let view = render(&images, 100, 30, false);
-        assert!(!view.contains("dsk r"), "{view}");
-        assert!(!view.contains("net ↑"), "{view}");
-
-        let mut volumes = state_with(Pane::Volumes, DetailTab::Inspect, tel);
-        volumes.pane = Pane::Volumes;
-        volumes.volumes.push(crate::engine::state::VolumeEntry {
-            name: "qvol".into(),
-            in_use_by: vec![],
-            created: None,
-            pending: None,
-        });
-        volumes.clamp_selection();
-        let view = render(&volumes, 100, 30, false);
-        assert!(!view.contains("dsk r"), "{view}");
-        assert!(!view.contains("net ↑"), "{view}");
-    }
-
-    #[test]
     fn sparks_auto_scale_to_the_visible_window() {
-        // 50 newest samples at 10%, 250 older at 90%. A 100-col pane's spark
-        // is ~50 columns, so the window is all 10s. If max came from the
-        // whole ring, 10/90 would render as a stub (▁) instead of full (█).
+        // Newest samples at 10%, older at 90%. Rail layout leaves ~50 spark
+        // columns at 100x30; keep the 10% window wider than that so a leftover
+        // 90% column cannot flatten the glyph.
         let mut tel = VecDeque::new();
         let high = TelemetrySample {
             cpu: Some(90.0),
@@ -1130,14 +1369,14 @@ mod tests {
             r: Some(0),
             w: Some(0),
         };
-        for _ in 0..250 {
+        for _ in 0..200 {
             tel.push_back(high);
         }
-        for _ in 0..50 {
+        for _ in 0..100 {
             tel.push_front(low);
         }
-        let s = state_with(Pane::Containers, DetailTab::Logs, tel);
-        let view = render(&s, 100, 30, false);
+        let s = with_telemetry(sample(), tel);
+        let view = render_theme(100, 30, &s, false);
         assert!(view.contains("10.0%"), "{view}");
         let cpu_line = view
             .lines()
@@ -1164,33 +1403,31 @@ mod tests {
             r: Some(0),
             w: Some(0),
         });
-        let s = state_with(Pane::Containers, DetailTab::Logs, tel);
-        let view = render(&s, 100, 30, false);
+        let s = with_telemetry(sample(), tel);
+        let view = render_theme(100, 30, &s, false);
         assert!(view.contains("150.0%"), "{view}");
     }
 
     #[test]
     fn strip_yields_when_the_detail_inner_is_short() {
         let mut tel = VecDeque::new();
-        tel.push_front(sample());
-        let s = state_with(Pane::Containers, DetailTab::Logs, tel);
-        let view = render(&s, 80, 10, false);
+        tel.push_front(tel_sample());
+        let s = with_telemetry(sample(), tel);
+        let view = render_theme(80, 10, &s, false);
         assert!(!view.contains("dsk r"), "strip should collapse: {view}");
     }
 
     #[test]
     fn empty_and_stopped_render_as_dash() {
-        let running_empty = state_with(Pane::Containers, DetailTab::Logs, VecDeque::new());
-        let view = render(&running_empty, 100, 30, false);
+        let running_empty = sample();
+        let view = render_theme(100, 30, &running_empty, false);
         assert!(view.contains("net ↑-"), "{view}");
 
-        let mut stopped = state_with(Pane::Containers, DetailTab::Logs, {
-            let mut t = VecDeque::new();
-            t.push_front(sample());
-            t
-        });
+        let mut tel = VecDeque::new();
+        tel.push_front(tel_sample());
+        let mut stopped = with_telemetry(sample(), tel);
         stopped.containers[0].state = "stopped".into();
-        let view = render(&stopped, 100, 30, false);
+        let view = render_theme(100, 30, &stopped, false);
         assert!(view.contains("net ↑-"), "{view}");
         assert!(
             !view.contains("33.0%"),
@@ -1201,7 +1438,7 @@ mod tests {
     #[test]
     fn ascii_mode_uses_the_ramp_and_ascii_arrows() {
         let mut tel = VecDeque::new();
-        tel.push_front(sample());
+        tel.push_front(tel_sample());
         tel.push_front(TelemetrySample {
             cpu: Some(90.0),
             mem: Some(10.0),
@@ -1210,8 +1447,8 @@ mod tests {
             r: Some(100),
             w: Some(100),
         });
-        let s = state_with(Pane::Containers, DetailTab::Logs, tel);
-        let view = render(&s, 100, 30, true);
+        let s = with_telemetry(sample(), tel);
+        let view = render_theme(100, 30, &s, true);
         assert!(view.contains("net ^"), "{view}");
         assert!(
             view.contains('#') || view.contains('*') || view.contains('+'),
@@ -1223,13 +1460,11 @@ mod tests {
     #[test]
     fn list_cpu_and_mem_stay_numeric() {
         let mut tel = VecDeque::new();
-        tel.push_front(sample());
-        let s = state_with(Pane::Containers, DetailTab::Logs, tel);
-        let view = render(&s, 100, 30, false);
-        // list cpu stays a number (12.4%); strip cpu is the spark value (33.0%).
+        tel.push_front(tel_sample());
+        let s = with_telemetry(sample(), tel);
+        let view = render_theme(100, 30, &s, false);
         assert!(view.contains("12.4%"), "{view}");
         assert!(view.contains("33.0%"), "{view}");
-        // strip mem is a percent; list mem is a byte column, not a spark.
         assert!(view.contains("42%"), "{view}");
         assert!(!view.contains("mem  12.4"), "{view}");
     }

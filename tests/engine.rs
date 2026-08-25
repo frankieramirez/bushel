@@ -1131,3 +1131,47 @@ engine_test!(any_key_skips_the_first_run_dwell, || {
     h.engine.dispatch(Command::SkipSplash);
     assert_eq!(h.state().screen, Screen::Main);
 });
+
+engine_test!(logs_start_wrapped_and_w_toggles_globally, || {
+    let mut h = Harness::started(happy_mock());
+    assert!(h.state().wrap, "a fresh process shows logs wrapped");
+
+    h.engine.dispatch(Command::ToggleWrap);
+    assert!(!h.state().wrap);
+
+    // switching containers or panes does not change the mode
+    h.engine.dispatch(Command::Move(1));
+    h.pump();
+    assert!(!h.state().wrap);
+    h.engine.dispatch(Command::SwitchPane(Pane::Images));
+    h.pump();
+    assert!(!h.state().wrap);
+    h.engine.dispatch(Command::SwitchPane(Pane::Containers));
+    h.pump();
+    assert!(!h.state().wrap);
+
+    h.engine.dispatch(Command::ToggleWrap);
+    assert!(h.state().wrap);
+});
+
+engine_test!(wrap_toggle_keeps_follow_and_the_paused_raw_line, || {
+    let mut h = Harness::started(happy_mock());
+    assert!(h.state().follow);
+    h.engine.dispatch(Command::ToggleWrap);
+    assert!(
+        h.state().follow,
+        "following stays on the tail across a wrap toggle"
+    );
+
+    h.engine.dispatch(Command::ToggleFollow);
+    assert!(!h.state().follow);
+    h.engine.dispatch(Command::SetDetailScroll(1));
+    let scroll = h.state().detail_scroll;
+    h.engine.dispatch(Command::ToggleWrap);
+    assert!(!h.state().follow);
+    assert_eq!(
+        h.state().detail_scroll,
+        scroll,
+        "paused: the raw log line at the top is unchanged"
+    );
+});
