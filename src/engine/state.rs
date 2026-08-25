@@ -287,6 +287,9 @@ pub struct AppState {
 
     /// True once the first containers poll has landed (splash may dissolve).
     pub first_data: bool,
+    /// When the app came up; the splash only becomes visible if the startup
+    /// probes are still running after a grace period (no sub-100ms flash).
+    pub started_at: Instant,
     pub tick: u64,
     pub last_poll_at: Option<Instant>,
     /// Exec request the outer loop must service (suspend TUI, run, restore).
@@ -334,6 +337,7 @@ impl AppState {
             service_output: Vec::new(),
             service_starting: false,
             first_data: false,
+            started_at: Instant::now(),
             tick: 0,
             last_poll_at: None,
             exec_request: None,
