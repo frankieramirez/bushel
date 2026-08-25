@@ -340,6 +340,10 @@ mod tests {
         assert_eq!(stats[0].id, "qtest");
         assert_eq!(stats[0].cpu_usage_usec, 35372);
         assert_eq!(stats[0].memory_usage_bytes, 4780032);
+        assert_eq!(stats[0].network_rx_bytes, 29461);
+        assert_eq!(stats[0].network_tx_bytes, 602);
+        assert_eq!(stats[0].block_read_bytes, 3981312);
+        assert_eq!(stats[0].block_write_bytes, 0);
     }
 
     #[tokio::test]
@@ -503,6 +507,10 @@ mod real_capture_tests {
         let list: Vec<StatsJson> = serde_json::from_slice(&real("stats.json")).unwrap();
         assert_eq!(list[0].id, "bushel-smoke");
         assert!(list[0].memory_usage_bytes > 0);
+        assert_eq!(list[0].network_rx_bytes, 29236);
+        assert_eq!(list[0].network_tx_bytes, 602);
+        assert_eq!(list[0].block_read_bytes, 4243456);
+        assert_eq!(list[0].block_write_bytes, 0);
     }
 
     #[test]

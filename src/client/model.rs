@@ -198,6 +198,14 @@ pub struct StatsJson {
     pub memory_usage_bytes: u64,
     #[serde(default, rename = "memoryLimitBytes")]
     pub memory_limit_bytes: u64,
+    #[serde(default, rename = "networkRxBytes")]
+    pub network_rx_bytes: u64,
+    #[serde(default, rename = "networkTxBytes")]
+    pub network_tx_bytes: u64,
+    #[serde(default, rename = "blockReadBytes")]
+    pub block_read_bytes: u64,
+    #[serde(default, rename = "blockWriteBytes")]
+    pub block_write_bytes: u64,
 }
 
 /// `container system status --format json` — the only object-shaped response.

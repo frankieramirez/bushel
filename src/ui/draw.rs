@@ -1,19 +1,41 @@
 //! Rendering: consumes `AppState`, paints the frame. Never touches the Client.
 
+use std::collections::VecDeque;
 use std::time::Instant;
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
+use ratatui::symbols;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Cell, Clear, Paragraph, Row, Table, TableState, Tabs, Wrap,
+    Block, BorderType, Cell, Clear, Paragraph, RenderDirection, Row, Sparkline, Table, TableState,
+    Tabs, Wrap,
 };
 
-use crate::engine::state::{AppState, DetailTab, Focus, Overlay, Pane, Screen};
+use crate::engine::state::{
+    AppState, ContainerEntry, DetailTab, Focus, Overlay, Pane, Screen, TelemetrySample,
+};
 use crate::ui::layout::{LayoutFacts, LayoutPlan};
 use crate::ui::log_view;
 use crate::ui::theme::{ACCENT_A, ACCENT_B, Theme, human_size};
+
+/// 3-row strip: cpu spark, mem spark, net+disk text.
+const STRIP_HEIGHT: u16 = 3;
+/// Logs the strip must leave; collapse is a height decision, not a no-data one.
+const STRIP_MIN_LOG: u16 = 4;
+
+const ASCII_BARS: symbols::bar::Set = symbols::bar::Set {
+    full: "#",
+    seven_eighths: "#",
+    three_quarters: "*",
+    five_eighths: "+",
+    half: "=",
+    three_eighths: "-",
+    one_quarter: ":",
+    one_eighth: ".",
+    empty: " ",
+};
 
 /// Values draw computes that the rest of the UI needs (effect areas, the
 /// raw log line at the top of the viewport for follow-aware key handling).
@@ -560,6 +582,13 @@ fn draw_detail(
         frame.render_widget(tabs, tabs_area);
     }
 
+    if state.pane == Pane::Containers && content_area.height >= STRIP_HEIGHT + STRIP_MIN_LOG {
+        let parts = Layout::vertical([Constraint::Length(STRIP_HEIGHT), Constraint::Min(1)])
+            .split(content_area);
+        draw_strip(frame, state, th, parts[0]);
+        content_area = parts[1];
+    }
+
     let inspect_lines = |id: Option<&str>| -> Vec<Line> {
         let Some(id) = id else {
             return vec![Line::raw("no selection")];
@@ -665,6 +694,168 @@ fn draw_detail(
         let scroll = state.detail_scroll.min(total.saturating_sub(1));
         frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), content_area);
     }
+}
+
+fn bar_set(ascii: bool) -> symbols::bar::Set<'static> {
+    if ascii {
+        ASCII_BARS
+    } else {
+        symbols::bar::NINE_LEVELS
+    }
+}
+
+/// Direction glyph + humanized binary bytes + `/s`. Prototype look.
+fn human_rate(bps: u64) -> String {
+    const K: f64 = 1024.0;
+    if bps < 1024 {
+        format!("{bps}B/s")
+    } else if (bps as f64) < K * K {
+        format!("{:.1}K/s", bps as f64 / K)
+    } else {
+        format!("{:.1}M/s", bps as f64 / (K * K))
+    }
+}
+
+fn cpu_color(th: &Theme, pct: f64) -> ratatui::style::Color {
+    if pct > 90.0 {
+        th.red()
+    } else if pct > 70.0 {
+        th.yellow()
+    } else {
+        th.accent()
+    }
+}
+
+fn spark_vals(
+    telemetry: &VecDeque<TelemetrySample>,
+    f: impl Fn(&TelemetrySample) -> Option<f64>,
+) -> Vec<Option<u64>> {
+    telemetry
+        .iter()
+        .map(|s| f(s).map(|v| v.round().max(0.0) as u64))
+        .collect()
+}
+
+fn draw_spark(
+    frame: &mut Frame,
+    th: &Theme,
+    area: Rect,
+    label: &str,
+    value: String,
+    value_style: Style,
+    data: &[Option<u64>],
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let parts = Layout::horizontal([
+        Constraint::Length(4),
+        Constraint::Length(7),
+        Constraint::Min(1),
+    ])
+    .split(area);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("{label:<4}"),
+            Style::new().fg(th.dim()),
+        ))),
+        parts[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(value, value_style))),
+        parts[1],
+    );
+    let spark_w = parts[2].width as usize;
+    if spark_w == 0 || data.is_empty() {
+        return;
+    }
+    // Sparkline takes max() over the whole dataset, then draws only `width`
+    // bars. Slice to the visible columns so a spike outside the window
+    // cannot flatten the glyph. Newest-first + RightToLeft: one second per
+    // column, growing left from the right edge.
+    let visible = &data[..data.len().min(spark_w)];
+    frame.render_widget(
+        Sparkline::default()
+            .data(visible.iter().copied())
+            .direction(RenderDirection::RightToLeft)
+            .bar_set(bar_set(th.ascii))
+            .style(Style::new().fg(th.accent())),
+        parts[2],
+    );
+}
+
+fn draw_rates(
+    frame: &mut Frame,
+    th: &Theme,
+    area: Rect,
+    sample: Option<TelemetrySample>,
+    running: bool,
+) {
+    if area.width == 0 {
+        return;
+    }
+    let up = if th.ascii { "^" } else { "↑" };
+    let dn = if th.ascii { "v" } else { "↓" };
+    let rate = |v: Option<u64>| v.map(human_rate).unwrap_or_else(|| "-".into());
+    let (rx, tx, r, w) = match sample {
+        Some(s) if running => (rate(s.rx), rate(s.tx), rate(s.r), rate(s.w)),
+        _ => ("-".into(), "-".into(), "-".into(), "-".into()),
+    };
+    let net = format!("net {up}{rx:<7} {dn}{tx:<7}");
+    let dsk = format!("dsk r {r:<7} w {w:<7}");
+    let line = Line::from(vec![
+        Span::styled(net, Style::new().fg(th.text())),
+        Span::styled("  ", Style::new()),
+        Span::styled(dsk, Style::new().fg(th.dim())),
+    ]);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+fn draw_strip(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect) {
+    let selected: Option<&ContainerEntry> = state.selected_container();
+    let running = selected.is_some_and(|c| c.is_running());
+    let telemetry = selected.map(|c| &c.telemetry);
+    let cur = telemetry.and_then(|t| t.front().copied());
+
+    let cpu = telemetry
+        .map(|t| spark_vals(t, |s| s.cpu))
+        .unwrap_or_default();
+    let mem = telemetry
+        .map(|t| spark_vals(t, |s| s.mem))
+        .unwrap_or_default();
+
+    let (cpu_v, mem_v) = if running {
+        (
+            cur.and_then(|s| s.cpu)
+                .map(|v| format!("{v:>5.1}%"))
+                .unwrap_or_else(|| "    -".into()),
+            cur.and_then(|s| s.mem)
+                .map(|v| format!("{v:>5.0}%"))
+                .unwrap_or_else(|| "    -".into()),
+        )
+    } else {
+        ("    -".into(), "    -".into())
+    };
+    let cpu_style = Style::new()
+        .fg(if running {
+            cur.and_then(|s| s.cpu)
+                .map(|v| cpu_color(th, v))
+                .unwrap_or_else(|| th.dim())
+        } else {
+            th.dim()
+        })
+        .bold();
+    let mem_style = Style::new().fg(if running { th.text() } else { th.dim() });
+
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(1),
+    ])
+    .split(area);
+    draw_spark(frame, th, rows[0], "cpu", cpu_v, cpu_style, &cpu);
+    draw_spark(frame, th, rows[1], "mem", mem_v, mem_style, &mem);
+    draw_rates(frame, th, rows[2], cur, running);
 }
 
 fn draw_bottom_bar(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, floor: bool) {
@@ -933,6 +1124,7 @@ mod tests {
     use crate::engine::state::{ContainerEntry, ImageEntry, VolumeEntry};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use std::collections::VecDeque;
 
     fn sample() -> AppState {
         let mut s = AppState::new(true);
@@ -946,6 +1138,7 @@ mod tests {
             volumes: vec![],
             cpu_percent: Some(1.2),
             mem_bytes: Some(4_000_000),
+            telemetry: VecDeque::new(),
             pending: None,
         });
         s.images.push(ImageEntry {
@@ -964,11 +1157,29 @@ mod tests {
         s
     }
 
-    fn render(w: u16, h: u16, state: &AppState) -> String {
+    fn tel_sample() -> TelemetrySample {
+        TelemetrySample {
+            cpu: Some(33.0),
+            mem: Some(42.0),
+            rx: Some(12_288),
+            tx: Some(4_096),
+            r: Some(2_048),
+            w: Some(8_192),
+        }
+    }
+
+    fn with_telemetry(mut s: AppState, tel: VecDeque<TelemetrySample>) -> AppState {
+        s.containers[0].telemetry = tel;
+        s.containers[0].cpu_percent = Some(12.4);
+        s.containers[0].mem_bytes = Some(48_000_000);
+        s
+    }
+
+    fn render_theme(w: u16, h: u16, state: &AppState, ascii: bool) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         let th = Theme {
             truecolor: false,
-            ascii: true,
+            ascii,
         };
         terminal
             .draw(|f| {
@@ -976,6 +1187,10 @@ mod tests {
             })
             .unwrap();
         buffer_to_string(terminal.backend().buffer())
+    }
+
+    fn render(w: u16, h: u16, state: &AppState) -> String {
+        render_theme(w, h, state, true)
     }
 
     fn buffer_to_string(buf: &ratatui::buffer::Buffer) -> String {
@@ -1019,10 +1234,16 @@ mod tests {
         assert!(frame.contains("2 images 1"), "{frame}");
         assert!(frame.contains("3 volumes 1"), "{frame}");
         // no table headers, no Logs/Inspect tab row, no status cluster
-        assert!(!frame.contains("cpu"), "{frame}");
+        assert!(
+            !frame.contains("name"),
+            "no table headers at the floor: {frame}"
+        );
         assert!(!frame.contains("Logs [l]"), "{frame}");
         assert!(!frame.contains("Inspect [i]"), "{frame}");
         assert!(!frame.contains("service"), "{frame}");
+        // strip still fits (height decision): 3-row just leaves 4 log rows
+        assert!(frame.contains("cpu"), "{frame}");
+        assert!(frame.contains("dsk r"), "{frame}");
     }
 
     #[test]
@@ -1090,6 +1311,8 @@ mod tests {
         let frame = render(100, 30, &s);
         assert!(frame.contains("images 1"), "{frame}");
         assert!(!frame.contains("Logs [l]"), "{frame}");
+        assert!(!frame.contains("dsk r"), "{frame}");
+        assert!(!frame.contains("net ^"), "{frame}");
     }
 
     #[test]
@@ -1101,5 +1324,148 @@ mod tests {
         assert!(frame.contains("1 containers 1"), "{frame}");
         assert!(frame.contains("3 volumes 1"), "{frame}");
         assert!(!frame.contains("Logs [l]"), "{frame}");
+        assert!(!frame.contains("dsk r"), "{frame}");
+    }
+
+    #[test]
+    fn strip_on_logs_and_inspect_shows_three_rows() {
+        let mut tel = VecDeque::new();
+        tel.push_front(tel_sample());
+        let logs = with_telemetry(sample(), tel.clone());
+        let mut inspect = with_telemetry(sample(), tel);
+        inspect.detail_tab = DetailTab::Inspect;
+        for view in [
+            render_theme(100, 30, &logs, false),
+            render_theme(100, 30, &inspect, false),
+        ] {
+            assert!(view.contains("cpu"), "{view}");
+            assert!(view.contains("33.0%"), "{view}");
+            assert!(view.contains("42%"), "{view}");
+            assert!(view.contains("net ↑"), "{view}");
+            assert!(view.contains("dsk r"), "{view}");
+            assert!(view.contains("12.0K/s"), "{view}");
+        }
+    }
+
+    #[test]
+    fn sparks_auto_scale_to_the_visible_window() {
+        // Newest samples at 10%, older at 90%. Rail layout leaves ~50 spark
+        // columns at 100x30; keep the 10% window wider than that so a leftover
+        // 90% column cannot flatten the glyph.
+        let mut tel = VecDeque::new();
+        let high = TelemetrySample {
+            cpu: Some(90.0),
+            mem: Some(90.0),
+            rx: Some(0),
+            tx: Some(0),
+            r: Some(0),
+            w: Some(0),
+        };
+        let low = TelemetrySample {
+            cpu: Some(10.0),
+            mem: Some(10.0),
+            rx: Some(0),
+            tx: Some(0),
+            r: Some(0),
+            w: Some(0),
+        };
+        for _ in 0..200 {
+            tel.push_back(high);
+        }
+        for _ in 0..100 {
+            tel.push_front(low);
+        }
+        let s = with_telemetry(sample(), tel);
+        let view = render_theme(100, 30, &s, false);
+        assert!(view.contains("10.0%"), "{view}");
+        let cpu_line = view
+            .lines()
+            .find(|l| l.contains("cpu") && l.contains("10.0%"))
+            .unwrap_or("");
+        assert!(
+            cpu_line.contains('█'),
+            "visible window should fill: {cpu_line}"
+        );
+        assert!(
+            !cpu_line.contains('▁'),
+            "old 90% must not flatten the window: {cpu_line}"
+        );
+    }
+
+    #[test]
+    fn spark_number_is_the_true_percent_even_above_100() {
+        let mut tel = VecDeque::new();
+        tel.push_front(TelemetrySample {
+            cpu: Some(150.0),
+            mem: Some(42.0),
+            rx: Some(0),
+            tx: Some(0),
+            r: Some(0),
+            w: Some(0),
+        });
+        let s = with_telemetry(sample(), tel);
+        let view = render_theme(100, 30, &s, false);
+        assert!(view.contains("150.0%"), "{view}");
+    }
+
+    #[test]
+    fn strip_yields_when_the_detail_inner_is_short() {
+        let mut tel = VecDeque::new();
+        tel.push_front(tel_sample());
+        let s = with_telemetry(sample(), tel);
+        let view = render_theme(80, 10, &s, false);
+        assert!(!view.contains("dsk r"), "strip should collapse: {view}");
+    }
+
+    #[test]
+    fn empty_and_stopped_render_as_dash() {
+        let running_empty = sample();
+        let view = render_theme(100, 30, &running_empty, false);
+        assert!(view.contains("net ↑-"), "{view}");
+
+        let mut tel = VecDeque::new();
+        tel.push_front(tel_sample());
+        let mut stopped = with_telemetry(sample(), tel);
+        stopped.containers[0].state = "stopped".into();
+        let view = render_theme(100, 30, &stopped, false);
+        assert!(view.contains("net ↑-"), "{view}");
+        assert!(
+            !view.contains("33.0%"),
+            "stopped current value is -: {view}"
+        );
+    }
+
+    #[test]
+    fn ascii_mode_uses_the_ramp_and_ascii_arrows() {
+        let mut tel = VecDeque::new();
+        tel.push_front(tel_sample());
+        tel.push_front(TelemetrySample {
+            cpu: Some(90.0),
+            mem: Some(10.0),
+            rx: Some(100),
+            tx: Some(100),
+            r: Some(100),
+            w: Some(100),
+        });
+        let s = with_telemetry(sample(), tel);
+        let view = render_theme(100, 30, &s, true);
+        assert!(view.contains("net ^"), "{view}");
+        assert!(
+            view.contains('#') || view.contains('*') || view.contains('+'),
+            "ascii ramp glyphs: {view}"
+        );
+        assert!(!view.contains('↑'), "{view}");
+    }
+
+    #[test]
+    fn list_cpu_and_mem_stay_numeric() {
+        let mut tel = VecDeque::new();
+        tel.push_front(tel_sample());
+        let s = with_telemetry(sample(), tel);
+        let view = render_theme(100, 30, &s, false);
+        assert!(view.contains("12.4%"), "{view}");
+        assert!(view.contains("33.0%"), "{view}");
+        assert!(view.contains("42%"), "{view}");
+        assert!(!view.contains("mem  12.4"), "{view}");
     }
 }
