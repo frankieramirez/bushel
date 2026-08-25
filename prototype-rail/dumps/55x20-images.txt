@@ -1,0 +1,26 @@
+# 55×20 images expanded
+
+stacked  rail 55×9  detail 55×9  collapse=tight  cap=36  stack<80  log_cols=53  active=images
+
+```
+ bushel   1 containers · 2 images · 3 volumes
+ 1 containers 8
+╭ images 5 ───────────────────────────────────────────╮
+│docker.io/library/postgres:16                431 MB  │
+│docker.io/library/redis:7                    116 MB  │
+│docker.io/library/caddy:2                    48 MB   │
+│docker.io/library/alpine:latest              8.3 MB  │
+│ghcr.io/example/worker:1.4.2                 1.1 GB  │
+╰─────────────────────────────────────────────────────╯
+ 3 volumes 3
+╭ detail ─────────────────────────────────────────────╮
+│{                                                    │
+│  "reference": "docker.io/library/postgres:16"       │
+│}                                                    │
+│                                                     │
+│                                                     │
+│                                                     │
+│                                                     │
+╰ 53 cols ────────────────────────────────────────────╯
+ 1/2/3 expand  j/k move  / filter  f zoom
+```

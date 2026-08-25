@@ -1,0 +1,26 @@
+# 55×20
+
+stacked  rail 55×9  detail 55×9  collapse=tight  cap=36  stack<80  log_cols=53  active=containers
+
+```
+ bushel   1 containers · 2 images · 3 volumes
+╭ containers 8 ───────────────────────────────────────╮
+│● redis              1.2%    48M  redis:7            │
+│● postgres           4.8%   256M  postgres:16        │
+│● caddy              0.3%    12M  caddy:2            │
+│● bushel-smoke       0.1%     4M  alpine:latest      │
+│● github-actions-ru 12.4%   512M  ghcr.io/example/wor│
+╰─────────────────────────────────────────────────────╯
+ 2 images 5
+ 3 volumes 3
+╭ detail ─────────────────────────────────────────────╮
+│2026-08-24T18:02:11.441Z INFO  postgres  checkpoint c│
+│2026-08-24T18:02:12.018Z INFO  redis     replica 192.│
+│2026-08-24T18:02:12.441Z INFO  caddy     192.168.64.1│
+│2026-08-24T18:02:13.102Z WARN  postgres  could not se│
+│2026-08-24T18:02:13.880Z INFO  runner    job 1842 que│
+│2026-08-24T18:02:14.201Z INFO  redis     10000 change│
+│2026-08-24T18:02:14.990Z INFO  postgres  statement: S│
+╰ 53 cols ────────────────────────────────────────────╯
+ 1/2/3 expand  j/k move  / filter  f zoom
+```

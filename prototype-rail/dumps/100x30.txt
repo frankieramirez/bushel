@@ -1,0 +1,36 @@
+# 100×30
+
+beside  rail 36×27  detail 64×27  collapse=roomy  cap=36  stack<80  log_cols=62  active=containers
+
+```
+ bushel   1 containers · 2 images · 3 volumes
+
+╭ containers 8 ────────────────────╮╭ detail ──────────────────────────────────────────────────────╮
+│name                 cpu    mem   ││  Logs [l]  │  Inspect [i]                                    │
+│● redis               1.2%    48M ││2026-08-24T18:02:11.441Z INFO  postgres  checkpoint complete: │
+│● postgres            4.8%   256M ││2026-08-24T18:02:12.018Z INFO  redis     replica 192.168.64.4:│
+│● caddy               0.3%    12M ││2026-08-24T18:02:12.441Z INFO  caddy     192.168.64.1 - GET /h│
+│● bushel-smoke        0.1%     4M ││2026-08-24T18:02:13.102Z WARN  postgres  could not serialize a│
+│● github-actions-run 12.4%   512M ││2026-08-24T18:02:13.880Z INFO  runner    job 1842 queued: buil│
+│○ worker-a            0.0%     0M ││2026-08-24T18:02:14.201Z INFO  redis     10000 changes in 60 s│
+│○ worker-b            0.0%     0M ││2026-08-24T18:02:14.990Z INFO  postgres  statement: SELECT * F│
+│○ old-migrate         0.0%     0M ││2026-08-24T18:02:15.441Z INFO  caddy     192.168.64.8 - POST /│
+│                                  ││2026-08-24T18:02:16.002Z INFO  runner    cloning github.com/fr│
+│                                  ││2026-08-24T18:02:16.771Z ERROR postgres  FATAL:  remaining con│
+│                                  ││2026-08-24T18:02:17.110Z INFO  redis     DB saved on disk     │
+│                                  ││2026-08-24T18:02:17.880Z INFO  caddy     logger: flushed 128 e│
+╰──────────────────────────────────╯│2026-08-24T18:02:18.441Z INFO  postgres  automatic vacuum of t│
+╭ images 5 ────────────────────────╮│2026-08-24T18:02:19.002Z INFO  runner    cargo test --offline │
+│docker.io/library/postgres:16     ││2026-08-24T18:02:19.660Z INFO  redis     client closed connect│
+│docker.io/library/redis:7         ││2026-08-24T18:02:20.101Z INFO  postgres  duration: 812.441 ms │
+│docker.io/library/caddy:2         ││2026-08-24T18:02:20.880Z INFO  caddy     tls: remaining 2 cert│
+│docker.io/library/alpine:latest   ││2026-08-24T18:02:21.441Z INFO  runner    test engine::poll::co│
+│ghcr.io/example/worker:1.4.2      ││2026-08-24T18:02:22.018Z WARN  postgres  log line too long to │
+╰──────────────────────────────────╯│2026-08-24T18:02:22.441Z INFO  redis     1.2µs per op, 800k op│
+╭ volumes 3 ───────────────────────╮│── following (F to pause) ──                                  │
+│pg-data                   in use  ││                                                              │
+│redis-data                in use  ││                                                              │
+│leftover                  -       ││                                                              │
+╰──────────────────────────────────╯╰ 62 cols ─────────────────────────────────────────────────────╯
+ 1/2/3 expand  j/k move  enter focus  / filter  f zoom  ? help       ● service  container 1.2.0  ⠋
+```
