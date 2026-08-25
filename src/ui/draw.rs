@@ -11,10 +11,11 @@ use ratatui::widgets::{
 };
 
 use crate::engine::state::{AppState, DetailTab, Focus, Overlay, Pane, Screen};
+use crate::ui::log_view;
 use crate::ui::theme::{ACCENT_A, ACCENT_B, Theme, human_size};
 
 /// Values draw computes that the rest of the UI needs (effect areas, the
-/// effective log scroll for follow-aware key handling).
+/// raw log line at the top of the viewport for follow-aware key handling).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DrawInfo {
     pub body: Rect,
@@ -493,6 +494,7 @@ fn draw_detail(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, info
     let (lines, follow_tail): (Vec<Line>, bool) = match state.pane {
         Pane::Containers => match state.detail_tab {
             DetailTab::Logs => {
+                let width = content_area.width;
                 let mut l: Vec<Line> = Vec::new();
                 if state.logs_loading {
                     l.push(Line::from(Span::styled(
@@ -500,12 +502,12 @@ fn draw_detail(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, info
                         Style::new().fg(th.dim()),
                     )));
                 }
-                l.extend(
-                    state
-                        .log_lines
-                        .iter()
-                        .map(|s| Line::from(Span::styled(s.clone(), Style::new().fg(th.text())))),
-                );
+                let log_style = Style::new().fg(th.text());
+                for s in &state.log_lines {
+                    for row in log_view::split_line(s, state.wrap, width) {
+                        l.push(Line::from(Span::styled(row, log_style)));
+                    }
+                }
                 let marker = if state.selected_container().is_none() {
                     Span::styled("── no selection ──", Style::new().fg(th.dim()))
                 } else if state.log_owner.is_none() {
@@ -515,10 +517,13 @@ fn draw_detail(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, info
                     )
                 } else if state.follow_ended {
                     Span::styled("── follow ended ──", Style::new().fg(th.dim()))
-                } else if state.follow {
-                    Span::styled("── following (F to pause) ──", Style::new().fg(th.accent()))
                 } else {
-                    Span::styled("── paused (F to follow) ──", Style::new().fg(th.dim()))
+                    let style = if state.follow {
+                        Style::new().fg(th.accent())
+                    } else {
+                        Style::new().fg(th.dim())
+                    };
+                    Span::styled(log_view::follow_marker(state.follow, state.wrap), style)
                 };
                 l.push(Line::from(marker));
                 (l, state.follow)
@@ -538,16 +543,28 @@ fn draw_detail(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, info
         ),
     };
 
+    let logs = state.pane == Pane::Containers && state.detail_tab == DetailTab::Logs;
     let total = lines.len() as u16;
     let h = content_area.height;
-    let scroll =
-        if state.pane == Pane::Containers && state.detail_tab == DetailTab::Logs && follow_tail {
-            total.saturating_sub(h)
-        } else {
-            state.detail_scroll.min(total.saturating_sub(1))
-        };
-    if state.pane == Pane::Containers && state.detail_tab == DetailTab::Logs {
-        info.log_scroll = scroll;
+    let width = content_area.width;
+    let prefix = if logs && state.logs_loading { 1 } else { 0 };
+    let scroll = if logs && follow_tail {
+        log_view::tail_scroll(total, h)
+    } else if logs {
+        let raw = (state.detail_scroll as usize).min(state.log_lines.len().saturating_sub(1));
+        log_view::display_start(&state.log_lines, state.wrap, width, raw)
+            .saturating_add(prefix)
+            .min(total.saturating_sub(1))
+    } else {
+        state.detail_scroll.min(total.saturating_sub(1))
+    };
+    if logs {
+        info.log_scroll = log_view::raw_index(
+            &state.log_lines,
+            state.wrap,
+            width,
+            scroll.saturating_sub(prefix),
+        ) as u16;
     }
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), content_area);
 }
@@ -594,6 +611,7 @@ fn draw_bottom_bar(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect) 
                 ("j/k", "scroll"),
                 ("l/i", "tabs"),
                 ("F", "follow"),
+                ("w", log_view::wrap_hint(state.wrap)),
                 ("esc", "back"),
                 ("f", "zoom"),
             ],
@@ -724,7 +742,7 @@ fn draw_pull_input(frame: &mut Frame, th: &Theme, text: &str) {
 }
 
 fn draw_help(frame: &mut Frame, th: &Theme) {
-    let area = centered(frame.area(), 68, 22);
+    let area = centered(frame.area(), 68, 23);
     frame.render_widget(Clear, area);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -763,6 +781,7 @@ fn draw_help(frame: &mut Frame, th: &Theme) {
         g(" detail"),
         k("l / i", "logs / inspect tab (containers)"),
         k("F", "toggle follow"),
+        k("w", "toggle wrap / truncated"),
         k("pgup/pgdn", "scroll without switching focus"),
         k("esc", "back to list"),
     ];

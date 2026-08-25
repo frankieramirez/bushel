@@ -34,7 +34,7 @@ bushel
 - `j`/`k`, `g`/`G` — move; `/` fuzzy filter; `Enter` focus the detail pane
 - `space` — action menu for the selection (destructive actions tinted, always confirmed with the exact `container …` command about to run)
 - `s` start/stop · `r` restart · `K` kill · `d` delete · `P` prune · `e` exec a shell
-- `l`/`i` — Logs / Inspect detail tabs; `F` toggles log follow
+- `l`/`i` — Logs / Inspect detail tabs; `F` toggles log follow; `w` toggles wrap
 - `m` — message log (full stderr of anything that failed) · `?` — help
 
 Flags: `--no-splash`, `--reduced-motion`, `--ascii`. The same settings live in `~/.config/bushel/config.toml`:
