@@ -406,6 +406,133 @@ mod tests {
         assert_eq!(map_key(&s, key(KeyCode::Char('j')), &drawn(0, 0)), vec![]);
     }
 
+    /// Every token the cheatsheet spells out, split off its separators:
+    /// `"s r K d P e"` becomes six, `"pgup/pgdn"` two.
+    fn documented_keys() -> Vec<String> {
+        crate::ui::help::HELP
+            .iter()
+            .flat_map(|row| row.keys.split([' ', ',']))
+            .flat_map(|tok| {
+                // `/` is itself a binding, so it is only a separator between
+                // two things that both look like keys.
+                if tok.len() > 1 {
+                    tok.split('/').collect::<Vec<_>>()
+                } else {
+                    vec![tok]
+                }
+            })
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The name a key would go by on the cheatsheet.
+    fn help_token(code: KeyCode) -> Option<String> {
+        Some(match code {
+            KeyCode::Char(' ') => "space".into(),
+            KeyCode::Char(c) => c.to_string(),
+            KeyCode::Tab => "tab".into(),
+            KeyCode::Enter => "enter".into(),
+            KeyCode::Esc => "esc".into(),
+            KeyCode::PageUp => "pgup".into(),
+            KeyCode::PageDown => "pgdn".into(),
+            _ => return None,
+        })
+    }
+
+    /// The states the cheatsheet describes: no overlay, not filtering, main
+    /// screen. Its three groups are global, list and detail, and between them
+    /// these four reach every branch of the main match — including the images
+    /// pane, which is the only place `u` does anything.
+    fn cheatsheet_states() -> Vec<AppState> {
+        let list = main_state();
+
+        let mut detail = main_state();
+        detail.focus = Focus::Detail;
+        detail.detail_tab = DetailTab::Logs;
+
+        let mut images = main_state();
+        images.pane = Pane::Images;
+        images.images.push(crate::engine::state::ImageEntry {
+            reference: "alpine:latest".into(),
+            size: None,
+            created: None,
+            pending: None,
+        });
+        images.clamp_selection();
+
+        let mut volumes = main_state();
+        volumes.pane = Pane::Volumes;
+        volumes.clamp_selection();
+
+        vec![list, detail, images, volumes]
+    }
+
+    fn is_bound(code: KeyCode) -> bool {
+        cheatsheet_states()
+            .iter()
+            .any(|s| !map_key(s, key(code), &drawn(0, 0)).is_empty())
+    }
+
+    /// This is the test the README failed. A binding that works but is not on
+    /// the cheatsheet is invisible everywhere downstream — the help overlay,
+    /// `docs.json`, and the website all read the same list — so adding one
+    /// without a row here fails the build.
+    #[test]
+    fn every_key_the_main_keymap_handles_is_on_the_cheatsheet() {
+        // Deliberately undocumented, each for a reason:
+        //   ?      opens the cheatsheet; it does not list itself
+        //   up/down  synonyms for j/k, which are documented
+        // Ctrl-C is not swept: it carries a modifier, and the sweep is plain keys.
+        const UNDOCUMENTED: &[KeyCode] = &[KeyCode::Char('?'), KeyCode::Up, KeyCode::Down];
+
+        let documented = documented_keys();
+        let candidates = (' '..='~').map(KeyCode::Char).chain([
+            KeyCode::Tab,
+            KeyCode::Enter,
+            KeyCode::Esc,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+            KeyCode::Up,
+            KeyCode::Down,
+        ]);
+
+        for code in candidates {
+            if UNDOCUMENTED.contains(&code) || !is_bound(code) {
+                continue;
+            }
+            let token = help_token(code)
+                .unwrap_or_else(|| panic!("{code:?} is handled but has no cheatsheet spelling"));
+            assert!(
+                documented.contains(&token),
+                "`{token}` ({code:?}) does something but is not on the cheatsheet"
+            );
+        }
+    }
+
+    /// The other direction: a row that promises a key which no longer works is
+    /// the same drift, read the other way round.
+    #[test]
+    fn the_cheatsheet_lists_nothing_that_does_nothing() {
+        for token in documented_keys() {
+            let code = match token.as_str() {
+                "space" => KeyCode::Char(' '),
+                "tab" => KeyCode::Tab,
+                "enter" => KeyCode::Enter,
+                "esc" => KeyCode::Esc,
+                "pgup" => KeyCode::PageUp,
+                "pgdn" => KeyCode::PageDown,
+                t if t.chars().count() == 1 => KeyCode::Char(t.chars().next().unwrap()),
+                // Multi-character spellings that are not keys of their own.
+                _ => continue,
+            };
+            assert!(
+                is_bound(code),
+                "the cheatsheet documents `{token}`, but it is bound to nothing"
+            );
+        }
+    }
+
     #[test]
     fn l_and_i_still_switch_tabs_while_the_sheet_is_open() {
         let mut s = main_state();

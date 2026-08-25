@@ -2,6 +2,7 @@
 //! owns the motion language (≤150ms, interruptible, `reduced-motion` kills all).
 
 pub mod draw;
+pub mod help;
 pub mod keymap;
 pub mod layout;
 pub mod log_view;

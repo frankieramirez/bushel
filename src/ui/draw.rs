@@ -16,6 +16,7 @@ use ratatui::widgets::{
 use crate::engine::state::{
     AppState, ContainerEntry, DetailTab, Focus, Overlay, Pane, Screen, TelemetrySample,
 };
+use crate::ui::help::{HELP, HELP_KEY_COL};
 use crate::ui::layout::{self, LayoutFacts, LayoutPlan, centered};
 use crate::ui::log_view;
 use crate::ui::theme::{ACCENT_A, ACCENT_B, Theme, human_size};
@@ -1059,51 +1060,9 @@ fn draw_pull_input(frame: &mut Frame, th: &Theme, text: &str) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// One row of the cheatsheet: a group heading (`keys` empty) or a binding.
-struct HelpRow {
-    keys: &'static str,
-    desc: &'static str,
-}
-
-const fn head(desc: &'static str) -> HelpRow {
-    HelpRow { keys: "", desc }
-}
-const fn bind(keys: &'static str, desc: &'static str) -> HelpRow {
-    HelpRow { keys, desc }
-}
-
-/// One cheatsheet at every size — no shorter floor variant.
-const HELP: &[HelpRow] = &[
-    head(" global"),
-    bind("1/2/3, tab", "expand pane (containers / images / volumes)"),
-    bind("f", "zoom focused side"),
-    bind("m", "message log"),
-    bind("b", "dismiss version banner"),
-    bind("q", "quit"),
-    head(" list"),
-    bind("j/k g/G", "move / top / bottom"),
-    bind("/", "fuzzy filter (esc clears)"),
-    bind("enter", "focus detail pane"),
-    bind("space", "action menu"),
-    bind(
-        "s r K d P e",
-        "start/stop · restart · kill · delete · prune · exec",
-    ),
-    bind("u", "pull image (images pane)"),
-    head(" detail"),
-    bind("l / i", "logs / inspect tab (containers)"),
-    bind("F", "toggle follow"),
-    bind("w", "toggle wrap / truncated"),
-    bind("pgup/pgdn", "scroll without switching focus"),
-    bind("esc", "back to list"),
-];
-
-/// Width of the key column, including its leading pad.
-const HELP_KEY_COL: u16 = 14;
-
 /// Render the cheatsheet to `width` columns, wrapping long descriptions under
 /// the key column so nothing is clipped horizontally.
-fn help_lines(th: &Theme, width: u16) -> Vec<Line<'static>> {
+pub(crate) fn help_lines(th: &Theme, width: u16) -> Vec<Line<'static>> {
     let desc_w = width.saturating_sub(HELP_KEY_COL).max(8);
     let mut out = Vec::new();
     for row in HELP {
