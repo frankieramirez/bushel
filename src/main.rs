@@ -57,7 +57,7 @@ enum InstallMethod {
     Receipt,
 }
 
-fn classify(exe: &Path, cargo_bin: Option<&Path>) -> InstallMethod {
+fn classify(exe: &Path, cargo_bins: &[PathBuf]) -> InstallMethod {
     if exe
         .components()
         .any(|c| c.as_os_str() == "Cellar" || c.as_os_str() == "homebrew")
@@ -67,25 +67,48 @@ fn classify(exe: &Path, cargo_bin: Option<&Path>) -> InstallMethod {
     if exe.starts_with("/nix/store") {
         return InstallMethod::Nix;
     }
-    if cargo_bin.is_some_and(|bin| exe.parent() == Some(bin)) {
+    if exe
+        .parent()
+        .is_some_and(|dir| cargo_bins.iter().any(|bin| bin == dir))
+    {
         return InstallMethod::Cargo;
     }
     InstallMethod::Receipt
 }
 
-/// `CARGO_HOME` relocates the bin dir, so honor it before falling back to `~/.cargo`.
-fn cargo_bin_dir() -> Option<PathBuf> {
-    let home = match std::env::var_os("CARGO_HOME") {
-        Some(h) => PathBuf::from(h),
-        None => dirs::home_dir()?.join(".cargo"),
-    };
-    std::fs::canonicalize(home.join("bin")).ok()
+/// Where `cargo install` may have put us: `CARGO_INSTALL_ROOT` outranks
+/// `CARGO_HOME`, which outranks `~/.cargo`. (`--root` and `install.root` can
+/// override both, but neither leaves a trace we could read back here.)
+fn cargo_bin_candidates(
+    install_root: Option<PathBuf>,
+    cargo_home: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let home_cargo = home.map(|h| h.join(".cargo"));
+    [install_root, cargo_home.or(home_cargo)]
+        .into_iter()
+        .flatten()
+        .map(|root| root.join("bin"))
+        .collect()
+}
+
+fn cargo_bin_dirs() -> Vec<PathBuf> {
+    cargo_bin_candidates(
+        std::env::var_os("CARGO_INSTALL_ROOT").map(PathBuf::from),
+        std::env::var_os("CARGO_HOME").map(PathBuf::from),
+        dirs::home_dir(),
+    )
+    .into_iter()
+    // Compare canonicalized paths on both sides, so a symlinked or relative
+    // prefix still matches the exe path we resolved.
+    .filter_map(|dir| std::fs::canonicalize(dir).ok())
+    .collect()
 }
 
 fn install_method() -> InstallMethod {
     std::env::current_exe()
         .and_then(std::fs::canonicalize)
-        .map(|exe| classify(&exe, cargo_bin_dir().as_deref()))
+        .map(|exe| classify(&exe, &cargo_bin_dirs()))
         .unwrap_or(InstallMethod::Receipt)
 }
 
@@ -278,8 +301,8 @@ async fn main() -> std::io::Result<()> {
 mod tests {
     use super::*;
 
-    fn cargo_bin() -> PathBuf {
-        PathBuf::from("/Users/x/.cargo/bin")
+    fn cargo_bins() -> Vec<PathBuf> {
+        vec![PathBuf::from("/Users/x/.cargo/bin")]
     }
 
     #[test]
@@ -287,7 +310,7 @@ mod tests {
         assert_eq!(
             classify(
                 Path::new("/opt/homebrew/Cellar/bushel/0.3.0/bin/bushel"),
-                Some(&cargo_bin())
+                &cargo_bins()
             ),
             InstallMethod::Homebrew
         );
@@ -298,7 +321,7 @@ mod tests {
         assert_eq!(
             classify(
                 Path::new("/nix/store/abc123-bushel-0.3.0/bin/bushel"),
-                Some(&cargo_bin())
+                &cargo_bins()
             ),
             InstallMethod::Nix
         );
@@ -307,7 +330,7 @@ mod tests {
     #[test]
     fn binary_in_cargo_bin_is_cargo() {
         assert_eq!(
-            classify(Path::new("/Users/x/.cargo/bin/bushel"), Some(&cargo_bin())),
+            classify(Path::new("/Users/x/.cargo/bin/bushel"), &cargo_bins()),
             InstallMethod::Cargo
         );
     }
@@ -317,7 +340,7 @@ mod tests {
         assert_eq!(
             classify(
                 Path::new("/Users/x/.cargo/bin/nested/bushel"),
-                Some(&cargo_bin())
+                &cargo_bins()
             ),
             InstallMethod::Receipt
         );
@@ -326,16 +349,59 @@ mod tests {
     #[test]
     fn shell_installer_falls_through_to_receipt() {
         assert_eq!(
-            classify(Path::new("/Users/x/.local/bin/bushel"), Some(&cargo_bin())),
+            classify(Path::new("/Users/x/.local/bin/bushel"), &cargo_bins()),
             InstallMethod::Receipt
         );
     }
 
     #[test]
-    fn no_cargo_home_still_classifies() {
+    fn no_cargo_dirs_still_classifies() {
         assert_eq!(
-            classify(Path::new("/Users/x/.cargo/bin/bushel"), None),
+            classify(Path::new("/Users/x/.cargo/bin/bushel"), &[]),
             InstallMethod::Receipt
         );
+    }
+
+    #[test]
+    fn install_root_outranks_cargo_home() {
+        let dirs = cargo_bin_candidates(
+            Some(PathBuf::from("/opt/cargo-root")),
+            Some(PathBuf::from("/Users/x/altcargo")),
+            Some(PathBuf::from("/Users/x")),
+        );
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/opt/cargo-root/bin"),
+                PathBuf::from("/Users/x/altcargo/bin"),
+            ]
+        );
+        assert_eq!(
+            classify(Path::new("/opt/cargo-root/bin/bushel"), &dirs),
+            InstallMethod::Cargo
+        );
+    }
+
+    #[test]
+    fn cargo_home_outranks_home_dir() {
+        let dirs = cargo_bin_candidates(
+            None,
+            Some(PathBuf::from("/Users/x/altcargo")),
+            Some(PathBuf::from("/Users/x")),
+        );
+        assert_eq!(dirs, vec![PathBuf::from("/Users/x/altcargo/bin")]);
+        assert_eq!(
+            classify(Path::new("/Users/x/.cargo/bin/bushel"), &dirs),
+            InstallMethod::Receipt
+        );
+    }
+
+    #[test]
+    fn home_dir_is_the_last_resort() {
+        assert_eq!(
+            cargo_bin_candidates(None, None, Some(PathBuf::from("/Users/x"))),
+            vec![PathBuf::from("/Users/x/.cargo/bin")]
+        );
+        assert!(cargo_bin_candidates(None, None, None).is_empty());
     }
 }

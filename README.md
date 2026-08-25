@@ -32,9 +32,9 @@ From source — bushel isn't published to crates.io, so this needs `--git`:
 cargo install --git https://github.com/frankieramirez/bushel
 ```
 
-To upgrade, run `bushel update` — it self-updates shell-installer installs,
-delegates to `brew upgrade bushel` for Homebrew installs, and prints the right
-command for anything else.
+To upgrade, run `bushel update`. Shell-installer installs replace themselves in
+place; Homebrew installs hand off to `brew upgrade bushel`; cargo, Nix, and
+hand-placed binaries are told how to upgrade themselves instead.
 
 ## Use
 
