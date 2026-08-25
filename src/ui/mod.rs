@@ -3,6 +3,7 @@
 
 pub mod draw;
 pub mod keymap;
+pub mod log_view;
 pub mod theme;
 
 use std::time::Duration;
