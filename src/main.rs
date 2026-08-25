@@ -94,15 +94,30 @@ fn install_method() -> InstallMethod {
         .unwrap_or(InstallMethod::Receipt)
 }
 
+/// `brew upgrade` refreshes the tap only when Homebrew's own auto-update is
+/// due, and that interval is five minutes by default. Inside the window a
+/// formula published moments ago is invisible, so the upgrade reads the stale
+/// local clone, finds the version already installed and says so — which looks
+/// exactly like "there is no new version". `bushel update` is someone asking
+/// outright, so the refresh becomes unconditional here: drive the interval to
+/// zero, and drop the opt-out in case the user's shell exports it.
+fn brew_upgrade_command() -> std::process::Command {
+    let mut cmd = std::process::Command::new("brew");
+    cmd.args(["upgrade", "bushel"])
+        .env("HOMEBREW_AUTO_UPDATE_SECS", "0")
+        .env_remove("HOMEBREW_NO_AUTO_UPDATE");
+    cmd
+}
+
 async fn self_update() -> i32 {
     let method = install_method();
     match method {
         InstallMethod::Homebrew => {
-            println!("bushel was installed via Homebrew; running `brew upgrade bushel`…");
-            return match std::process::Command::new("brew")
-                .args(["upgrade", "bushel"])
-                .status()
-            {
+            println!(
+                "bushel was installed via Homebrew; refreshing the tap, then running \
+                 `brew upgrade bushel`…"
+            );
+            return match brew_upgrade_command().status() {
                 Ok(s) if s.success() => 0,
                 Ok(_) => 1,
                 Err(e) => {
@@ -285,6 +300,32 @@ mod tests {
 
     fn cargo_bins() -> Vec<PathBuf> {
         vec![PathBuf::from("/Users/x/.cargo/bin")]
+    }
+
+    /// A five-minute auto-update throttle let `brew upgrade` read a stale tap
+    /// clone and report the running version as already installed, minutes
+    /// after a new one was published.
+    #[test]
+    fn brew_upgrade_forces_the_tap_refresh() {
+        use std::ffi::OsStr;
+        let cmd = brew_upgrade_command();
+        assert_eq!(cmd.get_program(), OsStr::new("brew"));
+        assert_eq!(
+            cmd.get_args().collect::<Vec<_>>(),
+            [OsStr::new("upgrade"), OsStr::new("bushel")]
+        );
+        let envs = cmd.get_envs().collect::<Vec<_>>();
+        assert!(
+            envs.contains(&(
+                OsStr::new("HOMEBREW_AUTO_UPDATE_SECS"),
+                Some(OsStr::new("0"))
+            )),
+            "the throttle has to be driven to zero: {envs:?}"
+        );
+        assert!(
+            envs.contains(&(OsStr::new("HOMEBREW_NO_AUTO_UPDATE"), None)),
+            "a shell-exported opt-out has to be dropped: {envs:?}"
+        );
     }
 
     #[test]
