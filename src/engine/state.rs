@@ -273,6 +273,9 @@ pub struct AppState {
     pub detail_scroll: u16,
     /// Auto-scroll the logs tab to the newest line.
     pub follow: bool,
+    /// Logs wrap: a raw line occupies as many display rows as the pane width
+    /// requires. On by default. Opposite of truncated. Session-global.
+    pub wrap: bool,
     /// Ring buffer of log lines for the followed container.
     pub log_lines: Vec<String>,
     /// Which container the log buffer belongs to.
@@ -337,6 +340,7 @@ impl AppState {
             filter_input: false,
             detail_scroll: 0,
             follow: true,
+            wrap: true,
             log_lines: Vec::new(),
             log_owner: None,
             logs_loading: false,

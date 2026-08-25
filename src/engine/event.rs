@@ -96,6 +96,8 @@ pub enum Command {
     ScrollTop,
     ScrollBottom,
     ToggleFollow,
+    /// Toggle log wrap vs truncated. Session-global, like follow.
+    ToggleWrap,
     /// One-key service start on the takeover screen.
     StartService,
 }

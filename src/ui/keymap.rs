@@ -6,7 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::engine::state::AppState;
 use crate::engine::{Command, DetailTab, Focus, Overlay, Pane, Screen};
 
-/// Effective scroll position of the detail pane at last draw (needed to convert
+/// Raw log line at the top of the logs viewport at last draw (needed to convert
 /// a scroll-up during follow into an absolute position).
 pub fn map_key(state: &AppState, key: KeyEvent, last_log_scroll: u16) -> Vec<Command> {
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -100,6 +100,7 @@ pub fn map_key(state: &AppState, key: KeyEvent, last_log_scroll: u16) -> Vec<Com
         KeyCode::Char('b') => vec![Command::DismissBanner],
         KeyCode::Char('f') => vec![Command::ToggleZoom],
         KeyCode::Char('F') if logs_tab => vec![Command::ToggleFollow],
+        KeyCode::Char('w') => vec![Command::ToggleWrap],
         KeyCode::Char('/') if state.focus == Focus::List => vec![Command::StartFilter],
         KeyCode::Enter if state.focus == Focus::List => vec![Command::FocusDetail],
         KeyCode::Esc => vec![Command::Back],
@@ -269,5 +270,29 @@ mod tests {
             vec![Command::ScrollDetail(10)]
         );
         assert_eq!(s.focus, Focus::List);
+    }
+
+    #[test]
+    fn w_toggles_wrap_from_list_or_detail() {
+        let mut s = main_state();
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('w')), 0),
+            vec![Command::ToggleWrap]
+        );
+        s.focus = Focus::Detail;
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('w')), 0),
+            vec![Command::ToggleWrap]
+        );
+    }
+
+    #[test]
+    fn w_in_filter_is_a_filter_char() {
+        let mut s = main_state();
+        s.filter_input = true;
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('w')), 0),
+            vec![Command::FilterChar('w')]
+        );
     }
 }
