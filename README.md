@@ -20,6 +20,14 @@ brew install frankieramirez/tap/bushel
 Shell installer, no Homebrew required (installs to `$CARGO_HOME/bin`, default `~/.cargo/bin`):
 
 ```sh
+curl -LsSf https://bushel.sh/install | sh
+```
+
+`https://bushel.sh/install` is a 302 to the installer attached to the latest GitHub
+release. To skip the redirect, or to pin the hardened curl flags, fetch the asset
+directly:
+
+```sh
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/frankieramirez/bushel/releases/latest/download/bushel-installer.sh | sh
 ```
 
