@@ -3,6 +3,7 @@
 //! render on event plus a frame ticker armed only while effects are active.
 
 use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -44,41 +45,128 @@ enum Cmd {
     Update,
 }
 
-/// Homebrew owns binaries under its prefix; self-replacing one desyncs brew's
-/// bookkeeping, so hand the upgrade back to brew instead.
-fn brew_managed() -> bool {
+/// How bushel got onto this machine, inferred from the binary's own path.
+/// Every install method owns the binaries it placed, so `update` hands the work
+/// back to whoever did the installing instead of self-replacing behind its back.
+#[derive(Debug, PartialEq, Eq)]
+enum InstallMethod {
+    Homebrew,
+    Nix,
+    Cargo,
+    /// Shell installer, or a hand-placed binary; axoupdater's receipt decides.
+    Receipt,
+}
+
+/// Order matters: brew's `bin` entries are symlinks into `Cellar`, so a
+/// canonicalized brew path always trips the first check, and a cargo dir only
+/// counts as the exe's immediate parent (cargo never nests binaries).
+fn classify(exe: &Path, cargo_bins: &[PathBuf]) -> InstallMethod {
+    if exe
+        .components()
+        .any(|c| c.as_os_str() == "Cellar" || c.as_os_str() == "homebrew")
+    {
+        return InstallMethod::Homebrew;
+    }
+    if exe.starts_with("/nix/store") {
+        return InstallMethod::Nix;
+    }
+    if exe
+        .parent()
+        .is_some_and(|dir| cargo_bins.iter().any(|bin| bin == dir))
+    {
+        return InstallMethod::Cargo;
+    }
+    InstallMethod::Receipt
+}
+
+/// Where `cargo install` may have put us: `CARGO_INSTALL_ROOT` outranks
+/// `CARGO_HOME`, which outranks `~/.cargo`. (`--root` and `install.root` can
+/// override both, but neither leaves a trace we could read back here.)
+fn cargo_bin_candidates(
+    install_root: Option<PathBuf>,
+    cargo_home: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    let home_cargo = home.map(|h| h.join(".cargo"));
+    [install_root, cargo_home.or(home_cargo)]
+        .into_iter()
+        .flatten()
+        .map(|root| root.join("bin"))
+        .collect()
+}
+
+/// The candidates that actually exist on disk, canonicalized so they compare
+/// against the equally canonical exe path.
+fn cargo_bin_dirs() -> Vec<PathBuf> {
+    cargo_bin_candidates(
+        std::env::var_os("CARGO_INSTALL_ROOT").map(PathBuf::from),
+        std::env::var_os("CARGO_HOME").map(PathBuf::from),
+        dirs::home_dir(),
+    )
+    .into_iter()
+    // Compare canonicalized paths on both sides, so a symlinked or relative
+    // prefix still matches the exe path we resolved.
+    .filter_map(|dir| std::fs::canonicalize(dir).ok())
+    .collect()
+}
+
+/// An unresolvable exe path falls back to `Receipt`, whose missing-receipt
+/// message is generic enough to be safe when we know nothing about the install.
+fn install_method() -> InstallMethod {
     std::env::current_exe()
         .and_then(std::fs::canonicalize)
-        .map(|p| {
-            p.components()
-                .any(|c| c.as_os_str() == "Cellar" || c.as_os_str() == "homebrew")
-        })
-        .unwrap_or(false)
+        .map(|exe| classify(&exe, &cargo_bin_dirs()))
+        .unwrap_or(InstallMethod::Receipt)
 }
 
 async fn self_update() -> i32 {
-    if brew_managed() {
-        println!("bushel was installed via Homebrew; running `brew upgrade bushel`…");
-        return match std::process::Command::new("brew")
-            .args(["upgrade", "bushel"])
-            .status()
-        {
-            Ok(s) if s.success() => 0,
-            Ok(_) => 1,
-            Err(e) => {
-                eprintln!("failed to run brew: {e}");
-                1
-            }
-        };
+    let method = install_method();
+    match method {
+        InstallMethod::Homebrew => {
+            println!("bushel was installed via Homebrew; running `brew upgrade bushel`…");
+            return match std::process::Command::new("brew")
+                .args(["upgrade", "bushel"])
+                .status()
+            {
+                Ok(s) if s.success() => 0,
+                Ok(_) => 1,
+                Err(e) => {
+                    eprintln!("failed to run brew: {e}");
+                    1
+                }
+            };
+        }
+        // The store is read-only and the derivation is the source of truth.
+        InstallMethod::Nix => {
+            eprintln!(
+                "bushel lives in the read-only Nix store and can't update itself.\n\
+                 Update the flake or channel that provides it, then rebuild."
+            );
+            return 1;
+        }
+        // The shell installer's default prefix is $CARGO_HOME too, so the path
+        // alone can't tell it from `cargo install` — only the receipt below can.
+        InstallMethod::Cargo | InstallMethod::Receipt => {}
     }
 
     let mut updater = axoupdater::AxoUpdater::new_for("bushel");
     if updater.load_receipt().is_err() {
-        eprintln!(
-            "no install receipt found — bushel wasn't installed via the shell installer.\n\
-             Reinstall with the installer from the latest GitHub release, or use your\n\
-             original install method to upgrade."
-        );
+        // No receipt, so the shell installer didn't put this here. `cargo install
+        // --git` can't tell new from current without a full rebuild, so print the
+        // command rather than burn minutes on a likely no-op.
+        if method == InstallMethod::Cargo {
+            eprintln!(
+                "bushel was installed with cargo; upgrade with:\n  \
+                 cargo install --git {} --force",
+                env!("CARGO_PKG_REPOSITORY")
+            );
+        } else {
+            eprintln!(
+                "no install receipt found — bushel wasn't installed via the shell installer.\n\
+                 Upgrade with whatever placed the binary, or reinstall with the installer\n\
+                 from the latest GitHub release."
+            );
+        }
         return 1;
     }
     match updater.run().await {
@@ -214,4 +302,113 @@ async fn main() -> std::io::Result<()> {
     engine.shutdown();
     ratatui::restore();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cargo_bins() -> Vec<PathBuf> {
+        vec![PathBuf::from("/Users/x/.cargo/bin")]
+    }
+
+    #[test]
+    fn homebrew_cellar_wins() {
+        assert_eq!(
+            classify(
+                Path::new("/opt/homebrew/Cellar/bushel/0.3.0/bin/bushel"),
+                &cargo_bins()
+            ),
+            InstallMethod::Homebrew
+        );
+    }
+
+    #[test]
+    fn nix_store_is_nix() {
+        assert_eq!(
+            classify(
+                Path::new("/nix/store/abc123-bushel-0.3.0/bin/bushel"),
+                &cargo_bins()
+            ),
+            InstallMethod::Nix
+        );
+    }
+
+    #[test]
+    fn binary_in_cargo_bin_is_cargo() {
+        assert_eq!(
+            classify(Path::new("/Users/x/.cargo/bin/bushel"), &cargo_bins()),
+            InstallMethod::Cargo
+        );
+    }
+
+    #[test]
+    fn nested_below_cargo_bin_is_not_cargo() {
+        assert_eq!(
+            classify(
+                Path::new("/Users/x/.cargo/bin/nested/bushel"),
+                &cargo_bins()
+            ),
+            InstallMethod::Receipt
+        );
+    }
+
+    #[test]
+    fn shell_installer_falls_through_to_receipt() {
+        assert_eq!(
+            classify(Path::new("/Users/x/.local/bin/bushel"), &cargo_bins()),
+            InstallMethod::Receipt
+        );
+    }
+
+    #[test]
+    fn no_cargo_dirs_still_classifies() {
+        assert_eq!(
+            classify(Path::new("/Users/x/.cargo/bin/bushel"), &[]),
+            InstallMethod::Receipt
+        );
+    }
+
+    #[test]
+    fn install_root_outranks_cargo_home() {
+        let dirs = cargo_bin_candidates(
+            Some(PathBuf::from("/opt/cargo-root")),
+            Some(PathBuf::from("/Users/x/altcargo")),
+            Some(PathBuf::from("/Users/x")),
+        );
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/opt/cargo-root/bin"),
+                PathBuf::from("/Users/x/altcargo/bin"),
+            ]
+        );
+        assert_eq!(
+            classify(Path::new("/opt/cargo-root/bin/bushel"), &dirs),
+            InstallMethod::Cargo
+        );
+    }
+
+    #[test]
+    fn cargo_home_outranks_home_dir() {
+        let dirs = cargo_bin_candidates(
+            None,
+            Some(PathBuf::from("/Users/x/altcargo")),
+            Some(PathBuf::from("/Users/x")),
+        );
+        assert_eq!(dirs, vec![PathBuf::from("/Users/x/altcargo/bin")]);
+        assert_eq!(
+            classify(Path::new("/Users/x/.cargo/bin/bushel"), &dirs),
+            InstallMethod::Receipt
+        );
+    }
+
+    #[test]
+    fn home_dir_is_the_last_resort() {
+        assert_eq!(
+            cargo_bin_candidates(None, None, Some(PathBuf::from("/Users/x"))),
+            vec![PathBuf::from("/Users/x/.cargo/bin")]
+        );
+        assert!(cargo_bin_candidates(None, None, None).is_empty());
+    }
 }
