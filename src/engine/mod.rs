@@ -681,7 +681,10 @@ impl<R: Runner> Engine<R> {
             }
             Command::FilterCommit => self.state.filter_input = false,
             Command::OpenActionMenu => self.state.overlay = Overlay::ActionMenu,
-            Command::OpenHelp => self.state.overlay = Overlay::Help,
+            Command::OpenHelp => {
+                self.state.overlay = Overlay::Help;
+                self.state.help_scroll = 0;
+            }
             Command::OpenMessageLog => self.state.overlay = Overlay::MessageLog,
             Command::CloseOverlay => self.state.overlay = Overlay::None,
             Command::DismissBanner => self.state.version_banner = None,
@@ -737,6 +740,7 @@ impl<R: Runner> Engine<R> {
                 self.state.detail_scroll = v;
                 self.state.follow = false;
             }
+            Command::SetHelpScroll(v) => self.state.help_scroll = v,
             Command::ScrollTop => self.state.detail_scroll = 0,
             Command::ScrollBottom => self.state.detail_scroll = u16::MAX,
             Command::ToggleFollow => self.state.follow = !self.state.follow,

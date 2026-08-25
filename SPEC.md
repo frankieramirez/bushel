@@ -94,13 +94,13 @@ Persistent at the top of the detail pane for the selected container, on both Log
 
 - Vim-flavored (`j/k`, `g/G`) plus arrows; `/` fuzzy filter over name/image/status, `Esc` clears. Filter only hits the active panel.
 - Direct action keys everywhere, plus the **`space` action menu**: a bottom sheet listing valid actions for the selection with their keys, destructive ones tinted. Doubles as key discovery.
-- `?` help overlay: complete grouped cheatsheet. The bottom bar is the primary discovery path.
+- `?` help overlay: one complete grouped cheatsheet at every size. The bottom bar is the primary discovery path.
 
 ### Confirmations, errors, resilience ([Grilling: overlay behavior at the 55×20 floor](https://github.com/frankieramirez/bushel/issues/20))
 
 - Destructive confirm: centered 7-row modal, the exact command as its body, `y` runs / `Esc` cancels. If the command is longer than the box, wrap it inside; do not grow the modal.
-- **Action menu at the floor**: covers the detail pane only, never the rail. Height `min(n+2, 9)`. Omit `l`/`i` from the floor sheet (keys still work). Direct action keys unchanged.
-- **Help**: one cheatsheet, clamp to the frame, scroll if it overflows. At 55×20 that is effectively full-screen. No second shorter list.
+- **Action menu**: a bottom sheet on the detail pane only, never the rail. Height `min(n+2, 9)`. The sheet does not scroll, so when it cannot list everything it drops `l`/`i` first — always at the floor, and anywhere else the list would overflow the cap. Those keys still work. Direct action keys unchanged.
+- **Help**: one cheatsheet, clamp to the frame, scroll (`j/k`, PgUp/PgDn, `g/G`) if it overflows. At 55×20 that is effectively full-screen. No second shorter list. Long descriptions wrap to the pane width.
 - Errors: status-bar one-liner with the stderr gist; a **message log** scrollback (`m`) holds full stderr. No modal-per-error.
 - Service down: full-screen takeover with one-key start, output streamed. Version mismatch: dismissible banner, never blocking.
 - Bottom bar: context-sensitive key hints + right-aligned status cluster (service dot, CLI version, poll spinner). At the 55×20 floor the status cluster is dropped.

@@ -6,9 +6,15 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::engine::state::AppState;
 use crate::engine::{Command, DetailTab, Focus, Overlay, Pane, Screen};
 
-/// Raw log line at the top of the logs viewport at last draw (needed to convert
-/// a scroll-up during follow into an absolute position).
-pub fn map_key(state: &AppState, key: KeyEvent, last_log_scroll: u16) -> Vec<Command> {
+/// `last_log_scroll` is the raw log line at the top of the logs viewport at last
+/// draw (needed to convert a scroll-up during follow into an absolute position);
+/// `help_max_scroll` is how far the help cheatsheet could scroll at last draw.
+pub fn map_key(
+    state: &AppState,
+    key: KeyEvent,
+    last_log_scroll: u16,
+    help_max_scroll: u16,
+) -> Vec<Command> {
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return vec![Command::Quit];
     }
@@ -37,7 +43,30 @@ pub fn map_key(state: &AppState, key: KeyEvent, last_log_scroll: u16) -> Vec<Com
                 _ => vec![],
             };
         }
-        Overlay::Help | Overlay::MessageLog => {
+        Overlay::Help => {
+            // one clamped, scrollable cheatsheet — no shorter floor variant
+            let to = |delta: isize| -> Vec<Command> {
+                let v = if delta < 0 {
+                    state.help_scroll.saturating_sub((-delta) as u16)
+                } else {
+                    state.help_scroll.saturating_add(delta as u16)
+                };
+                vec![Command::SetHelpScroll(v.min(help_max_scroll))]
+            };
+            return match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
+                    vec![Command::CloseOverlay]
+                }
+                KeyCode::Char('j') | KeyCode::Down => to(1),
+                KeyCode::Char('k') | KeyCode::Up => to(-1),
+                KeyCode::PageDown => to(10),
+                KeyCode::PageUp => to(-10),
+                KeyCode::Char('g') => vec![Command::SetHelpScroll(0)],
+                KeyCode::Char('G') => vec![Command::SetHelpScroll(help_max_scroll)],
+                _ => vec![],
+            };
+        }
+        Overlay::MessageLog => {
             return match key.code {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') | KeyCode::Char('m') => {
                     vec![Command::CloseOverlay]
@@ -178,7 +207,7 @@ mod tests {
         let mut s = main_state();
         s.screen = Screen::Splash;
         assert_eq!(
-            map_key(&s, key(KeyCode::Char('x')), 0),
+            map_key(&s, key(KeyCode::Char('x')), 0, 0),
             vec![Command::SkipSplash]
         );
     }
@@ -188,11 +217,14 @@ mod tests {
         let mut s = main_state();
         s.screen = Screen::ServiceDown;
         assert_eq!(
-            map_key(&s, key(KeyCode::Char('s')), 0),
+            map_key(&s, key(KeyCode::Char('s')), 0, 0),
             vec![Command::StartService]
         );
-        assert_eq!(map_key(&s, key(KeyCode::Char('q')), 0), vec![Command::Quit]);
-        assert_eq!(map_key(&s, key(KeyCode::Char('d')), 0), vec![]);
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('q')), 0, 0),
+            vec![Command::Quit]
+        );
+        assert_eq!(map_key(&s, key(KeyCode::Char('d')), 0, 0), vec![]);
     }
 
     #[test]
@@ -204,15 +236,15 @@ mod tests {
             target: "web".into(),
         };
         assert_eq!(
-            map_key(&s, key(KeyCode::Char('y')), 0),
+            map_key(&s, key(KeyCode::Char('y')), 0, 0),
             vec![Command::ConfirmYes]
         );
         assert_eq!(
-            map_key(&s, key(KeyCode::Esc), 0),
+            map_key(&s, key(KeyCode::Esc), 0, 0),
             vec![Command::CloseOverlay]
         );
         // other keys do nothing — no accidental direct actions under a modal
-        assert_eq!(map_key(&s, key(KeyCode::Char('d')), 0), vec![]);
+        assert_eq!(map_key(&s, key(KeyCode::Char('d')), 0, 0), vec![]);
     }
 
     #[test]
@@ -220,15 +252,15 @@ mod tests {
         let s = main_state();
         // running container: 's' is stop, 'K' is kill
         assert_eq!(
-            map_key(&s, key(KeyCode::Char('s')), 0),
+            map_key(&s, key(KeyCode::Char('s')), 0, 0),
             vec![Command::Run(UiAction::Stop)]
         );
         assert_eq!(
-            map_key(&s, key(KeyCode::Char('K')), 0),
+            map_key(&s, key(KeyCode::Char('K')), 0, 0),
             vec![Command::Run(UiAction::Kill)]
         );
         // 'x' is bound to nothing
-        assert_eq!(map_key(&s, key(KeyCode::Char('x')), 0), vec![]);
+        assert_eq!(map_key(&s, key(KeyCode::Char('x')), 0, 0), vec![]);
     }
 
     #[test]
@@ -236,7 +268,7 @@ mod tests {
         let mut s = main_state();
         s.focus = Focus::Detail;
         s.follow = true;
-        let cmds = map_key(&s, key(KeyCode::Char('k')), 42);
+        let cmds = map_key(&s, key(KeyCode::Char('k')), 42, 0);
         assert_eq!(cmds, vec![Command::SetDetailScroll(41)]);
     }
 
@@ -246,7 +278,7 @@ mod tests {
         s.focus = Focus::Detail;
         s.follow = false;
         assert_eq!(
-            map_key(&s, key(KeyCode::Char('G')), 0),
+            map_key(&s, key(KeyCode::Char('G')), 0, 0),
             vec![Command::ToggleFollow]
         );
     }
@@ -256,10 +288,10 @@ mod tests {
         let mut s = main_state();
         s.filter_input = true;
         assert_eq!(
-            map_key(&s, key(KeyCode::Char('d')), 0),
+            map_key(&s, key(KeyCode::Char('d')), 0, 0),
             vec![Command::FilterChar('d')]
         );
-        assert_eq!(map_key(&s, key(KeyCode::Esc), 0), vec![Command::Back]);
+        assert_eq!(map_key(&s, key(KeyCode::Esc), 0, 0), vec![Command::Back]);
     }
 
     #[test]
@@ -267,7 +299,7 @@ mod tests {
         let mut s = main_state();
         s.detail_tab = DetailTab::Inspect;
         assert_eq!(
-            map_key(&s, key(KeyCode::PageDown), 0),
+            map_key(&s, key(KeyCode::PageDown), 0, 0),
             vec![Command::ScrollDetail(10)]
         );
         assert_eq!(s.focus, Focus::List);
@@ -277,12 +309,12 @@ mod tests {
     fn w_toggles_wrap_from_list_or_detail() {
         let mut s = main_state();
         assert_eq!(
-            map_key(&s, key(KeyCode::Char('w')), 0),
+            map_key(&s, key(KeyCode::Char('w')), 0, 0),
             vec![Command::ToggleWrap]
         );
         s.focus = Focus::Detail;
         assert_eq!(
-            map_key(&s, key(KeyCode::Char('w')), 0),
+            map_key(&s, key(KeyCode::Char('w')), 0, 0),
             vec![Command::ToggleWrap]
         );
     }
@@ -292,8 +324,95 @@ mod tests {
         let mut s = main_state();
         s.filter_input = true;
         assert_eq!(
-            map_key(&s, key(KeyCode::Char('w')), 0),
+            map_key(&s, key(KeyCode::Char('w')), 0, 0),
             vec![Command::FilterChar('w')]
+        );
+    }
+
+    #[test]
+    fn help_scrolls_and_stops_at_the_end_of_the_cheatsheet() {
+        let mut s = main_state();
+        s.overlay = Overlay::Help;
+        // j/k move one row, clamped to what the last draw could scroll
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('j')), 0, 4),
+            vec![Command::SetHelpScroll(1)]
+        );
+        s.help_scroll = 4;
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('j')), 0, 4),
+            vec![Command::SetHelpScroll(4)],
+            "cannot scroll past the last row"
+        );
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('k')), 0, 4),
+            vec![Command::SetHelpScroll(3)]
+        );
+        s.help_scroll = 0;
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('k')), 0, 4),
+            vec![Command::SetHelpScroll(0)]
+        );
+        assert_eq!(
+            map_key(&s, key(KeyCode::PageDown), 0, 4),
+            vec![Command::SetHelpScroll(4)]
+        );
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('G')), 0, 4),
+            vec![Command::SetHelpScroll(4)]
+        );
+        // and it still closes
+        assert_eq!(
+            map_key(&s, key(KeyCode::Esc), 0, 4),
+            vec![Command::CloseOverlay]
+        );
+    }
+
+    #[test]
+    fn a_help_that_fits_does_not_scroll() {
+        let mut s = main_state();
+        s.overlay = Overlay::Help;
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('j')), 0, 0),
+            vec![Command::SetHelpScroll(0)]
+        );
+    }
+
+    #[test]
+    fn the_message_log_is_unchanged_at_every_size() {
+        let mut s = main_state();
+        s.overlay = Overlay::MessageLog;
+        for c in ['q', 'm', '?'] {
+            assert_eq!(
+                map_key(&s, key(KeyCode::Char(c)), 0, 0),
+                vec![Command::CloseOverlay]
+            );
+        }
+        assert_eq!(map_key(&s, key(KeyCode::Char('j')), 0, 0), vec![]);
+    }
+
+    #[test]
+    fn l_and_i_still_switch_tabs_while_the_sheet_is_open() {
+        let mut s = main_state();
+        s.overlay = Overlay::ActionMenu;
+        // the sheet routes them as overlay chars; the engine runs the tab jump
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('l')), 0, 0),
+            vec![Command::OverlayChar('l')]
+        );
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('i')), 0, 0),
+            vec![Command::OverlayChar('i')]
+        );
+        // and directly while it is closed
+        s.overlay = Overlay::None;
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('l')), 0, 0),
+            vec![Command::SetDetailTab(DetailTab::Logs)]
+        );
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('i')), 0, 0),
+            vec![Command::SetDetailTab(DetailTab::Inspect)]
         );
     }
 }
