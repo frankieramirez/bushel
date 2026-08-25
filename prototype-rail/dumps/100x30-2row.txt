@@ -7,7 +7,7 @@ beside  rail 36×27  detail 64×27  collapse=roomy  cap=36  stack<80  log_cols=6
 
 ╭ containers 8 ────────────────────╮╭ detail ──────────────────────────────────────────────────────╮
 │name                 cpu    mem   ││  Logs [l]  │  Inspect [i]                                    │
-│● redis               1.2%    48M ││cpu  33.0% ▃▃▃▃▃▃▃▃▂▂▂▂▂▂▂▂▂▂▂▂mem    42% ▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃│
+│● redis               1.2%    48M ││cpu  33.0% ▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃▃mem    42% ▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆▆│
 │● postgres            4.8%   256M ││net ↑11.7K/s ↓3.9K/s   dsk r 2.0K/s  w 7.8K/s                 │
 │● caddy               0.3%    12M ││2026-08-24T18:02:11.441Z INFO  postgres  checkpoint complete: │
 │● bushel-smoke        0.1%     4M ││2026-08-24T18:02:12.018Z INFO  redis     replica 192.168.64.4:│

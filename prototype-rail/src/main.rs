@@ -5,7 +5,7 @@
 //!
 //! Starting proposal (research #16):
 //!   - 3 rows: cpu spark, mem spark, net+disk as text
-//!   - Sparkline eighth-blocks, newest-first + RightToLeft, .max(100) on cpu/mem
+//!   - Sparkline eighth-blocks, newest-first + RightToLeft, auto-scaled (number stays true %)
 //!   - `--ascii` / `a` swaps a custom " .:-=+*#" bar set
 //!   - strip yields when the detail inner has fewer than strip_h + 4 rows
 
@@ -1149,7 +1149,7 @@ fn draw_strip(frame: &mut Frame, state: &State, area: Rect) {
                 cpu_v,
                 cpu_style,
                 &cpu,
-                Some(100),
+                None,
                 state.ascii,
             );
             draw_spark(
@@ -1159,7 +1159,7 @@ fn draw_strip(frame: &mut Frame, state: &State, area: Rect) {
                 mem_v,
                 mem_style,
                 &mem,
-                Some(100),
+                None,
                 state.ascii,
             );
             draw_rates(
@@ -1190,7 +1190,7 @@ fn draw_strip(frame: &mut Frame, state: &State, area: Rect) {
                 cpu_v,
                 cpu_style,
                 &cpu,
-                Some(100),
+                None,
                 state.ascii,
             );
             draw_spark(
@@ -1200,7 +1200,7 @@ fn draw_strip(frame: &mut Frame, state: &State, area: Rect) {
                 mem_v,
                 mem_style,
                 &mem,
-                Some(100),
+                None,
                 state.ascii,
             );
             let net_max = rx
@@ -1261,7 +1261,7 @@ fn draw_strip(frame: &mut Frame, state: &State, area: Rect) {
                 cpu_v,
                 cpu_style,
                 &cpu,
-                Some(100),
+                None,
                 state.ascii,
             );
             draw_spark(
@@ -1271,7 +1271,7 @@ fn draw_strip(frame: &mut Frame, state: &State, area: Rect) {
                 mem_v,
                 mem_style,
                 &mem,
-                Some(100),
+                None,
                 state.ascii,
             );
             draw_rates(frame, rows[2], cur, running, state.ascii);

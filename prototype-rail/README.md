@@ -23,7 +23,7 @@ Strip keys: `s` cycles 2 / 3 / 4 rows · `a` toggles ASCII · `l`/`i` logs vs in
 | Knob | Starting value |
 | --- | --- |
 | Height | **3 rows**: cpu spark, mem spark, net+disk as one text row |
-| Glyphs | eighth-block `▁▂▃▄▅▆▇█`; ASCII ramp ` .:-=+*#` |
+| Glyphs | eighth-block `▁▂▃▄▅▆▇█`; ASCII ramp ` .:-=+*#`; sparks auto-scale, number stays true % |
 | Collapse | strip yields when detail inner < strip_h + **4** log rows |
 | Window | 5 minutes at 1s; sparkline shows the most recent **width** seconds, newest on the right |
 | Inspect | same strip as Logs |
