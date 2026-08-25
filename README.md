@@ -93,7 +93,8 @@ A flag can only switch something on; it is ORed with the file. Full reference:
 
 The docs live at **[bushel.sh/docs](https://bushel.sh/docs)** — install, keys,
 config, troubleshooting, and [why bushel is shaped the way it
-is](https://bushel.sh/docs/why).
+is](https://bushel.sh/docs/why). What's still to come is on the
+[roadmap](../../issues/56).
 
 For contributors: the v0.1 scope, architecture, and rationale are in
 [SPEC.md](SPEC.md), the domain vocabulary in [CONTEXT.md](CONTEXT.md), and the
