@@ -470,6 +470,23 @@ mod real_capture_tests {
     }
 
     #[test]
+    fn real_ls_with_mounts_parses() {
+        // Captured 2026-08-24: mount `type` is a tagged object ({"virtiofs":{}},
+        // {"volume":{"name":…}}), not a string, and a volume's name lives in the
+        // tag body — the source is the host path to its volume.img.
+        let list: Vec<ContainerJson> =
+            serde_json::from_slice(&real("ls_mounts.json")).unwrap();
+        let fixture = list.iter().find(|c| c.id == "bushel-fixture").unwrap();
+        assert_eq!(
+            fixture.volume_sources().collect::<Vec<_>>(),
+            vec!["bushel-fixture-vol"]
+        );
+        // bind (virtiofs) mounts parse but contribute no volume sources
+        let comicarr = list.iter().find(|c| c.id == "comicarr").unwrap();
+        assert_eq!(comicarr.volume_sources().count(), 0);
+    }
+
+    #[test]
     fn real_image_ls_parses() {
         let list: Vec<ImageJson> = serde_json::from_slice(&real("image_ls.json")).unwrap();
         assert!(list.iter().any(|i| i.reference().contains("alpine")));

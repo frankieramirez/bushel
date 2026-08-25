@@ -35,11 +35,26 @@ pub struct ImageRef {
 /// to read which volumes a container references (the in-use badge).
 #[derive(Debug, Clone, Deserialize)]
 pub struct Mount {
-    /// Volume name for volume mounts, host path for binds.
+    /// Host path (for volume mounts, the path to the backing volume.img).
     #[serde(default)]
     pub source: Option<String>,
     #[serde(default, rename = "type")]
-    pub kind: Option<String>,
+    pub kind: Option<MountKind>,
+}
+
+/// Mount type is a tagged object — `{"virtiofs":{}}`, `{"tmpfs":{}}`,
+/// `{"volume":{"name":…}}`. Only the volume variant carries data bushel reads;
+/// the others deserialize to an empty MountKind.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MountKind {
+    #[serde(default)]
+    pub volume: Option<VolumeMountInfo>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct VolumeMountInfo {
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -74,11 +89,12 @@ impl ContainerJson {
 
     /// Names of volumes this container references (for the in-use badge).
     pub fn volume_sources(&self) -> impl Iterator<Item = &str> {
-        self.configuration
-            .mounts
-            .iter()
-            .filter(|m| m.kind.as_deref() == Some("volume"))
-            .filter_map(|m| m.source.as_deref())
+        self.configuration.mounts.iter().filter_map(|m| {
+            m.kind
+                .as_ref()
+                .and_then(|k| k.volume.as_ref())
+                .and_then(|v| v.name.as_deref())
+        })
     }
 }
 
