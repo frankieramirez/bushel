@@ -101,6 +101,13 @@ For contributors: the v0.1 scope, architecture, and rationale are in
 decisions that outlived their tickets in [docs/adr](docs/adr). The design was
 worked out in the open on the [wayfinder map](../../issues/1).
 
+## Getting help
+
+- **Docs**: [bushel.sh/docs](https://bushel.sh/docs), including [troubleshooting](https://bushel.sh/docs/troubleshooting)
+- **Questions**: [GitHub Discussions (Q&A)](https://github.com/frankieramirez/bushel/discussions/new?category=q-a)
+- **Bugs / features**: [open an issue](https://github.com/frankieramirez/bushel/issues/new/choose) — see [CONTRIBUTING.md](CONTRIBUTING.md)
+- **Security**: [SECURITY.md](SECURITY.md)
+
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) · [Code of Conduct](CODE_OF_CONDUCT.md)

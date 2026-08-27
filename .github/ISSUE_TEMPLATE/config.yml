@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a question / get help
+    url: https://github.com/frankieramirez/bushel/discussions/new?category=q-a
+    about: Install snags, "how do I…", and other questions that are not bugs or feature proposals. Requires Discussions to be enabled on the repo.
+  - name: Docs & troubleshooting
+    url: https://bushel.sh/docs/troubleshooting
+    about: Start here before filing — common startup, empty-list, and action failures.
+  - name: Roadmap & parked ideas
+    url: https://github.com/frankieramirez/bushel/issues/56
+    about: What's next, what's parked, and why. Comment there before opening a duplicate feature request.
