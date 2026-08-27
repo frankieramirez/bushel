@@ -2,11 +2,23 @@
 
 Thanks for your interest. bushel is built primarily for the author's own workflow, so scope is guarded deliberately — read [SPEC.md](SPEC.md) (especially the non-goals) before proposing features.
 
+## Where to ask or report
+
+| Kind | Where |
+| --- | --- |
+| Question / install help / "how do I…" | [Discussions → Q&A](https://github.com/frankieramirez/bushel/discussions/new?category=q-a) |
+| Bug | [Bug report](https://github.com/frankieramirez/bushel/issues/new?template=bug_report.md) |
+| Feature proposal | [Feature request](https://github.com/frankieramirez/bushel/issues/new?template=feature_request.md) (check [the roadmap](https://github.com/frankieramirez/bushel/issues/56) first) |
+| Security vulnerability | [SECURITY.md](SECURITY.md) — not a public issue |
+
+Also skim [bushel.sh/docs/troubleshooting](https://bushel.sh/docs/troubleshooting) before opening either path.
+
 ## Ground rules
 
-- **Bugs**: open an issue with your `container --version`, macOS version, and the relevant lines from bushel's message log (`m`).
+- **Bugs**: include your `container --version`, macOS version, bushel version, and the relevant lines from bushel's message log (`m`).
 - **Features**: open an issue first. Anything on the SPEC.md non-goals list needs a strong case; PRs for undiscussed features may be declined.
-- **Vocabulary**: [CONTEXT.md](CONTEXT.md) defines the project's terms (and the words we avoid). Code, issues, and docs should use them.
+- **Vocabulary**: [CONTEXT.md](CONTEXT.md) defines the project's terms (and the words we avoid). Code, issues, discussions, and docs should use them.
+- **Conduct**: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ## Pull requests
 

@@ -1,0 +1,25 @@
+title: "[Q] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Questions and install help belong here. Bug reports and feature proposals should use [Issues](https://github.com/frankieramirez/bushel/issues/new/choose).
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What are you trying to do, and where are you stuck?
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Optional but helpful for install / runtime questions.
+      value: |
+        - bushel version:
+        - `container --version`:
+        - macOS version:
+    validations:
+      required: false
