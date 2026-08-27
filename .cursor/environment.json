@@ -1,0 +1,4 @@
+{
+  "name": "bushel",
+  "install": "rustup toolchain install stable -c rustfmt -c clippy --no-self-update && rustup default stable && cargo build --all-targets --locked"
+}
