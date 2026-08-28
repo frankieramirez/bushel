@@ -1,7 +1,3 @@
-//! bushel's command line, in the library rather than the binary so the docs
-//! emitter can read the real flags — their names, their help text — instead of
-//! keeping a second copy that would drift.
-
 use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]

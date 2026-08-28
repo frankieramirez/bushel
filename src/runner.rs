@@ -1,6 +1,3 @@
-//! The low-level subprocess seam. Every `container` CLI invocation passes through
-//! a [`Runner`]; the real one spawns processes, the mock one replays fixtures.
-
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -10,10 +7,8 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-/// The binary bushel wraps. Never linked as a framework — always a subprocess.
 pub const CONTAINER_BIN: &str = "container";
 
-/// A finished invocation. `code` is the process exit status (128 + signal if killed).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Output {
     pub code: i32,
@@ -47,7 +42,6 @@ impl Output {
     }
 }
 
-/// One line (or the terminal exit code) from a long-lived subprocess.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamEvent {
     Stdout(String),
@@ -55,11 +49,8 @@ pub enum StreamEvent {
     Exit(i32),
 }
 
-/// Receiver end of a streaming invocation.
 pub type LineStream = mpsc::Receiver<StreamEvent>;
 
-/// Kills the subprocess behind a [`LineStream`]. `logs -f` never exits on its own
-/// when a container stops, so bushel always holds one of these.
 pub struct KillHandle {
     inner: Box<dyn FnOnce() + Send + Sync>,
 }
@@ -69,7 +60,6 @@ impl KillHandle {
         Self { inner: Box::new(f) }
     }
 
-    /// A handle over a process that has already gone; killing it is a no-op.
     pub fn noop() -> Self {
         Self::new(|| {})
     }
@@ -87,14 +77,11 @@ impl std::fmt::Debug for KillHandle {
 
 #[async_trait]
 pub trait Runner: Send + Sync + 'static {
-    /// Run to completion, collecting stdout and stderr.
     async fn run(&self, args: &[String]) -> std::io::Result<Output>;
 
-    /// Spawn a long-lived process, streaming its output line by line.
     fn spawn_stream(&self, args: &[String]) -> std::io::Result<(LineStream, KillHandle)>;
 }
 
-/// The real runner: `container <args>` via tokio, no PTY.
 #[derive(Debug, Default, Clone)]
 pub struct CliRunner;
 
@@ -150,8 +137,6 @@ impl Runner for CliRunner {
             });
         }
 
-        // The child is owned by the waiter task; killing goes through this channel so
-        // the handle stays `Send + Sync` without a mutex around the child.
         let (kill_tx, mut kill_rx) = mpsc::channel::<()>(1);
         tokio::spawn(async move {
             let code = tokio::select! {
@@ -173,8 +158,6 @@ impl Runner for CliRunner {
     }
 }
 
-/// Replays canned outputs keyed on the exact argument vector. Used by the Client
-/// fixture tests and the end-to-end engine tests.
 #[derive(Default)]
 pub struct MockRunner {
     responses: Mutex<HashMap<Vec<String>, Vec<Output>>>,
@@ -189,8 +172,6 @@ impl MockRunner {
         Self::default()
     }
 
-    /// Queue one response for `args`. Each call pops the oldest queued response;
-    /// once the queue drains, the most recently returned one replays.
     pub fn on(&self, args: &[&str], out: Output) -> &Self {
         let key: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         self.responses
@@ -202,7 +183,6 @@ impl MockRunner {
         self
     }
 
-    /// Replace everything registered for `args` with a single response.
     pub fn set(&self, args: &[&str], out: Output) -> &Self {
         let key: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         self.responses.lock().unwrap().remove(&key);
@@ -221,12 +201,10 @@ impl MockRunner {
         self
     }
 
-    /// Every argument vector seen so far, in order.
     pub fn calls(&self) -> Vec<Vec<String>> {
         self.calls.lock().unwrap().clone()
     }
 
-    /// The calls rendered the way the command preview renders them.
     pub fn commands(&self) -> Vec<String> {
         self.calls()
             .iter()
@@ -354,9 +332,8 @@ mod tests {
 
     #[tokio::test]
     async fn real_runner_reports_exit_code_and_stderr() {
-        // `container --version` is client-side and works with the service down.
         let out = CliRunner.run(&args(&["--version"])).await;
-        let Ok(out) = out else { return }; // CLI absent (CI): nothing to assert.
+        let Ok(out) = out else { return };
         assert_eq!(out.code, 0);
         assert!(
             out.stdout_str().contains("container CLI version"),

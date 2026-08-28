@@ -22,9 +22,6 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
 
-  # The release builds docs.json on dist's *global* runner, which is Linux, and
-  # bushel is otherwise only ever built on macOS. Without this the first sign of
-  # a Linux-breaking change would be a release failing after the tag was pushed.
   docs-json:
     name: docs.json builds on linux
     runs-on: ubuntu-22.04

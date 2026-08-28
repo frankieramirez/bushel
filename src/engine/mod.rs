@@ -1,7 +1,3 @@
-//! The headless core: owns `AppState`, the poller cadence, the action queue,
-//! and the log follower. Knows nothing about rendering — tests inject events
-//! and assert state.
-
 pub mod event;
 pub mod state;
 
@@ -16,9 +12,6 @@ use crate::runner::{KillHandle, Runner, StreamEvent};
 pub use event::{AppEvent, Command};
 pub use state::*;
 
-/// Poll cadence bookkeeping: containers every tick (1s); images/volumes every
-/// Nth tick, on pane entry, and after mutating actions; service probe every
-/// 2nd tick while down.
 pub const SLOW_POLL_TICKS: u64 = 10;
 pub const PROBE_TICKS: u64 = 2;
 
@@ -59,7 +52,6 @@ impl<R: Runner> Engine<R> {
         }
     }
 
-    /// Startup probes: version check, service status, and the initial lists.
     pub fn start(&mut self) {
         self.spawn_version_check();
         self.spawn_probe();
@@ -69,7 +61,6 @@ impl<R: Runner> Engine<R> {
         self.refresh_dirty();
     }
 
-    /// One poll tick (1s cadence, driven by the outer loop's interval).
     pub fn on_tick(&mut self) {
         self.state.tick += 1;
         if let Some(t) = &self.state.toast {
@@ -78,7 +69,6 @@ impl<R: Runner> Engine<R> {
             }
         }
         if self.service_down {
-            // entity polling stops; probe every 2s until recovery
             if self.state.tick % PROBE_TICKS == 0 && !self.state.service_starting {
                 self.spawn_probe();
             }
@@ -94,8 +84,6 @@ impl<R: Runner> Engine<R> {
         }
         self.refresh_dirty();
     }
-
-    // ---- task spawning ------------------------------------------------------
 
     fn spawn_containers_poll(&mut self) {
         if self.poll_inflight {
@@ -183,7 +171,6 @@ impl<R: Runner> Engine<R> {
         });
     }
 
-    /// Synthetic restart: stop then start, one pending action, one ActionDone.
     fn spawn_restart(&mut self, id: String) {
         let client = self.client.clone();
         let tx = self.tx.clone();
@@ -211,9 +198,6 @@ impl<R: Runner> Engine<R> {
         });
     }
 
-    // ---- log follower ------------------------------------------------------------
-
-    /// The follower lives only while the Logs tab shows a running container.
     fn sync_follower(&mut self) {
         let desired: Option<String> = if self.state.screen == Screen::Main
             && self.state.pane == Pane::Containers
@@ -242,7 +226,6 @@ impl<R: Runner> Engine<R> {
 
         let Some(id) = desired else { return };
 
-        // backlog first …
         let client = self.client.clone();
         let tx = self.tx.clone();
         let backlog_id = id.clone();
@@ -260,7 +243,6 @@ impl<R: Runner> Engine<R> {
                 .await;
         });
 
-        // … while the follow stream buffers behind it.
         match self.client.spawn_follow(&id) {
             Ok((mut rx, kill)) => {
                 self.follower = Some((id.clone(), kill));
@@ -325,8 +307,6 @@ impl<R: Runner> Engine<R> {
         });
     }
 
-    // ---- update loop: task events -----------------------------------------------
-
     pub fn apply(&mut self, event: AppEvent) {
         match event {
             AppEvent::Containers(Ok(list)) => {
@@ -367,7 +347,7 @@ impl<R: Runner> Engine<R> {
                     .state
                     .apply_stats(&stats, &self.stats_prev, Instant::now());
             }
-            AppEvent::Stats(Err(_)) => {} // stats are best-effort garnish
+            AppEvent::Stats(Err(_)) => {}
             AppEvent::ServiceProbe(result) => {
                 self.probe_inflight = false;
                 match result {
@@ -511,13 +491,10 @@ impl<R: Runner> Engine<R> {
         }
     }
 
-    /// `counts_toward_degraded`: only the per-tick containers poll drives the
-    /// degraded banner; images/volumes failures just log.
     fn on_poll_error(&mut self, e: CliError, counts_toward_degraded: bool) {
         match e {
             CliError::ServiceDown { .. } => self.enter_service_down(),
             CliError::ParseFailure { raw } => {
-                // keep last good state; degraded banner only after 3 straight failures
                 self.state.log_message(format!("poll parse failure: {raw}"));
                 if counts_toward_degraded {
                     self.state.parse_failures += 1;
@@ -536,8 +513,6 @@ impl<R: Runner> Engine<R> {
         }
     }
 
-    /// Dissolve the splash once data has landed — and, on the very first launch,
-    /// once the dwell has elapsed. Called on poll results and every render tick.
     pub fn maybe_dissolve_splash(&mut self) {
         if self.state.screen == Screen::Splash && self.state.splash_may_dissolve() {
             self.state.screen = Screen::Main;
@@ -559,7 +534,7 @@ impl<R: Runner> Engine<R> {
                 .log_message("service down: entity polling stopped, probing every 2s");
         }
         self.state.screen = Screen::ServiceDown;
-        self.sync_follower(); // kills any live follower
+        self.sync_follower();
     }
 
     fn on_action_done(
@@ -579,7 +554,6 @@ impl<R: Runner> Engine<R> {
                     self.state.activity = None;
                     self.state.toast(format!("done: {command}"), false);
                 } else {
-                    // the outcome is announced when a poll confirms it, not here
                     self.state.set_pending(
                         &id,
                         Some(Pending {
@@ -590,7 +564,6 @@ impl<R: Runner> Engine<R> {
                     self.state
                         .log_message(format!("$ {command} → ok, awaiting poll confirmation"));
                 }
-                // poll immediately so the outcome lands fast
                 match kind {
                     ActionKind::DeleteImage | ActionKind::PruneImages => self.images_dirty = true,
                     ActionKind::DeleteVolume | ActionKind::PruneVolumes => {
@@ -611,7 +584,6 @@ impl<R: Runner> Engine<R> {
                 self.state.log_message(format!("$ {command}\n{}", e.raw()));
                 match e {
                     CliError::NotFound { .. } => {
-                        // stale row — a poll will remove it; status-bar notice only
                         self.state.toast(format!("{id}: already gone"), false);
                         self.spawn_containers_poll();
                     }
@@ -621,8 +593,6 @@ impl<R: Runner> Engine<R> {
         }
         self.sync_follower();
     }
-
-    // ---- update loop: user commands ------------------------------------------------
 
     pub fn dispatch(&mut self, cmd: Command) {
         match cmd {
@@ -733,7 +703,7 @@ impl<R: Runner> Engine<R> {
                     && self.state.detail_tab == DetailTab::Logs
                     && delta < 0
                 {
-                    self.state.follow = false; // scrolling up pauses the tail
+                    self.state.follow = false;
                 }
             }
             Command::SetDetailScroll(v) => {
@@ -756,7 +726,6 @@ impl<R: Runner> Engine<R> {
         self.state.pane = pane;
         self.state.detail_scroll = 0;
         self.state.focus = Focus::List;
-        // images/volumes refresh on pane entry
         match pane {
             Pane::Images => self.images_dirty = true,
             Pane::Volumes => self.volumes_dirty = true,
@@ -872,7 +841,6 @@ impl<R: Runner> Engine<R> {
                 let Some(v) = self.state.selected_volume() else {
                     return;
                 };
-                // in-use volumes are blocked with an error, no confirm
                 if v.in_use() {
                     let name = v.name.clone();
                     let by = v.in_use_by.join(", ");
@@ -901,7 +869,6 @@ impl<R: Runner> Engine<R> {
     }
 
     fn open_confirm(&mut self, action: ActionKind, target: String, args: Vec<String>) {
-        // guard: one pending action per entity id
         if !target.is_empty() && self.state.pending_of(&target).is_some() {
             self.state
                 .toast(format!("{target}: action already pending"), true);
@@ -924,11 +891,9 @@ impl<R: Runner> Engine<R> {
             ActionKind::PruneImages => Client::<R>::prune_images_args(),
             ActionKind::DeleteVolume => Client::<R>::delete_volume_args(&target),
             ActionKind::PruneVolumes => Client::<R>::prune_volumes_args(),
-            // start/stop/restart never confirm
             _ => return,
         };
         if target.is_empty() {
-            // prune: bottom-bar activity with elapsed, no per-row pending
             self.state.activity = Some(Activity {
                 label: format!("container {}", args.join(" ")),
                 started: Instant::now(),
@@ -946,8 +911,6 @@ impl<R: Runner> Engine<R> {
     }
 
     fn start_pull(&mut self, reference: String) {
-        // tag defaults to latest — only when the last path segment is untagged
-        // (a ':' in "localhost:5000/nginx" is a registry port, not a tag)
         let last_segment = reference.rsplit('/').next().unwrap_or(&reference);
         let reference = if last_segment.contains(':') {
             reference
@@ -1031,9 +994,6 @@ impl<R: Runner> Engine<R> {
         }
     }
 
-    // ---- exec ----------------------------------------------------------------------
-
-    /// Called by the outer loop before suspending the TUI for exec.
     pub fn prepare_exec(&mut self) -> Vec<String> {
         let id = self.state.exec_request.take().unwrap_or_default();
         if let Some((_, kill)) = self.follower.take() {
@@ -1043,14 +1003,12 @@ impl<R: Runner> Engine<R> {
         Client::<R>::exec_shell_args(&id)
     }
 
-    /// Called after the TUI is restored: immediate poll, follower resync.
     pub fn after_exec(&mut self) {
         self.spawn_containers_poll();
         self.sync_follower();
         self.ensure_inspect();
     }
 
-    /// Kill every owned subprocess (quit path).
     pub fn shutdown(&mut self) {
         if let Some((_, kill)) = self.follower.take() {
             kill.kill();
@@ -1063,7 +1021,6 @@ impl<R: Runner> Engine<R> {
         }
     }
 
-    /// Test-only visibility: is a follower alive, and for whom?
     pub fn follower_id(&self) -> Option<&str> {
         self.follower.as_ref().map(|(id, _)| id.as_str())
     }

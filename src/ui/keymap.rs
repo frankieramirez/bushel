@@ -1,26 +1,18 @@
-//! Key → Command translation. Pure: reads state, never mutates it, so the whole
-//! input scheme is testable without a terminal.
-
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::engine::state::AppState;
 use crate::engine::{Command, DetailTab, Focus, Overlay, Pane, Screen};
 use crate::ui::draw::DrawInfo;
 
-/// Some keys need what the last frame drew: a scroll-up during follow pins to
-/// the log line then at the top of the viewport, and a help scroll stops at the
-/// end of the cheatsheet as it was laid out. `drawn` carries both.
 pub fn map_key(state: &AppState, key: KeyEvent, drawn: &DrawInfo) -> Vec<Command> {
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return vec![Command::Quit];
     }
 
-    // splash: any key skips
     if state.screen == Screen::Splash {
         return vec![Command::SkipSplash];
     }
 
-    // service-down takeover
     if state.screen == Screen::ServiceDown {
         return match key.code {
             KeyCode::Char('s') => vec![Command::StartService],
@@ -30,7 +22,6 @@ pub fn map_key(state: &AppState, key: KeyEvent, drawn: &DrawInfo) -> Vec<Command
         };
     }
 
-    // overlays capture input first
     match &state.overlay {
         Overlay::Confirm { .. } => {
             return match key.code {
@@ -40,7 +31,6 @@ pub fn map_key(state: &AppState, key: KeyEvent, drawn: &DrawInfo) -> Vec<Command
             };
         }
         Overlay::Help => {
-            // one clamped, scrollable cheatsheet — no shorter floor variant
             let to = |delta: isize| -> Vec<Command> {
                 let v = if delta < 0 {
                     state.help_scroll.saturating_sub((-delta) as u16)
@@ -89,7 +79,6 @@ pub fn map_key(state: &AppState, key: KeyEvent, drawn: &DrawInfo) -> Vec<Command
         Overlay::None => {}
     }
 
-    // filter input mode
     if state.filter_input {
         return match key.code {
             KeyCode::Esc => vec![Command::Back],
@@ -102,7 +91,6 @@ pub fn map_key(state: &AppState, key: KeyEvent, drawn: &DrawInfo) -> Vec<Command
 
     let logs_tab = state.pane == Pane::Containers && state.detail_tab == DetailTab::Logs;
 
-    // scroll-up while following: pin to the current position, then move
     let unfollow_scroll = |delta: u16| -> Vec<Command> {
         if logs_tab && state.follow {
             vec![Command::SetDetailScroll(
@@ -113,7 +101,6 @@ pub fn map_key(state: &AppState, key: KeyEvent, drawn: &DrawInfo) -> Vec<Command
         }
     };
 
-    // global keys
     match key.code {
         KeyCode::Char('q') => vec![Command::Quit],
         KeyCode::Char('1') => vec![Command::SwitchPane(Pane::Containers)],
@@ -130,7 +117,6 @@ pub fn map_key(state: &AppState, key: KeyEvent, drawn: &DrawInfo) -> Vec<Command
         KeyCode::Enter if state.focus == Focus::List => vec![Command::FocusDetail],
         KeyCode::Esc => vec![Command::Back],
         KeyCode::Char(' ') if state.focus == Focus::List => vec![Command::OpenActionMenu],
-        // PgUp/PgDn scroll the detail pane without switching focus
         KeyCode::PageDown => vec![Command::ScrollDetail(10)],
         KeyCode::PageUp => unfollow_scroll(10),
         KeyCode::Char('l') if state.pane == Pane::Containers => {
@@ -159,7 +145,7 @@ pub fn map_key(state: &AppState, key: KeyEvent, drawn: &DrawInfo) -> Vec<Command
                 KeyCode::Char('g') => unfollow_scroll(u16::MAX),
                 KeyCode::Char('G') => {
                     if logs_tab && !state.follow {
-                        vec![Command::ToggleFollow] // re-follow snaps to the tail
+                        vec![Command::ToggleFollow]
                     } else {
                         vec![Command::ScrollBottom]
                     }
@@ -180,7 +166,6 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    /// What the last frame drew: the top log line, and the help scroll ceiling.
     fn drawn(log_scroll: u16, help_max_scroll: u16) -> DrawInfo {
         DrawInfo {
             log_scroll,
@@ -248,14 +233,12 @@ mod tests {
             map_key(&s, key(KeyCode::Esc), &drawn(0, 0)),
             vec![Command::CloseOverlay]
         );
-        // other keys do nothing — no accidental direct actions under a modal
         assert_eq!(map_key(&s, key(KeyCode::Char('d')), &drawn(0, 0)), vec![]);
     }
 
     #[test]
     fn direct_action_keys_resolve_via_available_actions() {
         let s = main_state();
-        // running container: 's' is stop, 'K' is kill
         assert_eq!(
             map_key(&s, key(KeyCode::Char('s')), &drawn(0, 0)),
             vec![Command::Run(UiAction::Stop)]
@@ -264,7 +247,6 @@ mod tests {
             map_key(&s, key(KeyCode::Char('K')), &drawn(0, 0)),
             vec![Command::Run(UiAction::Kill)]
         );
-        // 'x' is bound to nothing
         assert_eq!(map_key(&s, key(KeyCode::Char('x')), &drawn(0, 0)), vec![]);
     }
 
@@ -341,7 +323,6 @@ mod tests {
     fn help_scrolls_and_stops_at_the_end_of_the_cheatsheet() {
         let mut s = main_state();
         s.overlay = Overlay::Help;
-        // j/k move one row, clamped to what the last draw could scroll
         assert_eq!(
             map_key(&s, key(KeyCode::Char('j')), &drawn(0, 4)),
             vec![Command::SetHelpScroll(1)]
@@ -369,7 +350,6 @@ mod tests {
             map_key(&s, key(KeyCode::Char('G')), &drawn(0, 4)),
             vec![Command::SetHelpScroll(4)]
         );
-        // and it still closes on every key that closed it before
         for c in [
             KeyCode::Esc,
             KeyCode::Char('q'),
@@ -406,15 +386,11 @@ mod tests {
         assert_eq!(map_key(&s, key(KeyCode::Char('j')), &drawn(0, 0)), vec![]);
     }
 
-    /// Every token the cheatsheet spells out, split off its separators:
-    /// `"s r K d P e"` becomes six, `"pgup/pgdn"` two.
     fn documented_keys() -> Vec<String> {
         crate::ui::help::HELP
             .iter()
             .flat_map(|row| row.keys.split([' ', ',']))
             .flat_map(|tok| {
-                // `/` is itself a binding, so it is only a separator between
-                // two things that both look like keys.
                 if tok.len() > 1 {
                     tok.split('/').collect::<Vec<_>>()
                 } else {
@@ -426,7 +402,6 @@ mod tests {
             .collect()
     }
 
-    /// The name a key would go by on the cheatsheet.
     fn help_token(code: KeyCode) -> Option<String> {
         Some(match code {
             KeyCode::Char(' ') => "space".into(),
@@ -440,10 +415,6 @@ mod tests {
         })
     }
 
-    /// The states the cheatsheet describes: no overlay, not filtering, main
-    /// screen. Its three groups are global, list and detail, and between them
-    /// these four reach every branch of the main match — including the images
-    /// pane, which is the only place `u` does anything.
     fn cheatsheet_states() -> Vec<AppState> {
         let list = main_state();
 
@@ -474,16 +445,8 @@ mod tests {
             .any(|s| !map_key(s, key(code), &drawn(0, 0)).is_empty())
     }
 
-    /// This is the test the README failed. A binding that works but is not on
-    /// the cheatsheet is invisible everywhere downstream — the help overlay,
-    /// `docs.json`, and the website all read the same list — so adding one
-    /// without a row here fails the build.
     #[test]
     fn every_key_the_main_keymap_handles_is_on_the_cheatsheet() {
-        // Deliberately undocumented, each for a reason:
-        //   ?      opens the cheatsheet; it does not list itself
-        //   up/down  synonyms for j/k, which are documented
-        // Ctrl-C is not swept: it carries a modifier, and the sweep is plain keys.
         const UNDOCUMENTED: &[KeyCode] = &[KeyCode::Char('?'), KeyCode::Up, KeyCode::Down];
 
         let documented = documented_keys();
@@ -510,10 +473,6 @@ mod tests {
         }
     }
 
-    /// `?` is exempt from the sweep above because it opens the cheatsheet and
-    /// the cheatsheet does not list itself. That exemption is only safe while
-    /// the binding still exists — the README tells readers about `?` in prose,
-    /// which is a claim nothing else checks.
     #[test]
     fn the_question_mark_opens_the_cheatsheet() {
         let s = main_state();
@@ -523,8 +482,6 @@ mod tests {
         );
     }
 
-    /// The other direction: a row that promises a key which no longer works is
-    /// the same drift, read the other way round.
     #[test]
     fn the_cheatsheet_lists_nothing_that_does_nothing() {
         for token in documented_keys() {
@@ -536,7 +493,6 @@ mod tests {
                 "pgup" => KeyCode::PageUp,
                 "pgdn" => KeyCode::PageDown,
                 t if t.chars().count() == 1 => KeyCode::Char(t.chars().next().unwrap()),
-                // Multi-character spellings that are not keys of their own.
                 _ => continue,
             };
             assert!(
@@ -550,7 +506,6 @@ mod tests {
     fn l_and_i_still_switch_tabs_while_the_sheet_is_open() {
         let mut s = main_state();
         s.overlay = Overlay::ActionMenu;
-        // the sheet routes them as overlay chars; the engine runs the tab jump
         assert_eq!(
             map_key(&s, key(KeyCode::Char('l')), &drawn(0, 0)),
             vec![Command::OverlayChar('l')]
@@ -559,7 +514,6 @@ mod tests {
             map_key(&s, key(KeyCode::Char('i')), &drawn(0, 0)),
             vec![Command::OverlayChar('i')]
         );
-        // and directly while it is closed
         s.overlay = Overlay::None;
         assert_eq!(
             map_key(&s, key(KeyCode::Char('l')), &drawn(0, 0)),

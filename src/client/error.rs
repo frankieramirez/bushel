@@ -1,39 +1,15 @@
-//! Error classification: exit code first, stderr substring second.
-//! Phrasings vary per command and per version, so matching is defensive and the
-//! raw stderr is always preserved for the message log.
-
-/// A classified CLI failure. `raw` on every variant keeps the verbatim stderr.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliError {
-    /// XPC connection error — the container system service is not running.
-    ServiceDown {
-        raw: String,
-    },
-    /// The entity vanished between poll and action; status-bar notice only.
-    NotFound {
-        raw: String,
-    },
-    /// e.g. deleting a running container or an in-use volume.
-    InUse {
-        raw: String,
-    },
-    /// Exit 64 — bushel built a bad command line; a bushel bug, not a user error.
-    Usage {
-        raw: String,
-    },
-    /// stdout was not the JSON shape we expected.
-    ParseFailure {
-        raw: String,
-    },
-    /// A read exceeded its deadline (mutating actions have none).
+    ServiceDown { raw: String },
+    NotFound { raw: String },
+    InUse { raw: String },
+    Usage { raw: String },
+    ParseFailure { raw: String },
     Timeout,
-    Other {
-        raw: String,
-    },
+    Other { raw: String },
 }
 
 impl CliError {
-    /// Classify a non-zero exit. `stderr` is the full captured stream.
     pub fn classify(code: i32, stderr: &str) -> Self {
         let raw = stderr.trim().to_string();
         if code == 64 {
@@ -57,7 +33,6 @@ impl CliError {
         }
     }
 
-    /// Full stderr for the message log.
     pub fn raw(&self) -> &str {
         match self {
             CliError::ServiceDown { raw }
@@ -70,7 +45,6 @@ impl CliError {
         }
     }
 
-    /// One-line gist for the bottom bar.
     pub fn gist(&self) -> String {
         match self {
             CliError::ServiceDown { .. } => "container system service is not running".into(),
