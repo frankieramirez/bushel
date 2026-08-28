@@ -1,6 +1,3 @@
-//! The Ratatui + tachyonfx shell: consumes `AppState`, emits `Command`s, and
-//! owns the motion language (≤150ms, interruptible, `reduced-motion` kills all).
-
 pub mod draw;
 pub mod help;
 pub mod keymap;
@@ -24,7 +21,6 @@ enum FxKey {
     Ambient,
 }
 
-/// Discriminant snapshot used to trigger transition effects on state changes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Snapshot {
     screen: Screen,
@@ -36,7 +32,7 @@ struct Snapshot {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum OverlayKind {
     ActionMenu,
-    Modal, // confirm / help / message log / pull input all fade in the same way
+    Modal,
 }
 
 fn overlay_kind(o: &Overlay) -> Option<OverlayKind> {
@@ -70,7 +66,6 @@ impl Ui {
         }
     }
 
-    /// Are non-ambient effects mid-flight (arms the 30fps frame ticker)?
     pub fn animating(&self, state: &AppState) -> bool {
         self.transitions.is_running()
             || state.screen == Screen::Splash
@@ -78,7 +73,6 @@ impl Ui {
             || state.pull.is_some()
     }
 
-    /// Ambient hue drift wants a gentler repaint cadence.
     pub fn ambient_active(&self) -> bool {
         !self.reduced_motion
     }
@@ -87,8 +81,6 @@ impl Ui {
         let info = draw::draw(frame, state, &self.theme);
         self.last_info = info;
 
-        // transition effects on state changes — hard rules: ≤150ms, interruptible,
-        // never delaying data (they postprocess an already-drawn buffer)
         let snap = Snapshot {
             screen: state.screen,
             pane: state.pane,
@@ -115,7 +107,6 @@ impl Ui {
                     );
                 } else if prev.overlay != snap.overlay && snap.overlay.is_some() {
                     let effect = if snap.overlay == Some(OverlayKind::ActionMenu) {
-                        // bottom-sheet slide for the action menu
                         fx::slide_in(
                             Motion::DownToUp,
                             6,
@@ -132,7 +123,6 @@ impl Ui {
                     };
                     self.transitions.add_effect(effect);
                 } else if prev.focus != snap.focus && snap.screen == Screen::Main {
-                    // focus transition: brief fade on the newly focused split
                     self.transitions.add_effect(
                         fx::fade_from(
                             self.theme.dim(),
@@ -142,7 +132,6 @@ impl Ui {
                         .with_area(info.body),
                     );
                 }
-                // toast slide-in on the bottom bar
                 let toast_at = state.toast.as_ref().map(|t| t.at);
                 if toast_at.is_some() && toast_at != self.last_toast_at {
                     self.transitions.add_effect(
@@ -165,10 +154,6 @@ impl Ui {
         self.transitions
             .process_effects(elapsed.into(), frame.buffer_mut(), area);
 
-        // ambient wordmark hue drift. The 2800ms period is exempt from the ADR's
-        // ≤150ms rule: that rule governs transition micro-motion; ambient effects
-        // are separately prototype-gated (ADR 0001), passed the gate, and are
-        // killed by `reduced-motion` like everything else.
         if !self.reduced_motion && state.screen == Screen::Main && !self.ambient.is_running() {
             let effect = fx::repeating(fx::ping_pong(fx::hsl_shift_fg(
                 [50.0, 10.0, 6.0],
@@ -188,7 +173,6 @@ impl Ui {
         }
     }
 
-    /// Full-redraw effect after returning from exec.
     pub fn after_exec(&mut self) {
         if !self.reduced_motion {
             self.transitions

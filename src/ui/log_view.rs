@@ -1,10 +1,3 @@
-//! Logs-view layout: wrap vs truncated, and the mapping between a raw log
-//! line and the display rows it occupies at the detail pane's width.
-
-/// Split a raw log line into display rows.
-///
-/// Wrapped: as many rows as the pane width requires. Truncated: the line
-/// unchanged (clip is visual; no ellipsis).
 pub fn split_line(s: &str, wrap: bool, width: u16) -> Vec<String> {
     if !wrap || width == 0 {
         return vec![s.to_string()];
@@ -12,7 +5,6 @@ pub fn split_line(s: &str, wrap: bool, width: u16) -> Vec<String> {
     wrap_line(s, width)
 }
 
-/// Display-row index where raw line `idx` starts.
 pub fn display_start(lines: &[String], wrap: bool, width: u16, idx: usize) -> usize {
     lines
         .iter()
@@ -21,7 +13,6 @@ pub fn display_start(lines: &[String], wrap: bool, width: u16, idx: usize) -> us
         .sum()
 }
 
-/// Raw log line that owns display row `row`. Clamps to the last line.
 pub fn raw_index(lines: &[String], wrap: bool, width: u16, row: usize) -> usize {
     if lines.is_empty() {
         return 0;
@@ -37,19 +28,16 @@ pub fn raw_index(lines: &[String], wrap: bool, width: u16, row: usize) -> usize 
     lines.len() - 1
 }
 
-/// Follow-tail display scroll: last `height` rows of `total`.
 pub fn tail_scroll(total: usize, height: usize) -> usize {
     total.saturating_sub(height)
 }
 
-/// Follow/pause marker copy from the wrap grilling.
 pub fn follow_marker(follow: bool, wrap: bool) -> String {
     let state = if follow { "following" } else { "paused" };
     let mode = if wrap { "wrap" } else { "truncated" };
     format!("── {state} · {mode} (w) ──")
 }
 
-/// Bottom-bar hint: the mode `w` would switch *to*.
 pub fn wrap_hint(wrap: bool) -> &'static str {
     if wrap { "unwrap" } else { "wrap" }
 }
@@ -126,17 +114,7 @@ mod tests {
 
     #[test]
     fn paused_toggle_keeps_the_same_raw_line_at_the_top() {
-        let lines = vec![
-            "aaaa".into(),
-            "bbbbbbbbbb".into(), // 10 chars → 3 wrapped rows at width 4
-            "cccc".into(),
-        ];
-        // wrapped display:
-        // 0 aaaa          raw 0
-        // 1 bbbb          raw 1
-        // 2 bbbb          raw 1
-        // 3 bb            raw 1
-        // 4 cccc          raw 2
+        let lines = vec!["aaaa".into(), "bbbbbbbbbb".into(), "cccc".into()];
         let raw = raw_index(&lines, true, 4, 2);
         assert_eq!(raw, 1);
         assert_eq!(
@@ -149,18 +127,15 @@ mod tests {
 
     #[test]
     fn following_stays_on_the_tail() {
-        // 5 raw lines, wrap off → 5 display rows; height 3 → scroll 2
         assert_eq!(tail_scroll(5, 3), 2);
-        // wrap of a 10-char line at width 4 is 3 rows; 2 short lines + that + marker
         let lines = ["aa", "bbbbbbbbbb", "cc"];
         let display: usize = lines.iter().map(|l| split_line(l, true, 4).len()).sum();
         assert_eq!(display, 1 + 3 + 1);
-        assert_eq!(tail_scroll(display + 1, 3), 3); // +1 marker
+        assert_eq!(tail_scroll(display + 1, 3), 3);
     }
 
     #[test]
     fn wrapped_display_rows_can_exceed_u16_max() {
-        // 10k raw lines of 700 chars at width 80 → 9 display rows each = 90_000.
         let width = 80u16;
         let n = 10_000;
         let lines = vec!["x".repeat(700); n];

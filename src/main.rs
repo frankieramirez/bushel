@@ -1,7 +1,3 @@
-//! bushel — a lazydocker-style TUI for Apple Containers.
-//! Elm-style loop: one AppState, one AppEvent channel, single-writer updates;
-//! render on event plus a frame ticker armed only while effects are active.
-
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -20,21 +16,14 @@ use bushel::runner::{CONTAINER_BIN, CliRunner};
 use bushel::ui::theme::Theme;
 use bushel::ui::{Ui, keymap};
 
-/// How bushel got onto this machine, inferred from the binary's own path.
-/// Every install method owns the binaries it placed, so `update` hands the work
-/// back to whoever did the installing instead of self-replacing behind its back.
 #[derive(Debug, PartialEq, Eq)]
 enum InstallMethod {
     Homebrew,
     Nix,
     Cargo,
-    /// Shell installer, or a hand-placed binary; axoupdater's receipt decides.
     Receipt,
 }
 
-/// Order matters: brew's `bin` entries are symlinks into `Cellar`, so a
-/// canonicalized brew path always trips the first check, and a cargo dir only
-/// counts as the exe's immediate parent (cargo never nests binaries).
 fn classify(exe: &Path, cargo_bins: &[PathBuf]) -> InstallMethod {
     if exe
         .components()
@@ -54,9 +43,6 @@ fn classify(exe: &Path, cargo_bins: &[PathBuf]) -> InstallMethod {
     InstallMethod::Receipt
 }
 
-/// Where `cargo install` may have put us: `CARGO_INSTALL_ROOT` outranks
-/// `CARGO_HOME`, which outranks `~/.cargo`. (`--root` and `install.root` can
-/// override both, but neither leaves a trace we could read back here.)
 fn cargo_bin_candidates(
     install_root: Option<PathBuf>,
     cargo_home: Option<PathBuf>,
@@ -70,8 +56,6 @@ fn cargo_bin_candidates(
         .collect()
 }
 
-/// The candidates that actually exist on disk, canonicalized so they compare
-/// against the equally canonical exe path.
 fn cargo_bin_dirs() -> Vec<PathBuf> {
     cargo_bin_candidates(
         std::env::var_os("CARGO_INSTALL_ROOT").map(PathBuf::from),
@@ -79,14 +63,10 @@ fn cargo_bin_dirs() -> Vec<PathBuf> {
         dirs::home_dir(),
     )
     .into_iter()
-    // Compare canonicalized paths on both sides, so a symlinked or relative
-    // prefix still matches the exe path we resolved.
     .filter_map(|dir| std::fs::canonicalize(dir).ok())
     .collect()
 }
 
-/// An unresolvable exe path falls back to `Receipt`, whose missing-receipt
-/// message is generic enough to be safe when we know nothing about the install.
 fn install_method() -> InstallMethod {
     std::env::current_exe()
         .and_then(std::fs::canonicalize)
@@ -94,13 +74,6 @@ fn install_method() -> InstallMethod {
         .unwrap_or(InstallMethod::Receipt)
 }
 
-/// `brew upgrade` refreshes the tap only when Homebrew's own auto-update is
-/// due, and that interval is five minutes by default. Inside the window a
-/// formula published moments ago is invisible, so the upgrade reads the stale
-/// local clone, finds the version already installed and says so — which looks
-/// exactly like "there is no new version". `bushel update` is someone asking
-/// outright, so the refresh becomes unconditional here: drive the interval to
-/// zero, and drop the opt-out in case the user's shell exports it.
 fn brew_upgrade_command() -> std::process::Command {
     let mut cmd = std::process::Command::new("brew");
     cmd.args(["upgrade", "bushel"])
@@ -126,7 +99,6 @@ async fn self_update() -> i32 {
                 }
             };
         }
-        // The store is read-only and the derivation is the source of truth.
         InstallMethod::Nix => {
             eprintln!(
                 "bushel lives in the read-only Nix store and can't update itself.\n\
@@ -134,16 +106,11 @@ async fn self_update() -> i32 {
             );
             return 1;
         }
-        // The shell installer's default prefix is $CARGO_HOME too, so the path
-        // alone can't tell it from `cargo install` — only the receipt below can.
         InstallMethod::Cargo | InstallMethod::Receipt => {}
     }
 
     let mut updater = axoupdater::AxoUpdater::new_for("bushel");
     if updater.load_receipt().is_err() {
-        // No receipt, so the shell installer didn't put this here. `cargo install
-        // --git` can't tell new from current without a full rebuild, so print the
-        // command rather than burn minutes on a likely no-op.
         if method == InstallMethod::Cargo {
             eprintln!(
                 "bushel was installed with cargo; upgrade with:\n  \
@@ -186,7 +153,6 @@ async fn main() -> std::io::Result<()> {
     let reduced_motion = args.reduced_motion || cfg.reduced_motion;
     let ascii = args.ascii || cfg.ascii;
 
-    // very first launch (no marker file yet): the splash gets a dwell
     let first_run = match Config::dir().map(|d| d.join(".launched")) {
         Some(marker) if !marker.exists() => {
             let _ = std::fs::create_dir_all(marker.parent().unwrap())
@@ -212,9 +178,7 @@ async fn main() -> std::io::Result<()> {
     let mut last_frame = Instant::now();
 
     let result: std::io::Result<()> = loop {
-        // first-run dwell can end between events; the frame ticker keeps us spinning
         engine.maybe_dissolve_splash();
-        // render
         let elapsed = last_frame.elapsed();
         last_frame = Instant::now();
         if let Err(e) = terminal.draw(|f| ui.render(f, &engine.state, elapsed)) {
@@ -225,7 +189,6 @@ async fn main() -> std::io::Result<()> {
             break Ok(());
         }
 
-        // exec: suspend the TUI, hand the terminal to the shell, restore
         if engine.state.exec_request.is_some() {
             let exec_args = engine.prepare_exec();
             ratatui::restore();
@@ -249,23 +212,21 @@ async fn main() -> std::io::Result<()> {
             continue;
         }
 
-        // frame ticker armed only while an effect or splash is active
         let frame_timeout = if ui.animating(&engine.state) {
             Duration::from_millis(33)
         } else if ui.ambient_active() {
             Duration::from_millis(100)
         } else {
-            Duration::from_secs(3600) // render is event-driven when idle
+            Duration::from_secs(3600)
         };
 
         tokio::select! {
-            _ = tokio::time::sleep(frame_timeout) => {} // repaint for animation
+            _ = tokio::time::sleep(frame_timeout) => {}
             _ = poll.tick() => engine.on_tick(),
             ev = rx.recv() => {
                 match ev {
                     Some(ev) => {
                         engine.apply(ev);
-                        // drain whatever else is queued before repainting
                         while let Ok(ev) = rx.try_recv() {
                             engine.apply(ev);
                         }
@@ -280,7 +241,7 @@ async fn main() -> std::io::Result<()> {
                             engine.dispatch(cmd);
                         }
                     }
-                    Some(Ok(_)) => {} // resize etc: just repaint
+                    Some(Ok(_)) => {}
                     Some(Err(e)) => break Err(e),
                     None => break Ok(()),
                 }
@@ -302,9 +263,6 @@ mod tests {
         vec![PathBuf::from("/Users/x/.cargo/bin")]
     }
 
-    /// A five-minute auto-update throttle let `brew upgrade` read a stale tap
-    /// clone and report the running version as already installed, minutes
-    /// after a new one was published.
     #[test]
     fn brew_upgrade_forces_the_tap_refresh() {
         use std::ffi::OsStr;

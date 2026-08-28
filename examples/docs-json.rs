@@ -1,12 +1,3 @@
-//! Emits `docs.json` for bushel.sh — `cargo run --example docs-json -- --out docs.json`,
-//! or to stdout with no argument.
-//!
-//! An example rather than a `[[bin]]` on purpose: the release ships every bin
-//! it builds, so a second one would land in every user's PATH (and in the
-//! Homebrew formula) to serve a website. Examples are never installed by
-//! `cargo install`, never packaged by `dist`, and still compiled by
-//! `cargo test` and `cargo clippy --all-targets`, so this cannot rot.
-
 use std::io::Write as _;
 
 fn main() -> std::io::Result<()> {

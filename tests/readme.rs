@@ -1,28 +1,9 @@
-//! The README's keymap and options are generated, and this test is what keeps
-//! them that way.
-//!
-//! The hand-copied keymap in the README had drifted four bindings behind the
-//! cheatsheet by the time the docs site was charted, which is why nothing in
-//! this repo hand-maintains a second copy any more. A bot that rewrote the
-//! README on every push was the other option and it is worse: it churns commits,
-//! it fights whoever is editing the file, and it hides the drift instead of
-//! reporting it. This fails `cargo test` — which CI already runs — and prints
-//! the fix.
-//!
-//! Fixing drift is one command:
-//!
-//! ```sh
-//! UPDATE_README=1 cargo test --test readme
-//! ```
-
 use std::path::PathBuf;
 
-/// A generated region of the README: everything between these two comments.
 struct Block {
     name: &'static str,
     start: &'static str,
     end: &'static str,
-    /// What the source says the region should contain.
     expected: String,
 }
 
@@ -47,14 +28,10 @@ fn blocks() -> Vec<Block> {
     ]
 }
 
-/// The region between the markers, as it should read: blank line, content, then
-/// the closing marker on its own line.
 fn rendered(block: &Block) -> String {
     format!("\n\n{}\n", block.expected.trim_end())
 }
 
-/// Byte range of the text between the two markers, or a panic naming what is
-/// missing — a README without the markers cannot be checked at all.
 fn between(readme: &str, block: &Block) -> std::ops::Range<usize> {
     let start = readme
         .find(block.start)
@@ -76,7 +53,6 @@ fn the_readme_matches_what_bushel_generates() {
     let update = std::env::var_os("UPDATE_README").is_some();
 
     let mut stale = Vec::new();
-    // Back to front, so an earlier replacement cannot shift a later range.
     for block in blocks().iter().rev() {
         let range = between(&readme, block);
         let want = rendered(block);
@@ -105,13 +81,6 @@ fn the_readme_matches_what_bushel_generates() {
     );
 }
 
-/// The generated block cannot carry `?`: it opens the cheatsheet and the
-/// cheatsheet does not list itself. The README says so in prose instead, which
-/// leaves it the one line about keys still hand-written. If `?` ever joins the
-/// cheatsheet, that line becomes a second copy and should go.
-///
-/// The other half of this — that `?` still opens the help overlay at all —
-/// is `ui::keymap`'s to hold, next to the sweep that exempts it.
 #[test]
 fn the_generated_block_leaves_the_question_mark_to_prose() {
     let keys = bushel::docs::keys_markdown();

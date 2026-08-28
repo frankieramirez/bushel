@@ -1,22 +1,13 @@
-//! `AppState`: the single state tree the UI renders from. Mutated only by the
-//! Engine's update loop; the UI never writes to it.
-
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use crate::client::model::{ContainerJson, ImageJson, StatsJson, VolumeJson};
 
-/// Ring-buffer caps.
 pub const LOG_RING_CAP: usize = 10_000;
 pub const MESSAGE_LOG_CAP: usize = 1_000;
-/// 5 minutes of telemetry at the 1s poll cadence; one sample per column.
 pub const TELEMETRY_HISTORY: usize = 300;
-/// Poll ticks a finished action may wait for state confirmation.
 pub const CONFIRM_TICKS: u8 = 2;
-/// Consecutive containers-poll parse failures before the degraded banner.
 pub const DEGRADED_THRESHOLD: u32 = 3;
-/// The very first launch holds the splash for this long — the one deliberate
-/// exception to "the splash never adds latency". Any key still skips.
 pub const FIRST_RUN_DWELL: std::time::Duration = std::time::Duration::from_millis(1000);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,7 +74,6 @@ pub enum DetailTab {
     Inspect,
 }
 
-/// High-level user actions, resolved against the current selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiAction {
     Start,
@@ -98,7 +88,6 @@ pub enum UiAction {
     InspectTab,
 }
 
-/// What a confirmed / running action is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionKind {
     Start,
@@ -114,8 +103,6 @@ pub enum ActionKind {
 }
 
 impl ActionKind {
-    /// The container state a poll must show for the action to be confirmed.
-    /// `None` means confirmation is "the row disappeared" or not state-based.
     pub fn expected_state(self) -> Option<&'static str> {
         match self {
             ActionKind::Start | ActionKind::Restart => Some("running"),
@@ -140,12 +127,9 @@ impl ActionKind {
     }
 }
 
-/// An in-flight action on one entity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PendingPhase {
-    /// Subprocess still running (mutations have no deadline).
     InFlight,
-    /// Subprocess exited 0; waiting for a poll to confirm, at most N more ticks.
     Confirming(u8),
 }
 
@@ -165,12 +149,10 @@ pub struct ContainerEntry {
     pub volumes: Vec<String>,
     pub cpu_percent: Option<f64>,
     pub mem_bytes: Option<u64>,
-    /// Newest-first derived samples for the strip. Empty until the second stats poll.
     pub telemetry: VecDeque<TelemetrySample>,
     pub pending: Option<Pending>,
 }
 
-/// One derived stats sample. Rates are first-differences of cumulative counters.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TelemetrySample {
     pub cpu: Option<f64>,
@@ -181,7 +163,6 @@ pub struct TelemetrySample {
     pub w: Option<u64>,
 }
 
-/// The previous stats poll's raw counters, used to first-difference the next tick.
 #[derive(Debug, Clone, Copy)]
 pub struct StatsSnapshot {
     pub at: Instant,
@@ -220,12 +201,10 @@ impl VolumeEntry {
     }
 }
 
-/// Modal overlays; at most one at a time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Overlay {
     None,
     ActionMenu,
-    /// Command preview + the action it would run on confirmation.
     Confirm {
         command: String,
         action: ActionKind,
@@ -238,7 +217,6 @@ pub enum Overlay {
     },
 }
 
-/// A menu row in the action menu / a direct-key binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ActionItem {
     pub key: char,
@@ -256,7 +234,6 @@ const fn item(key: char, label: &'static str, destructive: bool, action: UiActio
     }
 }
 
-/// Streaming pull shown in the detail pane.
 #[derive(Debug, Clone)]
 pub struct PullState {
     pub reference: String,
@@ -264,7 +241,6 @@ pub struct PullState {
     pub started: Instant,
 }
 
-/// Bottom-bar activity for long mutations without per-row pending (prune).
 #[derive(Debug, Clone)]
 pub struct Activity {
     pub label: String,
@@ -290,31 +266,21 @@ pub struct AppState {
     pub containers: Vec<ContainerEntry>,
     pub images: Vec<ImageEntry>,
     pub volumes: Vec<VolumeEntry>,
-    /// Selected entity id per pane; re-anchored across polls.
     pub selected: [Option<String>; 3],
 
     pub filter: String,
     pub filter_input: bool,
 
     pub detail_scroll: u16,
-    /// Scroll offset of the help cheatsheet; reset each time help opens.
     pub help_scroll: u16,
-    /// Auto-scroll the logs tab to the newest line.
     pub follow: bool,
-    /// Logs wrap: a raw line occupies as many display rows as the pane width
-    /// requires. On by default. Opposite of truncated. Session-global.
     pub wrap: bool,
-    /// Ring buffer of log lines for the followed container.
     pub log_lines: Vec<String>,
-    /// Which container the log buffer belongs to.
     pub log_owner: Option<String>,
-    /// Backlog request still in flight; follow lines buffer until it lands.
     pub logs_loading: bool,
     pub follow_ended: bool,
 
-    /// Raw inspect JSON per entity id.
     pub inspect_cache: HashMap<String, String>,
-    /// Inspect fetch in flight for this id.
     pub inspect_loading: Option<String>,
 
     pub messages: Vec<String>,
@@ -331,18 +297,12 @@ pub struct AppState {
     pub service_output: Vec<String>,
     pub service_starting: bool,
 
-    /// True once the first containers poll has landed (splash may dissolve).
     pub first_data: bool,
-    /// When the app came up; the splash only becomes visible if the startup
-    /// probes are still running after a grace period (no sub-100ms flash).
     pub started_at: Instant,
-    /// Very first launch: the splash shows immediately and dwells FIRST_RUN_DWELL.
     pub first_run: bool,
     pub tick: u64,
     pub last_poll_at: Option<Instant>,
-    /// Exec request the outer loop must service (suspend TUI, run, restore).
     pub exec_request: Option<String>,
-    /// Outcomes a poll confirmed since the engine last announced them.
     confirmations: Vec<(String, ActionKind)>,
 }
 
@@ -396,13 +356,9 @@ impl AppState {
         }
     }
 
-    /// May the splash dissolve into the layout? Data must have arrived, and on
-    /// the very first launch the dwell must also have elapsed.
     pub fn splash_may_dissolve(&self) -> bool {
         self.first_data && (!self.first_run || self.started_at.elapsed() >= FIRST_RUN_DWELL)
     }
-
-    // ---- messages -------------------------------------------------------
 
     pub fn log_message(&mut self, msg: impl Into<String>) {
         self.messages.push(msg.into());
@@ -422,9 +378,6 @@ impl AppState {
         });
     }
 
-    // ---- filtering & selection ------------------------------------------
-
-    /// Fuzzy subsequence match, case-insensitive.
     pub fn fuzzy_match(needle: &str, hay: &str) -> bool {
         if needle.is_empty() {
             return true;
@@ -437,15 +390,10 @@ impl AppState {
             .all(|n| chars.by_ref().any(|h| h == n))
     }
 
-    /// Indexes (into the entity vec) of rows matching the filter, display order.
-    /// Containers are stored pre-sorted (running first, then name). Filter hits
-    /// only the active panel; inactive rail panes stay unfiltered.
     pub fn visible_rows(&self) -> Vec<usize> {
         self.visible_rows_for(self.pane)
     }
 
-    /// Visible rows for a rail pane. The filter applies only when `pane` is the
-    /// active panel.
     pub fn visible_rows_for(&self, pane: Pane) -> Vec<usize> {
         let f = if pane == self.pane {
             self.filter.as_str()
@@ -493,7 +441,6 @@ impl AppState {
         }
     }
 
-    /// Position of the selection within `visible_rows()`, if any.
     pub fn selected_pos(&self) -> Option<usize> {
         self.selected_pos_for(self.pane)
     }
@@ -505,7 +452,6 @@ impl AppState {
             .position(|&i| self.entity_id(pane, i).as_deref() == Some(want))
     }
 
-    /// Index into the entity vec of the current selection.
     pub fn selected_row(&self) -> Option<usize> {
         let rows = self.visible_rows();
         let pos = self.selected_pos()?;
@@ -533,7 +479,6 @@ impl AppState {
         self.selected_row().and_then(|i| self.volumes.get(i))
     }
 
-    /// Move the selection by `delta` within visible rows, clamped.
     pub fn move_selection(&mut self, delta: isize) {
         let rows = self.visible_rows();
         if rows.is_empty() {
@@ -551,7 +496,6 @@ impl AppState {
         self.selected[self.pane.index()] = idx.and_then(|&i| self.entity_id(self.pane, i));
     }
 
-    /// Re-anchor (or initialize) the selection after a list update.
     pub fn clamp_selection(&mut self) {
         for pane in [Pane::Containers, Pane::Images, Pane::Volumes] {
             let exists = |id: &str| match pane {
@@ -575,11 +519,6 @@ impl AppState {
         }
     }
 
-    // ---- list updates -----------------------------------------------------
-
-    /// Replace the containers list from a poll, preserving pending markers and
-    /// stats, sorting running-first then alphabetical. Returns message-log diffs
-    /// and the ids of externally stopped containers.
     pub fn update_containers(&mut self, fresh: &[ContainerJson]) -> (Vec<String>, Vec<String>) {
         let mut diffs = Vec::new();
         let mut external_stops = Vec::new();
@@ -609,7 +548,6 @@ impl AppState {
                 entry.pending = old.pending;
                 if old.state != entry.state {
                     diffs.push(format!("{}: {} → {}", entry.id, old.state, entry.state));
-                    // state changed → cached inspect is stale
                     self.inspect_cache.remove(&entry.id);
                     let ours = matches!(
                         old.pending.map(|p| p.kind),
@@ -637,7 +575,6 @@ impl AppState {
                 diffs.push(format!("{}: removed", old.id));
                 self.inspect_cache.remove(&old.id);
                 if let Some(p) = old.pending {
-                    // a pending delete confirms by the row disappearing
                     self.confirmations.push((old.id.clone(), p.kind));
                 }
             }
@@ -707,7 +644,6 @@ impl AppState {
         self.clamp_selection();
     }
 
-    /// In-use badges: a volume is in use when any container references it.
     pub fn recompute_in_use(&mut self) {
         for v in &mut self.volumes {
             v.in_use_by = self
@@ -719,8 +655,6 @@ impl AppState {
         }
     }
 
-    /// Apply a stats sample: mem directly; CPU% and byte rates from consecutive
-    /// cumulative counters. The first sample for an id is swallowed (baseline only).
     pub fn apply_stats(
         &mut self,
         stats: &[StatsJson],
@@ -743,7 +677,7 @@ impl AppState {
             };
             c.mem_bytes = Some(s.memory_usage_bytes);
             let Some(prev) = prev.get(&s.id) else {
-                continue; // swallow the first sample
+                continue;
             };
             let elapsed = now.duration_since(prev.at);
             if elapsed.is_zero() {
@@ -785,8 +719,6 @@ impl AppState {
         next
     }
 
-    // ---- pending actions ----------------------------------------------------
-
     pub fn pending_of(&self, id: &str) -> Option<Pending> {
         self.containers
             .iter()
@@ -816,8 +748,6 @@ impl AppState {
         }
     }
 
-    /// After a poll: clear pendings whose expected state is confirmed, and count
-    /// down the confirmation cap for the rest.
     fn confirm_pending(&mut self) {
         let mut confirmed_now = Vec::new();
         for c in &mut self.containers {
@@ -839,8 +769,6 @@ impl AppState {
             }
         }
         self.confirmations.extend(confirmed_now);
-        // Images and volumes only confirm by disappearance (delete): rows still
-        // present count down.
         for i in &mut self.images {
             if let Some(Pending {
                 kind,
@@ -867,12 +795,9 @@ impl AppState {
         }
     }
 
-    /// Poll-confirmed outcomes since the last call (the engine announces these).
     pub fn take_confirmations(&mut self) -> Vec<(String, ActionKind)> {
         std::mem::take(&mut self.confirmations)
     }
-
-    // ---- logs -----------------------------------------------------------------
 
     pub fn push_log_line(&mut self, line: String) {
         self.log_lines.push(line);
@@ -882,9 +807,6 @@ impl AppState {
         }
     }
 
-    // ---- action menu -------------------------------------------------------------
-
-    /// Valid actions for the current selection, in menu order.
     pub fn available_actions(&self) -> Vec<ActionItem> {
         match self.pane {
             Pane::Containers => {
@@ -998,11 +920,10 @@ mod tests {
     #[test]
     fn filter_hits_only_the_active_panel() {
         let mut s = sample();
-        s.filter = "olbtc".into(); // subsequence of "old-batch"
+        s.filter = "olbtc".into();
         let containers = s.visible_rows_for(Pane::Containers);
         assert_eq!(containers.len(), 1);
         assert_eq!(s.containers[containers[0]].id, "old-batch");
-        // inactive rail panes stay unfiltered
         assert_eq!(s.visible_rows_for(Pane::Images).len(), 2);
         assert_eq!(s.visible_rows_for(Pane::Volumes).len(), 2);
     }
@@ -1024,7 +945,6 @@ mod tests {
     #[test]
     fn the_detail_tab_jumps_stay_bound_as_direct_keys() {
         let s = sample();
-        // direct action keys resolve off available_actions, not the sheet
         assert!(s.available_actions().iter().any(|i| i.key == 'l'));
         assert!(s.available_actions().iter().any(|i| i.key == 'i'));
     }

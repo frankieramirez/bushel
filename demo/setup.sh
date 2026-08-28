@@ -1,6 +1,4 @@
 #!/bin/sh
-# Stand up the demo containers the tape expects. Requires the container
-# service to be running (`container system start`).
 set -eu
 container image pull nginx:alpine
 container image pull redis:alpine

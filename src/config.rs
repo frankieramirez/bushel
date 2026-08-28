@@ -1,6 +1,3 @@
-//! `~/.config/bushel/config.toml` (or the platform config dir): the config file
-//! only holds what flags can also set.
-
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize)]
@@ -12,13 +9,8 @@ pub struct Config {
 }
 
 impl Config {
-    /// Where the config file lives, in the form the docs quote it — `dir()`
-    /// resolves the real path, but the website has no home directory to expand.
     pub const DOC_PATH: &'static str = "~/.config/bushel/config.toml";
 
-    /// `~/.config/bushel/` (as documented) with the platform config dir as a
-    /// fallback — on macOS `dirs::config_dir()` is `~/Library/Application
-    /// Support`, which nobody expects a CLI tool to use.
     pub fn dir() -> Option<std::path::PathBuf> {
         if let Some(home) = dirs::home_dir() {
             let xdg = home.join(".config").join("bushel");

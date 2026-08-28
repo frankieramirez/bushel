@@ -1,32 +1,18 @@
-//! Unified-rail layout plan. Pure: area + facts → rects. Draw consumes this;
-//! it does not re-decide stacked vs beside, collapse, or the width cap.
-
 use ratatui::layout::{Constraint, Layout, Rect};
 
 use crate::engine::state::{ActionItem, AppState, Pane, UiAction};
 
-/// Body width under this stacks the rail above the detail pane.
 pub const STACK_BELOW: u16 = 80;
-/// Rail never grows past this; spare width belongs to logs.
 pub const RAIL_MAX: u16 = 36;
-/// Stacked, or a rail shorter than this, uses tight (1-row) collapse.
 pub const TIGHT_RAIL_H: u16 = 16;
-/// Floor chrome band around ~55×20 (prototype-accepted): 1-row header, no
-/// table headers, no tab row, no status cluster.
 const FLOOR_H: u16 = 22;
 const FLOOR_W: u16 = 60;
-/// The rail's own floor: one collapsed row per pane. Under this there is not a
-/// row each to give, and the active panel takes what the rail has.
 const RAIL_MIN_H: u16 = Pane::all().len() as u16;
-/// The action sheet never grows past this, at any size.
 pub const SHEET_MAX_H: u16 = 9;
-/// Destructive confirm is a fixed 7-row box; a long command wraps inside it.
 pub const CONFIRM_W: u16 = 48;
 pub const CONFIRM_H: u16 = 7;
-/// Help is one cheatsheet, clamped to the frame. At 55×20 that is full-screen.
 pub const HELP_W: u16 = 68;
 
-/// The facts layout needs from app state. Banner rows are filled in by draw.
 #[derive(Clone, Copy, Debug)]
 pub struct LayoutFacts {
     pub zoom: bool,
@@ -50,7 +36,6 @@ impl LayoutFacts {
     }
 }
 
-/// Where every region of the main screen lands for this frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LayoutPlan {
     pub header: Rect,
@@ -119,9 +104,6 @@ impl LayoutPlan {
 
         let (rail, detail) = if stacked {
             let rail_h = stacked_rail_height(body.height, facts.visible[facts.active.index()]);
-            // Fill, not Min(3): on a body under 6 rows a minimum would outbid the
-            // rail's length and silently drop the rail off the plan. The split is
-            // this function's decision to make; the detail pane takes the rest.
             let parts =
                 Layout::vertical([Constraint::Length(rail_h), Constraint::Fill(1)]).split(body);
             (parts[0], parts[1])
@@ -149,13 +131,6 @@ impl LayoutPlan {
     }
 }
 
-/// What the bottom sheet lists, given every action valid for the selection.
-///
-/// At the floor the sheet omits the detail-tab jumps (`l`/`i`) — the tab row is
-/// not drawn there either, and the sheet has no rows to spare. The sheet does
-/// not scroll, so anywhere else the list would still overflow the 9-row cap the
-/// jumps are trimmed from the end rather than let the cap clip a row. Both keys
-/// keep working; they just stop spending a row they cannot afford.
 pub fn sheet_items(mut actions: Vec<ActionItem>, floor: bool) -> Vec<ActionItem> {
     let is_jump = |a: &ActionItem| matches!(a.action, UiAction::LogsTab | UiAction::InspectTab);
     if floor {
@@ -173,8 +148,6 @@ pub fn sheet_items(mut actions: Vec<ActionItem>, floor: bool) -> Vec<ActionItem>
     actions
 }
 
-/// The action menu's bottom sheet: it hugs the floor of the *detail pane* and
-/// never covers the rail. Height `min(n + 2, 9)`, further clamped to the pane.
 pub fn action_sheet(detail: Rect, items: u16) -> Rect {
     let h = (items + 2).min(SHEET_MAX_H).min(detail.height);
     Rect {
@@ -185,24 +158,18 @@ pub fn action_sheet(detail: Rect, items: u16) -> Rect {
     }
 }
 
-/// The destructive confirm modal: fixed size, centered, clamped to the frame.
 pub fn confirm_modal(frame: Rect) -> Rect {
     centered(frame, CONFIRM_W, CONFIRM_H)
 }
 
-/// The help cheatsheet: one box, centered, clamped to the frame. It grows to
-/// fit `content_rows` and stops at the frame; the content scrolls past that.
 pub fn help_modal(frame: Rect, content_rows: u16) -> Rect {
     centered(frame, HELP_W, content_rows.saturating_add(2))
 }
 
-/// Columns the cheatsheet has to wrap into. Width is a frame decision, so it is
-/// known before the content it will hold.
 pub fn help_inner_width(frame: Rect) -> u16 {
     HELP_W.min(frame.width).saturating_sub(2)
 }
 
-/// Centered rect, clamped to `area` on both axes.
 pub fn centered(area: Rect, w: u16, h: u16) -> Rect {
     let w = w.min(area.width);
     let h = h.min(area.height);
@@ -214,32 +181,17 @@ pub fn centered(area: Rect, w: u16, h: u16) -> Rect {
     )
 }
 
-/// Rows the stacked rail takes off the top of the body.
-///
-/// It wants one row per collapsed pane plus the active panel's table, takes at
-/// most half the body, and leaves the detail pane 4 rows. Under 12 frame rows
-/// the last two cross: a 9-row body has 5 rows to spare once the detail pane's
-/// 4 are set aside, under the 6 the rail asks for, and clamping to inverted
-/// bounds is what panicked. So the rail's want gives way first, down to
-/// `RAIL_MIN_H` and then below it. What the rail never takes is the body's
-/// last row, so the detail pane is the side that survives every size; on a
-/// 1-row body it is all there is. Nothing refuses to draw (#52).
 fn stacked_rail_height(body_h: u16, active_rows: u16) -> u16 {
     let inactive = 2u16;
     let active_h = (active_rows + 2).clamp(4, 8);
     let want = inactive + active_h;
-    // What the body can spare: half of it, and not the detail pane's 4 rows.
     let spare = (body_h / 2).max(6).min(body_h.saturating_sub(4));
-    // What the rail holds out for, until the body cannot spare even that.
     let least = RAIL_MIN_H.min(body_h.saturating_sub(1));
     want.clamp(least, spare.max(least))
 }
 
 fn rail_slots(rail: Rect, facts: LayoutFacts, tight: bool) -> [Rect; 3] {
     let panes = Pane::all();
-    // A rail with fewer rows than panes spends them all on the active panel
-    // rather than collapsing it away: the header still names all three panes
-    // by their switcher keys, and the active panel is the one taking input.
     let collapsed_rows = if rail.height < RAIL_MIN_H { 0 } else { 1 };
     let constraints: Vec<Constraint> = panes
         .iter()
@@ -263,7 +215,6 @@ fn rail_slots(rail: Rect, facts: LayoutFacts, tight: bool) -> [Rect; 3] {
 mod tests {
     use super::*;
 
-    /// Prototype seed: 8 containers, 5 images, 3 volumes, containers active.
     fn facts() -> LayoutFacts {
         LayoutFacts {
             zoom: false,
@@ -290,7 +241,6 @@ mod tests {
         assert_eq!(p.detail.height, 9);
         assert!(p.rail.y < p.detail.y);
         assert_eq!(p.rail.x, p.detail.x);
-        // tight inactive panes are one row; the active panel takes the rest
         assert_eq!(p.slots[Pane::Images.index()].height, 1);
         assert_eq!(p.slots[Pane::Volumes.index()].height, 1);
         assert_eq!(p.slots[Pane::Containers.index()].height, 7);
@@ -298,7 +248,6 @@ mod tests {
 
     #[test]
     fn body_width_under_80_stacks_otherwise_beside() {
-        // 79×30 is not floor (h>22, w>60); header 2 + bottom 1 → body 27×79
         let stacked = plan(79, 30);
         assert!(stacked.stacked, "79-col body must stack");
         let beside = plan(80, 30);
@@ -319,8 +268,6 @@ mod tests {
         assert_eq!(p.detail.height, 27);
         assert_eq!(p.rail.y, p.detail.y);
         assert!(p.rail.x < p.detail.x);
-        // roomy: shrink-to-fit names, cap max(8, height/4)=8
-        // images 5+2=7, volumes 3+2=5, containers fill
         assert_eq!(p.slots[Pane::Images.index()].height, 7);
         assert_eq!(p.slots[Pane::Volumes.index()].height, 5);
         assert_eq!(p.slots[Pane::Containers.index()].height, 15);
@@ -337,7 +284,6 @@ mod tests {
 
     #[test]
     fn rail_height_under_16_is_tight_even_when_beside() {
-        // floor (h<=22): header 1 + bottom 1. Frame 17 → body 15 < TIGHT_RAIL_H.
         let p = plan(100, 17);
         assert!(!p.stacked);
         assert_eq!(p.body.height, 15);
@@ -364,7 +310,6 @@ mod tests {
         assert!(!plan(61, 23).floor);
     }
 
-    /// Every action a running container offers, in menu order.
     fn running_actions() -> Vec<ActionItem> {
         let mut s = AppState::new(true);
         s.containers.push(crate::engine::state::ContainerEntry {
@@ -396,7 +341,6 @@ mod tests {
 
     #[test]
     fn off_the_floor_the_sheet_trims_only_what_does_not_fit() {
-        // 8 actions would need 10 rows; trimming the last jump lands it on 9
         let all = running_actions();
         assert_eq!(all.len(), 8);
         let items = sheet_items(all, false);
@@ -431,7 +375,6 @@ mod tests {
     #[test]
     fn action_sheet_hugs_the_detail_floor_and_never_the_rail() {
         let p = plan(55, 20);
-        // 6 items at the floor (l/i omitted) → 8 rows
         let sheet = super::action_sheet(p.detail, 6);
         assert_eq!(sheet.height, 8);
         assert_eq!(sheet.bottom(), p.detail.bottom());
@@ -473,21 +416,15 @@ mod tests {
 
     #[test]
     fn help_clamps_to_the_frame_and_is_full_screen_at_the_floor() {
-        // 24 content rows will not fit in a 20-row frame: clamp, then scroll
         let floor = super::help_modal(Rect::new(0, 0, 55, 20), 24);
         assert_eq!((floor.width, floor.height), (55, 20));
         assert_eq!((floor.x, floor.y), (0, 0));
-        // roomy: the box grows to the content and stops at HELP_W
         let roomy = super::help_modal(Rect::new(0, 0, 200, 50), 21);
         assert_eq!((roomy.width, roomy.height), (HELP_W, 23));
     }
 
     #[test]
     fn tiny_frames_split_the_body_instead_of_panicking() {
-        // #52: under 80 columns and under 12 rows the rail's floor crossed its
-        // cap and `clamp` panicked. Every size has to produce a tiling plan.
-        // Widths only decide stacked-vs-beside (80) and floor chrome (60); the
-        // crossing bounds were on the height axis, so that one is swept whole.
         for h in 1..=40u16 {
             for w in [1, 2, 20, 40, 55, 59, 60, 61, 79, 80, 81, 100] {
                 let p = plan(w, h);
@@ -548,8 +485,6 @@ mod tests {
 
     #[test]
     fn the_stacked_rail_leaves_the_detail_pane_a_row_on_a_short_body() {
-        // 79x11 from the issue's repro table: 1-row header, 1-row bottom, so
-        // the body is 9 rows and cannot give the detail pane its usual 4.
         let p = plan(79, 11);
         assert!(p.stacked);
         assert_eq!(p.body.height, 9);
@@ -561,9 +496,6 @@ mod tests {
 
     #[test]
     fn a_rail_too_short_for_three_panes_keeps_the_active_one() {
-        // 40x5: header 1 + bottom 1 leaves a 3-row body, so the rail gets 2 —
-        // one row short of a collapsed row per pane. The active panel takes
-        // them; the header still names all three panes and their counts.
         let p = plan(40, 5);
         assert!(p.stacked);
         assert_eq!(p.rail.height, 2);
@@ -589,8 +521,6 @@ mod tests {
 
     #[test]
     fn roomy_inactive_cap_is_max_8_or_height_over_4() {
-        // 100×40: not floor, header 2 + bottom 1 → body 37. cap = max(8, 37/4)=9
-        // images need 7, under cap; invent a long inactive list via facts
         let f = LayoutFacts {
             zoom: false,
             active: Pane::Containers,

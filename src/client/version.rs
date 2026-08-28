@@ -1,12 +1,6 @@
-//! Startup version check. The CLI guarantees output stability only within patch
-//! versions; this range is kept next to the fixtures it was validated against.
-
-/// Versions bushel's fixtures were captured on (see `fixtures/<version>/`).
-/// Minor range [MIN, MAX] inclusive; any 1.2.x is considered tested.
 pub const TESTED_MIN: (u32, u32) = (1, 2);
 pub const TESTED_MAX: (u32, u32) = (1, 2);
 
-/// Human-readable range for the mismatch banner.
 pub fn tested_range() -> String {
     if TESTED_MIN == TESTED_MAX {
         format!("{}.{}.x", TESTED_MIN.0, TESTED_MIN.1)
@@ -18,7 +12,6 @@ pub fn tested_range() -> String {
     }
 }
 
-/// Parse `container CLI version 1.2.0 (build: release, commit: 6e65319)` → (1, 2, 0).
 pub fn parse(version_line: &str) -> Option<(u32, u32, u32)> {
     let tail = version_line.split("version").nth(1)?.trim();
     let mut parts = tail.split_whitespace().next()?.split('.');
@@ -28,7 +21,6 @@ pub fn parse(version_line: &str) -> Option<(u32, u32, u32)> {
     Some((major, minor, patch))
 }
 
-/// Is this version inside the tested range? Unparseable versions are untested.
 pub fn is_tested(version_line: &str) -> bool {
     match parse(version_line) {
         Some((maj, min, _)) => (maj, min) >= TESTED_MIN && (maj, min) <= TESTED_MAX,

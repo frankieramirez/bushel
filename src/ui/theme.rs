@@ -1,11 +1,8 @@
-//! Palette and terminal-capability fallbacks: truecolor → 256-color, and the
-//! prototype-validated colors (#0f1117 ground, orchard-green → apple-red accents).
-
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 
-pub const ACCENT_A: (u8, u8, u8) = (0x7e, 0xe7, 0x87); // orchard green
-pub const ACCENT_B: (u8, u8, u8) = (0xff, 0x7b, 0x72); // apple red
+pub const ACCENT_A: (u8, u8, u8) = (0x7e, 0xe7, 0x87);
+pub const ACCENT_B: (u8, u8, u8) = (0xff, 0x7b, 0x72);
 
 #[derive(Debug, Clone, Copy)]
 pub struct Theme {
@@ -65,8 +62,6 @@ impl Theme {
         self.rgb_or((0xe3, 0xb3, 0x41), 179)
     }
 
-    // ---- icons (Unicode with ASCII fallback) ----
-
     pub fn dot_running(&self) -> &'static str {
         if self.ascii { "* " } else { "● " }
     }
@@ -93,7 +88,6 @@ impl Theme {
         Color::Rgb(f(a.0, b.0), f(a.1, b.1), f(a.2, b.2))
     }
 
-    /// The gradient wordmark treatment.
     pub fn gradient_spans(&self, text: &str, bold: bool) -> Vec<Span<'static>> {
         let n = text.chars().count().max(1);
         text.chars()
@@ -113,7 +107,6 @@ impl Theme {
     }
 }
 
-/// `1234567` → `1.2 MB`-style short size.
 pub fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut v = bytes as f64;

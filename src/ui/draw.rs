@@ -1,5 +1,3 @@
-//! Rendering: consumes `AppState`, paints the frame. Never touches the Client.
-
 use std::collections::VecDeque;
 use std::time::Instant;
 
@@ -21,9 +19,7 @@ use crate::ui::layout::{self, LayoutFacts, LayoutPlan, centered};
 use crate::ui::log_view;
 use crate::ui::theme::{ACCENT_A, ACCENT_B, Theme, human_size};
 
-/// 3-row strip: cpu spark, mem spark, net+disk text.
 const STRIP_HEIGHT: u16 = 3;
-/// Logs the strip must leave; collapse is a height decision, not a no-data one.
 const STRIP_MIN_LOG: u16 = 4;
 
 const ASCII_BARS: symbols::bar::Set = symbols::bar::Set {
@@ -38,20 +34,16 @@ const ASCII_BARS: symbols::bar::Set = symbols::bar::Set {
     empty: " ",
 };
 
-/// Values draw computes that the rest of the UI needs (effect areas, the
-/// raw log line at the top of the viewport for follow-aware key handling).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DrawInfo {
     pub body: Rect,
     pub header: Rect,
     pub bottom: Rect,
     pub log_scroll: u16,
-    /// Largest useful `help_scroll` at the last draw; 0 when help fits or is closed.
     pub help_max_scroll: u16,
 }
 
 fn spinner_frame() -> usize {
-    // wall-clock driven so it animates whenever frames are being drawn
     static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     (START.get_or_init(Instant::now).elapsed().as_millis() / 100) as usize
 }
@@ -71,15 +63,11 @@ pub fn draw(frame: &mut Frame, state: &AppState, th: &Theme) -> DrawInfo {
     info
 }
 
-/// The splash never adds latency (spec): it dissolves the instant data arrives.
-/// On fast startups that would mean a jarring sub-100ms flash of the mark, so it
-/// only becomes visible once the probes have been running for a grace period —
-/// fast start → straight into the layout, slow start → proper splash.
 const SPLASH_GRACE: std::time::Duration = std::time::Duration::from_millis(150);
 
 fn draw_splash(frame: &mut Frame, state: &AppState, th: &Theme) {
     if !state.first_run && state.started_at.elapsed() < SPLASH_GRACE {
-        return; // just the ground color — the layout takes over if data beats us
+        return;
     }
     let art = [
         r"   ,--./,-.                                     ",
@@ -524,7 +512,6 @@ fn draw_detail(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // an active pull streams raw CLI progress in the detail pane — never a modal
     if let Some(pull) = &state.pull {
         if state.pane == Pane::Images {
             let mut lines = vec![
@@ -663,8 +650,6 @@ fn draw_detail(
 
     let logs = state.pane == Pane::Containers && state.detail_tab == DetailTab::Logs;
     if logs {
-        // Wrap can push display rows past u16::MAX; Paragraph::scroll is (u16, u16),
-        // so rebase onto a pane-height window and render that at scroll 0.
         let total = lines.len();
         let h = content_area.height as usize;
         let width = content_area.width;
@@ -701,7 +686,6 @@ fn bar_set(ascii: bool) -> symbols::bar::Set<'static> {
     }
 }
 
-/// Direction glyph + humanized binary bytes + `/s`. Prototype look.
 fn human_rate(bps: u64) -> String {
     const K: f64 = 1024.0;
     if bps < 1024 {
@@ -766,10 +750,6 @@ fn draw_spark(
     if spark_w == 0 || data.is_empty() {
         return;
     }
-    // Sparkline takes max() over the whole dataset, then draws only `width`
-    // bars. Slice to the visible columns so a spike outside the window
-    // cannot flatten the glyph. Newest-first + RightToLeft: one second per
-    // column, growing left from the right edge.
     let visible = &data[..data.len().min(spark_w)];
     frame.render_widget(
         Sparkline::default()
@@ -909,8 +889,6 @@ fn draw_bottom_bar(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, 
         }
     }
 
-    // status cluster, right-aligned: service dot, CLI version, poll spinner.
-    // Dropped at the 55×20 floor and whenever it wouldn't fit.
     if !floor {
         let service_up = state.screen != Screen::ServiceDown;
         let version = state.cli_version.clone().unwrap_or_else(|| "?".into());
@@ -938,8 +916,6 @@ fn draw_bottom_bar(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, 
     );
 }
 
-/// The action menu: a bottom sheet on the *detail pane*, never the rail.
-/// Height `min(n + 2, 9)`; `layout::sheet_items` decides what fits in it.
 fn draw_action_menu(frame: &mut Frame, state: &AppState, th: &Theme, detail: Rect, floor: bool) {
     let items = layout::sheet_items(state.available_actions(), floor);
     let area = layout::action_sheet(detail, items.len() as u16);
@@ -977,8 +953,6 @@ fn draw_action_menu(frame: &mut Frame, state: &AppState, th: &Theme, detail: Rec
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// Destructive confirm: a fixed 7-row centered modal. A command longer than the
-/// box wraps inside it; the box never grows to fit the command.
 fn draw_confirm(frame: &mut Frame, th: &Theme, command: &str) {
     let area = layout::confirm_modal(frame.area());
     frame.render_widget(Clear, area);
@@ -992,8 +966,6 @@ fn draw_confirm(frame: &mut Frame, th: &Theme, command: &str) {
     if inner.height == 0 {
         return;
     }
-    // The keys row is pinned to the floor of the box so a wrapped command can
-    // never push it out; the command wraps into the rows above it.
     let keys = Rect {
         y: inner.bottom() - 1,
         height: 1,
@@ -1004,12 +976,10 @@ fn draw_confirm(frame: &mut Frame, th: &Theme, command: &str) {
         ..inner
     };
     let mut rows = log_view::split_line(command, true, body.width.saturating_sub(4));
-    // A command preview must never look complete when it is not: past the last
-    // row the box can hold, say so.
     let room = body.height as usize;
     let mut lines = Vec::new();
     if rows.len() < room {
-        lines.push(Line::raw("")); // breathing room, but only when it is spare
+        lines.push(Line::raw(""));
     } else if rows.len() > room {
         rows.truncate(room);
         if let Some(last) = rows.last_mut() {
@@ -1060,8 +1030,6 @@ fn draw_pull_input(frame: &mut Frame, th: &Theme, text: &str) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-/// Render the cheatsheet to `width` columns, wrapping long descriptions under
-/// the key column so nothing is clipped horizontally.
 pub(crate) fn help_lines(th: &Theme, width: u16) -> Vec<Line<'static>> {
     let desc_w = width.saturating_sub(HELP_KEY_COL).max(8);
     let mut out = Vec::new();
@@ -1087,12 +1055,8 @@ pub(crate) fn help_lines(th: &Theme, width: u16) -> Vec<Line<'static>> {
     out
 }
 
-/// Help is one cheatsheet clamped to the frame; it scrolls when it overflows.
-/// At 55×20 that clamp is effectively full-screen. Returns the largest useful
-/// scroll offset so key handling can stop at the end of the list.
 fn draw_help(frame: &mut Frame, state: &AppState, th: &Theme) -> u16 {
     let full = frame.area();
-    // Measure against the width the box will actually have.
     let lines = help_lines(th, layout::help_inner_width(full));
     let area = layout::help_modal(full, lines.len() as u16);
     frame.render_widget(Clear, area);
@@ -1242,8 +1206,6 @@ mod tests {
         out
     }
 
-    /// Every size the layout has to cope with, drawn for real: a frame that
-    /// plans without panicking is no use if painting it panics instead (#52).
     #[test]
     fn no_terminal_size_panics_the_renderer() {
         let zoomed = || {
@@ -1267,7 +1229,7 @@ mod tests {
         let splash = || {
             let mut s = sample();
             s.screen = Screen::Splash;
-            s.first_run = true; // otherwise the grace period paints nothing
+            s.first_run = true;
             s
         };
         let service_down = || {
@@ -1297,7 +1259,6 @@ mod tests {
                 s.overlay = overlay.clone();
                 for h in [1, 2, 3, 4, 5, 8, 11, 12, 17, 20, 22, 23, 30] {
                     for w in [1, 2, 10, 20, 40, 55, 60, 61, 79, 80, 100] {
-                        // a panic is the failure; painting the frame is the assertion
                         render(w, h, &s);
                     }
                 }
@@ -1308,7 +1269,6 @@ mod tests {
     #[test]
     fn floor_55x20_keeps_all_three_panes_and_drops_floor_chrome() {
         let frame = render(55, 20, &sample());
-        // header is a pane switcher without counts
         let header = frame.lines().next().unwrap();
         assert!(header.contains("1 containers"), "{header}");
         assert!(header.contains("2 images"), "{header}");
@@ -1317,17 +1277,14 @@ mod tests {
             !header.contains("containers 1"),
             "counts live on the rail, not the header: {header}"
         );
-        // 1-row header: the next line is the rail, not a blank
         let second = frame.lines().nth(1).unwrap();
         assert!(
             second.contains("containers"),
             "expected 1-row header then rail, got {second:?}"
         );
-        // counts live on the rail; inactive panes collapse to 1-row title+count
         assert!(frame.contains("containers 1"), "{frame}");
         assert!(frame.contains("2 images 1"), "{frame}");
         assert!(frame.contains("3 volumes 1"), "{frame}");
-        // no table headers, no Logs/Inspect tab row, no status cluster
         assert!(
             !frame.contains("name"),
             "no table headers at the floor: {frame}"
@@ -1335,7 +1292,6 @@ mod tests {
         assert!(!frame.contains("Logs [l]"), "{frame}");
         assert!(!frame.contains("Inspect [i]"), "{frame}");
         assert!(!frame.contains("service"), "{frame}");
-        // strip still fits (height decision): 3-row just leaves 4 log rows
         assert!(frame.contains("cpu"), "{frame}");
         assert!(frame.contains("dsk r"), "{frame}");
     }
@@ -1348,7 +1304,6 @@ mod tests {
         assert!(frame.contains("volumes 1"), "{frame}");
         assert!(frame.contains("Logs [l]"), "{frame}");
         assert!(frame.contains("service"), "{frame}");
-        // spare width belongs to logs: the rail's top-right corner is at col 36
         let body = frame.lines().nth(2).unwrap();
         let rail_end = body.chars().position(|c| c == '╮').expect(body);
         assert!(
@@ -1365,9 +1320,7 @@ mod tests {
         assert!(frame.contains("volumes 1"), "{frame}");
         assert!(frame.contains("Logs [l]"), "{frame}");
         assert!(frame.contains("service"), "{frame}");
-        // table headers on the active panel
         assert!(frame.contains("cpu"), "{frame}");
-        // 1-row header is not used: a blank line sits under the switcher
         let second = frame.lines().nth(1).unwrap();
         assert!(
             second.trim().is_empty(),
@@ -1443,9 +1396,6 @@ mod tests {
 
     #[test]
     fn sparks_auto_scale_to_the_visible_window() {
-        // Newest samples at 10%, older at 90%. Rail layout leaves ~50 spark
-        // columns at 100x30; keep the 10% window wider than that so a leftover
-        // 90% column cannot flatten the glyph.
         let mut tel = VecDeque::new();
         let high = TelemetrySample {
             cpu: Some(90.0),
@@ -1573,7 +1523,6 @@ mod tests {
         s
     }
 
-    /// Row and column where the box drawn with `title` starts.
     fn box_origin(frame: &str, title: &str) -> (usize, usize) {
         let head = format!("╭ {title} ");
         frame
@@ -1583,8 +1532,6 @@ mod tests {
             .unwrap_or_else(|| panic!("no {title} box in:\n{frame}"))
     }
 
-    /// The box drawn with `title`, as its rows of characters: from its top
-    /// border to its bottom one, clipped to its own left/right columns.
     fn box_rows(frame: &str, title: &str) -> Vec<Vec<char>> {
         let grid: Vec<Vec<char>> = frame.lines().map(|l| l.chars().collect()).collect();
         let (top, left) = box_origin(frame, title);
@@ -1621,11 +1568,9 @@ mod tests {
                 48,
                 "confirm must not grow to the command:\n{frame}"
             );
-            // y runs, esc cancels — and the keys row survives the wrap
             assert!(frame.contains("[y] run"), "{frame}");
             assert!(frame.contains("[esc] cancel"), "{frame}");
         }
-        // the overflow wraps inside the box rather than being clipped away
         assert!(
             long.contains("container delete a-really-long-container-n"),
             "{long}"
@@ -1658,19 +1603,15 @@ mod tests {
                 sheet.len() as u16 <= layout::SHEET_MAX_H,
                 "sheet is capped at 9 rows at {w}x{h}:\n{frame}"
             );
-            // it starts where the detail pane starts and is as wide as it
             assert_eq!(sheet_x, detail_x, "{w}x{h}:\n{frame}");
             assert_eq!(
                 sheet[0].len(),
                 box_rows(&frame, "detail")[0].len(),
                 "{w}x{h}:\n{frame}"
             );
-            // the rail's counts are still legible under the sheet
             assert!(frame.contains("containers 1"), "{w}x{h}:\n{frame}");
             assert!(frame.contains("images 1"), "{w}x{h}:\n{frame}");
             assert!(frame.contains("volumes 1"), "{w}x{h}:\n{frame}");
-            // stacked, the rail sits above the detail pane: the sheet must
-            // start below every rail row
             if w < 80 {
                 let rail_bottom = box_origin(&frame, "detail").0;
                 assert!(
@@ -1706,7 +1647,6 @@ mod tests {
         s.overlay = Overlay::ActionMenu;
         let frame = render(100, 30, &s);
         assert!(frame.contains("l  logs"), "{frame}");
-        // the tab row carries inspect's key where the sheet cannot
         assert!(frame.contains("Inspect [i]"), "{frame}");
     }
 
@@ -1725,18 +1665,15 @@ mod tests {
             s.overlay = Overlay::Help;
             s
         });
-        // effectively full-screen at the floor
         let rows = box_rows(&floor, "keys");
         assert_eq!(rows.len(), 20, "{floor}");
         assert_eq!(rows[0].len(), 55, "{floor}");
-        // long descriptions wrap to the pane width instead of being clipped
         assert!(
             floor.contains("expand pane (containers / images / volu"),
             "{floor}"
         );
         assert!(floor.contains("mes)"), "{floor}");
         assert!(floor.contains("j/k scroll"), "{floor}");
-        // the same list, scrolled: the tail is reachable
         let mut scrolled = sample();
         scrolled.overlay = Overlay::Help;
         scrolled.help_scroll = 6;
@@ -1746,7 +1683,6 @@ mod tests {
             !end.contains("dismiss version banner") || end.contains("esc"),
             "{end}"
         );
-        // roomy: one box, no scroll hint, whole list visible
         let mut roomy = sample();
         roomy.overlay = Overlay::Help;
         let wide = render(100, 30, &roomy);

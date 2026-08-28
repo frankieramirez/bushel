@@ -1,6 +1,3 @@
-//! Headless Engine tests: a MockRunner replays captured fixtures, commands are
-//! dispatched as the UI would, and state is asserted — no terminal involved.
-
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -21,8 +18,6 @@ fn fixture_str(name: &str) -> String {
     String::from_utf8(fixture(name)).unwrap()
 }
 
-/// The standard happy-path mock: service up, one running + one stopped container,
-/// two images, two volumes (qvol in use by old-batch), quiet logs.
 fn happy_mock() -> MockRunner {
     let mock = MockRunner::new();
     mock.on(
@@ -82,7 +77,6 @@ impl Harness {
         h
     }
 
-    /// Apply every event the spawned tasks produce until the channel goes quiet.
     fn pump(&mut self) {
         let rt = tokio::runtime::Handle::current();
         loop {
@@ -101,7 +95,6 @@ impl Harness {
     }
 }
 
-// pump() blocks in place, so tests need the multi-thread runtime.
 macro_rules! engine_test {
     ($name:ident, $body:expr) => {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -116,7 +109,6 @@ engine_test!(startup_populates_all_three_panes_from_fixtures, || {
     let s = h.state();
 
     assert_eq!(s.screen, Screen::Main);
-    // running-first then alphabetical
     let ids: Vec<&str> = s.containers.iter().map(|c| c.id.as_str()).collect();
     assert_eq!(ids, vec!["qtest", "old-batch"]);
     assert!(s.containers[0].is_running());
@@ -124,7 +116,6 @@ engine_test!(startup_populates_all_three_panes_from_fixtures, || {
     assert_eq!(s.volumes.len(), 2);
     assert_eq!(s.cli_version.as_deref(), Some("1.2.0"));
     assert!(s.version_banner.is_none());
-    // first container selected
     assert_eq!(s.selected[0].as_deref(), Some("qtest"));
 });
 
@@ -179,7 +170,6 @@ engine_test!(service_down_at_startup_takes_over_the_screen, || {
 engine_test!(service_recovery_returns_to_main_and_repolls, || {
     let mock = MockRunner::new();
     mock.on(&["--version"], Output::ok("container CLI version 1.2.0\n"));
-    // first probe: down; second probe: running
     mock.on(
         &["system", "status", "--format", "json"],
         Output {
@@ -192,7 +182,6 @@ engine_test!(service_recovery_returns_to_main_and_repolls, || {
         &["system", "status", "--format", "json"],
         Output::ok(fixture("system_status_running.json")),
     );
-    // lists fail first (XPC), succeed after recovery
     mock.on(
         &["ls", "-a", "--format", "json"],
         Output::fail(1, fixture("stderr/service_down_ls.txt")),
@@ -222,7 +211,6 @@ engine_test!(service_recovery_returns_to_main_and_repolls, || {
     let mut h = Harness::started(mock);
     assert_eq!(h.state().screen, Screen::ServiceDown);
 
-    // probe cadence: every 2nd tick while down
     h.engine.on_tick();
     h.pump();
     assert_eq!(
@@ -243,7 +231,6 @@ engine_test!(stop_on_running_container_runs_without_confirmation, || {
     let mut h = Harness::started(mock);
 
     h.engine.dispatch(Command::Run(UiAction::Stop));
-    // pending is set synchronously, before the subprocess finishes
     assert_eq!(
         h.state().containers[0].pending.map(|p| p.kind),
         Some(ActionKind::Stop)
@@ -258,7 +245,6 @@ engine_test!(stop_on_running_container_runs_without_confirmation, || {
         "{:?}",
         h.mock.commands()
     );
-    // subprocess done → confirming phase until a poll shows "stopped"
     let p = h
         .state()
         .containers
@@ -277,7 +263,6 @@ engine_test!(
     || {
         let mock = happy_mock();
         mock.on(&["stop", "qtest"], Output::ok("qtest\n"));
-        // next poll shows qtest stopped
         let stopped = fixture_str("ls.json").replace(
             r#""startedDate":"2026-08-20T01:46:37Z","state":"running""#,
             r#""startedDate":"2026-08-20T01:46:37Z","state":"stopped""#,
@@ -299,7 +284,6 @@ engine_test!(
             .unwrap();
         assert_eq!(qtest.state, "stopped");
         assert!(qtest.pending.is_none(), "confirmed pending must clear");
-        // the outcome is announced only now, at poll confirmation
         let toast = h.state().toast.clone().expect("confirmation toast");
         assert_eq!(toast.text, "stopped qtest");
     }
@@ -312,7 +296,7 @@ engine_test!(success_is_not_announced_before_a_poll_confirms_it, || {
     h.engine.state.toast = None;
 
     h.engine.dispatch(Command::Run(UiAction::Stop));
-    h.pump(); // subprocess exits ok, but polls still show "running"
+    h.pump();
 
     let toast = h.state().toast.clone();
     assert!(
@@ -344,7 +328,6 @@ engine_test!(pull_tag_defaulting_respects_registry_ports, || {
     }
     h.engine.dispatch(Command::OverlaySubmit);
     h.pump();
-    // the ':' in the registry port must not suppress the :latest default
     assert!(
         h.mock
             .commands()
@@ -359,7 +342,6 @@ engine_test!(images_parse_failures_do_not_count_toward_degraded, || {
     let mut h = Harness::started(happy_mock());
     h.mock
         .set(&["image", "ls", "--format", "json"], Output::ok("garbage"));
-    // many slow-poll refreshes worth of failing image polls, healthy containers polls
     for _ in 0..30 {
         h.engine.on_tick();
     }
@@ -375,7 +357,7 @@ engine_test!(unconfirmed_pending_clears_after_the_two_tick_cap, || {
     mock.on(&["stop", "qtest"], Output::ok("qtest\n"));
     let mut h = Harness::started(mock);
     h.engine.dispatch(Command::Run(UiAction::Stop));
-    h.pump(); // ActionDone → Confirming(2), plus one immediate poll consuming a tick
+    h.pump();
 
     for _ in 0..2 {
         h.engine.on_tick();
@@ -404,7 +386,6 @@ engine_test!(deleted_container_confirms_by_disappearance, || {
     h.engine.dispatch(Command::ConfirmYes);
     h.pump();
 
-    // poll where old-batch is gone
     let ls: Vec<serde_json::Value> = serde_json::from_str(&fixture_str("ls.json")).unwrap();
     let only_qtest = serde_json::to_string(&vec![ls[0].clone()]).unwrap();
     h.mock
@@ -432,7 +413,6 @@ engine_test!(kill_requires_confirmation_showing_the_exact_command, || {
         }
         other => panic!("expected confirm overlay, got {other:?}"),
     }
-    // nothing ran yet
     assert!(
         !h.mock
             .commands()
@@ -470,7 +450,6 @@ engine_test!(deleting_an_in_use_volume_is_blocked_with_an_error, || {
     let mut h = Harness::started(happy_mock());
     h.engine.dispatch(Command::SwitchPane(Pane::Volumes));
     h.pump();
-    // qvol sorts first and is selected; it is in use by old-batch
     assert_eq!(h.state().selected[2].as_deref(), Some("qvol"));
 
     h.engine.dispatch(Command::Run(UiAction::Delete));
@@ -485,7 +464,6 @@ engine_test!(deleting_an_in_use_volume_is_blocked_with_an_error, || {
             .iter()
             .any(|c| c.contains("volume delete"))
     );
-    // full detail lands in the message log
     assert!(h.state().messages.iter().any(|m| m.contains("old-batch")));
 });
 
@@ -523,7 +501,6 @@ engine_test!(second_action_on_a_pending_entity_is_rejected, || {
     let mut h = Harness::started(mock);
 
     h.engine.dispatch(Command::Run(UiAction::Stop));
-    // without pumping, the first action is still pending
     h.engine.dispatch(Command::Run(UiAction::Stop));
     let toast = h.state().toast.clone().expect("toast");
     assert!(toast.text.contains("already pending"), "{}", toast.text);
@@ -542,7 +519,6 @@ engine_test!(external_stop_is_announced_but_bushel_stops_are_not, || {
 
     let toast = h.state().toast.clone().expect("external stop should toast");
     assert!(toast.text.contains("stopped externally"), "{}", toast.text);
-    // and the diff is in the message log
     assert!(
         h.state()
             .messages
@@ -615,10 +591,8 @@ engine_test!(
             let degraded = h.state().degraded;
             assert_eq!(degraded, i >= 3, "tick {i}: degraded={degraded}");
         }
-        // last good state kept throughout
         assert_eq!(h.state().containers.len(), 2);
 
-        // a good poll clears the banner
         h.mock.on(
             &["ls", "-a", "--format", "json"],
             Output::ok(fixture("ls.json")),
@@ -631,7 +605,6 @@ engine_test!(
 
 engine_test!(log_follower_backlog_then_follow_in_order, || {
     let mut h = Harness::started(happy_mock());
-    // startup selected qtest (running) on Logs tab → follower live
     assert_eq!(h.engine.follower_id(), Some("qtest"));
     assert_eq!(
         h.state().log_lines,
@@ -639,7 +612,6 @@ engine_test!(log_follower_backlog_then_follow_in_order, || {
     );
     assert!(!h.state().logs_loading);
 
-    // switching to Inspect kills the follower
     h.engine.dispatch(Command::SetDetailTab(DetailTab::Inspect));
     h.pump();
     assert_eq!(h.engine.follower_id(), None);
@@ -684,7 +656,6 @@ engine_test!(
         h.engine.dispatch(Command::SwitchPane(Pane::Images));
         h.pump();
 
-        // pull prompt: tag defaults to latest when omitted
         h.engine.dispatch(Command::Run(UiAction::Pull));
         assert!(matches!(h.state().overlay, Overlay::PullInput { .. }));
         for c in "alpine".chars() {
@@ -756,7 +727,6 @@ engine_test!(
             },
         );
 
-        // 1.5s of CPU over 1s wall → 150%; byte counters advance by known amounts.
         let stats: Vec<bushel::client::model::StatsJson> = serde_json::from_str(
             r#"[{"id":"qtest","cpuUsageUsec":2500000,"memoryUsageBytes":200,"memoryLimitBytes":1000,"networkRxBytes":3000,"networkTxBytes":700,"blockReadBytes":1300,"blockWriteBytes":400}]"#,
         )
@@ -857,7 +827,6 @@ engine_test!(telemetry_ring_caps_at_five_minutes, || {
     let mut state = seeded_containers();
     let mut at = Instant::now();
     let mut prev = HashMap::new();
-    // first sample swallowed, then 301 diffs → cap 300
     for i in 0..302u64 {
         let stats = stats_json(i * 1_000, 100, 1000, i * 10, 0, 0, 0);
         prev = state.apply_stats(&stats, &prev, at);
@@ -865,10 +834,7 @@ engine_test!(telemetry_ring_caps_at_five_minutes, || {
     }
     let qtest = state.containers.iter().find(|c| c.id == "qtest").unwrap();
     assert_eq!(qtest.telemetry.len(), bushel::engine::TELEMETRY_HISTORY);
-    // newest-first: the last diff used i=301 vs i=300 → rx 10 B/s
     assert_eq!(qtest.telemetry[0].rx, Some(10));
-    // oldest kept is the sample from i=2 (first kept diff); i=1 was the first
-    // diff and would have been evicted if we went one past the cap.
     assert_eq!(qtest.telemetry.back().unwrap().rx, Some(10));
 });
 
@@ -927,7 +893,6 @@ engine_test!(
             },
         );
 
-        // 1.5s of CPU over ~1s wall → ~150%
         let stats: Vec<bushel::client::model::StatsJson> = serde_json::from_str(
         r#"[{"id":"qtest","cpuUsageUsec":2500000,"memoryUsageBytes":4780032,"memoryLimitBytes":1073741824}]"#,
     )
@@ -945,20 +910,19 @@ engine_test!(fuzzy_filter_narrows_and_esc_clears, || {
     let mut h = Harness::started(happy_mock());
     h.engine.dispatch(Command::StartFilter);
     for c in "olbtc".chars() {
-        h.engine.dispatch(Command::FilterChar(c)); // subsequence of "old-batch"
+        h.engine.dispatch(Command::FilterChar(c));
     }
     let visible = h.state().visible_rows();
     assert_eq!(visible.len(), 1);
     assert_eq!(h.state().containers[visible[0]].id, "old-batch");
 
-    h.engine.dispatch(Command::Back); // esc clears filter
+    h.engine.dispatch(Command::Back);
     assert!(h.state().filter.is_empty());
     assert_eq!(h.state().visible_rows().len(), 2);
 });
 
 engine_test!(action_menu_lists_valid_actions_for_the_selection, || {
     let mut h = Harness::started(happy_mock());
-    // running container
     let keys: Vec<char> = h
         .state()
         .available_actions()
@@ -966,7 +930,6 @@ engine_test!(action_menu_lists_valid_actions_for_the_selection, || {
         .map(|a| a.key)
         .collect();
     assert_eq!(keys, vec!['s', 'r', 'K', 'd', 'P', 'e', 'l', 'i']);
-    // stopped container
     h.engine.dispatch(Command::Move(1));
     h.pump();
     assert_eq!(h.state().selected_container().unwrap().id, "old-batch");
@@ -977,7 +940,6 @@ engine_test!(action_menu_lists_valid_actions_for_the_selection, || {
         .map(|a| a.key)
         .collect();
     assert_eq!(keys, vec!['s', 'd', 'P', 'i']);
-    // destructive tinting data
     assert!(
         h.state()
             .available_actions()
@@ -1002,7 +964,6 @@ engine_test!(inspect_is_fetched_lazily_and_cached, || {
     h.pump();
     h.engine.dispatch(Command::SetDetailTab(DetailTab::Inspect));
     h.pump();
-    // no refetch while cached
     let inspects = h.mock.calls()[calls_before..]
         .iter()
         .filter(|c| c.first().map(|s| s.as_str()) == Some("inspect"))
@@ -1061,7 +1022,6 @@ engine_test!(selection_is_anchored_by_id_across_polls, || {
     h.pump();
     assert_eq!(h.state().selected[0].as_deref(), Some("old-batch"));
 
-    // a poll where qtest stops re-sorts the list; selection must stick to old-batch
     let stopped = fixture_str("ls.json").replace(
         r#""startedDate":"2026-08-20T01:46:37Z","state":"running""#,
         r#""startedDate":"2026-08-20T01:46:37Z","state":"stopped""#,
@@ -1080,7 +1040,7 @@ engine_test!(first_run_splash_dwells_until_the_beat_ends, || {
         let mock = std::sync::Arc::new(mock);
         let client = Client::new(std::sync::Arc::clone(&mock));
         let (tx, rx) = tokio::sync::mpsc::channel(1024);
-        let mut engine = Engine::new(client, tx, false); // splash enabled
+        let mut engine = Engine::new(client, tx, false);
         engine.state.first_run = true;
         engine.start();
         let mut h = Harness { engine, rx, mock };
@@ -1088,11 +1048,9 @@ engine_test!(first_run_splash_dwells_until_the_beat_ends, || {
         h
     };
 
-    // data has landed, but the dwell hasn't elapsed → still on the splash
     assert!(h.state().first_data);
     assert_eq!(h.state().screen, Screen::Splash);
 
-    // once the dwell has elapsed, the next check dissolves it
     h.engine.state.started_at = Instant::now() - Duration::from_secs(2);
     h.engine.maybe_dissolve_splash();
     assert_eq!(h.state().screen, Screen::Main);
@@ -1104,7 +1062,7 @@ engine_test!(non_first_run_splash_dissolves_the_moment_data_lands, || {
         let mock = std::sync::Arc::new(mock);
         let client = Client::new(std::sync::Arc::clone(&mock));
         let (tx, rx) = tokio::sync::mpsc::channel(1024);
-        let mut engine = Engine::new(client, tx, false); // splash enabled, not first run
+        let mut engine = Engine::new(client, tx, false);
         engine.start();
         let mut h = Harness { engine, rx, mock };
         h.pump();
@@ -1139,7 +1097,6 @@ engine_test!(logs_start_wrapped_and_w_toggles_globally, || {
     h.engine.dispatch(Command::ToggleWrap);
     assert!(!h.state().wrap);
 
-    // switching containers or panes does not change the mode
     h.engine.dispatch(Command::Move(1));
     h.pump();
     assert!(!h.state().wrap);
@@ -1179,10 +1136,8 @@ engine_test!(wrap_toggle_keeps_follow_and_the_paused_raw_line, || {
 engine_test!(keys_the_floor_sheet_omits_still_work_from_the_sheet, || {
     let mut h = Harness::started(happy_mock());
     h.engine.dispatch(Command::OpenActionMenu);
-    // the floor sheet does not list l/i …
     let listed = bushel::ui::layout::sheet_items(h.state().available_actions(), true);
     assert!(!listed.iter().any(|i| i.key == 'l' || i.key == 'i'));
-    // … but the key still switches the detail tab from inside the sheet
     h.engine.dispatch(Command::OverlayChar('i'));
     assert_eq!(h.state().detail_tab, DetailTab::Inspect);
     assert_eq!(h.state().overlay, Overlay::None);

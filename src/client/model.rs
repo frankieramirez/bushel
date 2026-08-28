@@ -1,10 +1,5 @@
-//! Typed views of the CLI's JSON output. Shapes are only patch-stable, so every
-//! struct tolerates unknown fields (serde's default — never `deny_unknown_fields`)
-//! and non-essential fields are `Option` or defaulted.
-
 use serde::Deserialize;
 
-/// One element of `container ls -a --format json`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ContainerJson {
     pub id: String,
@@ -31,20 +26,14 @@ pub struct ImageRef {
     pub reference: String,
 }
 
-/// The CLI's mount JSON. bushel's vocabulary is "volume" — this type exists only
-/// to read which volumes a container references (the in-use badge).
 #[derive(Debug, Clone, Deserialize)]
 pub struct Mount {
-    /// Host path (for volume mounts, the path to the backing volume.img).
     #[serde(default)]
     pub source: Option<String>,
     #[serde(default, rename = "type")]
     pub kind: Option<MountKind>,
 }
 
-/// Mount type is a tagged object — `{"virtiofs":{}}`, `{"tmpfs":{}}`,
-/// `{"volume":{"name":…}}`. Only the volume variant carries data bushel reads;
-/// the others deserialize to an empty MountKind.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct MountKind {
     #[serde(default)]
@@ -67,7 +56,6 @@ pub struct Resources {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ContainerStatus {
-    /// "running" / "stopped" — compared loosely; unknown states render verbatim.
     #[serde(default)]
     pub state: String,
     #[serde(default, rename = "startedDate")]
@@ -87,7 +75,6 @@ impl ContainerJson {
             .unwrap_or("")
     }
 
-    /// Names of volumes this container references (for the in-use badge).
     pub fn volume_sources(&self) -> impl Iterator<Item = &str> {
         self.configuration.mounts.iter().filter_map(|m| {
             m.kind
@@ -98,7 +85,6 @@ impl ContainerJson {
     }
 }
 
-/// One element of `container image ls --format json`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ImageJson {
     pub id: String,
@@ -145,8 +131,6 @@ impl ImageJson {
         self.configuration.name.as_deref().unwrap_or(&self.id)
     }
 
-    /// Size of the best-matching real variant: prefer the host platform, else any
-    /// variant whose os isn't "unknown" (attestation manifests are os=unknown).
     pub fn display_size(&self) -> Option<u64> {
         let real = |v: &&ImageVariant| {
             v.config
@@ -163,7 +147,6 @@ impl ImageJson {
     }
 }
 
-/// One element of `container volume ls --format json`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct VolumeJson {
     pub id: String,
@@ -187,8 +170,6 @@ impl VolumeJson {
     }
 }
 
-/// One element of `container stats --no-stream --format json`.
-/// `cpu_usage_usec` is cumulative — CPU% needs two samples.
 #[derive(Debug, Clone, Deserialize)]
 pub struct StatsJson {
     pub id: String,
@@ -208,7 +189,6 @@ pub struct StatsJson {
     pub block_write_bytes: u64,
 }
 
-/// `container system status --format json` — the only object-shaped response.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SystemStatusJson {
     #[serde(default)]

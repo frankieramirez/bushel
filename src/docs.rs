@@ -1,20 +1,3 @@
-//! bushel's keymap and config reference, rendered for the places that document
-//! it: `docs.json` for the website, Markdown for the README.
-//!
-//! bushel.sh builds on Cloudflare's Linux builders and cannot run bushel (macOS
-//! 26, Apple silicon), so the docs pages cannot shell out for their reference
-//! tables. Instead the release publishes this file as an asset and the site
-//! fetches it at build time. Every value here is read from the same source the
-//! running program reads — the cheatsheet in [`crate::ui::help`], the fields of
-//! [`Config`], the flags of [`Args`] — so neither the site nor the README can
-//! drift from the binary the way the README's hand-copied keymap did.
-//!
-//! The README is generated the same way but not from the same file: `docs.json`
-//! exists because the site builds on a machine that cannot run bushel, and the
-//! README is built by a machine that can. [`keys_markdown`] and
-//! [`options_markdown`] read the source directly; `tests/readme.rs` holds the
-//! file to what they render.
-
 use clap::CommandFactory as _;
 use serde::Serialize;
 
@@ -22,21 +5,16 @@ use crate::cli::Args;
 use crate::config::Config;
 use crate::ui::help::HELP;
 
-/// Bumped when the shape below changes in a way the site must react to.
 pub const SCHEMA_VERSION: u32 = 1;
 
-/// The whole file.
 #[derive(Debug, Serialize)]
 pub struct Docs {
     pub schema_version: u32,
-    /// The bushel release this was emitted from — also what the site's version
-    /// chip renders, so it can no longer go stale.
     pub version: &'static str,
     pub keymap: Vec<KeyGroup>,
     pub config: ConfigDocs,
 }
 
-/// One `## heading` of the cheatsheet and the bindings under it.
 #[derive(Debug, Serialize)]
 pub struct KeyGroup {
     pub group: String,
@@ -51,34 +29,22 @@ pub struct Binding {
 
 #[derive(Debug, Serialize)]
 pub struct ConfigDocs {
-    /// Where the file goes, in the tilde form the docs quote.
     pub path: &'static str,
     pub options: Vec<ConfigOption>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ConfigOption {
-    /// The TOML key, e.g. `no_splash`.
     pub key: String,
-    /// The flag that sets the same thing, e.g. `--no-splash`.
     pub flag: String,
-    /// The default, as a JSON value taken from `Config::default()`.
     pub default: serde_json::Value,
-    /// The flag's help text — the flag and the key share one description.
     pub desc: String,
 }
 
-/// The two halves of the config reference are derived from different places —
-/// keys and defaults from [`Config`], flags and descriptions from [`Args`] — so
-/// they can fall out of step. That is a bug in bushel, not in the caller, and
-/// it fails the build rather than shipping a half-documented option.
 #[derive(Debug, PartialEq, Eq)]
 pub enum DocsError {
-    /// A `--flag` with no `Config` field of the same name.
     FlagWithoutConfigField(String),
-    /// A `Config` field no flag can set.
     ConfigFieldWithoutFlag(String),
-    /// A flag clap gave us no help text for.
     FlagWithoutHelp(String),
 }
 
@@ -98,9 +64,6 @@ impl std::fmt::Display for DocsError {
 
 impl std::error::Error for DocsError {}
 
-/// The cheatsheet, regrouped: its headings become groups, its bindings the rows
-/// under them. Bindings before the first heading would be dropped, so `HELP`
-/// opens with one and a test holds it to that.
 pub fn keymap() -> Vec<KeyGroup> {
     let mut groups: Vec<KeyGroup> = Vec::new();
     for row in HELP {
@@ -119,11 +82,7 @@ pub fn keymap() -> Vec<KeyGroup> {
     groups
 }
 
-/// Walks the CLI in declaration order, pairing each flag with the config field
-/// of the same name and the default that field actually has.
 pub fn config() -> Result<ConfigDocs, DocsError> {
-    // Serializing the real `Default` impl is what makes the defaults honest: a
-    // field whose default changes changes this file without anyone editing it.
     let serde_json::Value::Object(mut defaults) = serde_json::to_value(Config::default())
         .expect("Config is a flat struct of bools and always serializes")
     else {
@@ -133,7 +92,6 @@ pub fn config() -> Result<ConfigDocs, DocsError> {
     let cmd = Args::command();
     let mut options = Vec::new();
     for arg in cmd.get_arguments() {
-        // clap adds these itself; they set nothing in the config file.
         if matches!(arg.get_id().as_str(), "help" | "version") {
             continue;
         }
@@ -154,7 +112,6 @@ pub fn config() -> Result<ConfigDocs, DocsError> {
         });
     }
 
-    // Anything left is a config key the CLI cannot set — undocumentable here.
     if let Some(orphan) = defaults.keys().next() {
         return Err(DocsError::ConfigFieldWithoutFlag(orphan.clone()));
     }
@@ -165,13 +122,6 @@ pub fn config() -> Result<ConfigDocs, DocsError> {
     })
 }
 
-/// The keymap as Markdown, in the shape the README carries it: one bold label
-/// per cheatsheet group, one bullet per binding.
-///
-/// `?` is absent on purpose and stays absent — it opens the cheatsheet and the
-/// cheatsheet does not list itself (`ui::keymap` holds that rule and a test
-/// enforces it). The README says so in prose, outside the generated block,
-/// because a reader who has not started bushel yet needs to be told.
 pub fn keys_markdown() -> String {
     let mut out = String::new();
     for group in keymap() {
@@ -186,8 +136,6 @@ pub fn keys_markdown() -> String {
     out
 }
 
-/// The flags and their config keys as Markdown, one bullet apiece. Both halves
-/// come from [`config`], so a flag whose help text changes changes the README.
 pub fn options_markdown() -> Result<String, DocsError> {
     let docs = config()?;
     let mut out = String::new();
@@ -209,7 +157,6 @@ pub fn build() -> Result<Docs, DocsError> {
     })
 }
 
-/// Pretty-printed, with the trailing newline a file wants.
 pub fn to_json() -> Result<String, DocsError> {
     let mut s =
         serde_json::to_string_pretty(&build()?).expect("Docs is plain data and always serializes");
@@ -223,8 +170,6 @@ mod tests {
     use crate::ui::draw::help_lines;
     use crate::ui::theme::Theme;
 
-    /// The rendered cheatsheet as plain text, one string per line, laid out
-    /// wide enough that nothing wraps into the key column.
     fn rendered_cheatsheet() -> Vec<String> {
         help_lines(&Theme::detect(false), 200)
             .iter()
@@ -243,8 +188,6 @@ mod tests {
         let groups = keymap();
         assert!(!groups.is_empty(), "the cheatsheet has groups");
 
-        // Every group heading is drawn, and every binding under it is drawn as
-        // one row carrying both its keys and its description.
         for group in &groups {
             assert!(
                 rendered.iter().any(|l| l.trim() == group.group),
@@ -263,8 +206,6 @@ mod tests {
             }
         }
 
-        // …and nothing is drawn that the keymap does not carry: at this width
-        // every row is either a heading or exactly one binding.
         let documented = groups.len() + groups.iter().map(|g| g.bindings.len()).sum::<usize>();
         assert_eq!(
             rendered.len(),
@@ -288,7 +229,6 @@ mod tests {
             .iter()
             .flat_map(|g| g.bindings.iter().map(|b| b.keys))
             .collect();
-        // The four the README's hand-copied keymap had drifted behind.
         for missed in ["f", "b", "u", "pgup/pgdn"] {
             assert!(
                 keys.contains(&missed),
