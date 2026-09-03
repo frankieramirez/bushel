@@ -7,11 +7,23 @@
       "skillPath": "skills/banish/SKILL.md",
       "computedHash": "4e230d54759d0923691239ae4076bf29fad587dac1cf6ef80b24be1c49fecfc5"
     },
+    "cast": {
+      "source": "frankieramirez/mana",
+      "sourceType": "github",
+      "skillPath": "skills/cast/SKILL.md",
+      "computedHash": "27d36f99f1498ebe907f0bf69e354f9713f0a8db66ba39c196d0071d9a743902"
+    },
     "dispel": {
       "source": "frankieramirez/mana",
       "sourceType": "github",
       "skillPath": "skills/dispel/SKILL.md",
       "computedHash": "664050708d25db648a9d15fccac73e37073cc686bb9cee80610e7093e87e297f"
+    },
+    "mend": {
+      "source": "frankieramirez/mana",
+      "sourceType": "github",
+      "skillPath": "skills/mend/SKILL.md",
+      "computedHash": "76d405b11eee023b315f6c26ce24ca88dd6b5d0b35a88a3252246aa5917a75be"
     },
     "mimic": {
       "source": "frankieramirez/mana",
@@ -25,11 +37,29 @@
       "skillPath": "skills/remedy/SKILL.md",
       "computedHash": "d53b5a22db5537ddbcc8b899bee1983f0808624f5acb1d4a39b1d942f24df5ef"
     },
+    "reveal": {
+      "source": "frankieramirez/mana",
+      "sourceType": "github",
+      "skillPath": "skills/reveal/SKILL.md",
+      "computedHash": "e2a52e59e238faf6bd3457c14eafcd518df131bacb769d87bb74f004e0051154"
+    },
     "scan": {
       "source": "frankieramirez/mana",
       "sourceType": "github",
       "skillPath": "skills/scan/SKILL.md",
       "computedHash": "6ffcd3e328ff2a812926d92a84c44835384e787c432d3c6da580f909b5e48c54"
+    },
+    "scry": {
+      "source": "frankieramirez/mana",
+      "sourceType": "github",
+      "skillPath": "skills/scry/SKILL.md",
+      "computedHash": "30c8a2b55417f1ee41f38a0b533644aff094ca2883b49c0cd72cd1fabce1d69a"
+    },
+    "sift": {
+      "source": "frankieramirez/mana",
+      "sourceType": "github",
+      "skillPath": "skills/sift/SKILL.md",
+      "computedHash": "9d65ccdb7569c551f86bd4fd262037544342c3ddc6deceae0b81122ccb066250"
     }
   }
 }
