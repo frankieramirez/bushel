@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# conflict-state: print the in-progress merge, rebase, cherry-pick, or revert.
+# git only. No jq, no gh.
+#
+# Prints key=value lines, then a `files` section of path<TAB>kind.
+# Exit 0 on a git repo, including a clean tree (operation=  phase=clear).
+# Exit 1 when this is not a git repository.
+
+set -euo pipefail
+
+die() {
+  echo "conflict-state: $*" >&2
+  exit 1
+}
+
+git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository"
+
+gpath() {
+  git rev-parse --git-path "$1"
+}
+
+# Classify an unmerged path from index stages.
+# stage 1 = base, 2 = ours, 3 = theirs. A missing stage is a delete.
+file_kind() {
+  local path=$1
+  local has2=0 has3=0 meta stage
+  while IFS=$'\t' read -r meta _; do
+    stage=${meta##* }
+    case $stage in
+      2) has2=1 ;;
+      3) has3=1 ;;
+    esac
+  done < <(git ls-files -u -- "$path")
+  if [ "$has2" -eq 1 ] && [ "$has3" -eq 1 ]; then
+    echo "modified/modified"
+  elif [ "$has2" -eq 0 ] && [ "$has3" -eq 1 ]; then
+    echo "deleted/modified"
+  elif [ "$has2" -eq 1 ] && [ "$has3" -eq 0 ]; then
+    echo "modified/deleted"
+  else
+    echo "unmerged"
+  fi
+}
+
+short() {
+  git rev-parse --short "$1" 2>/dev/null || true
+}
+
+subject() {
+  git log -1 --format='%s' "$1" 2>/dev/null || true
+}
+
+operation=
+phase=clear
+head=$(short HEAD)
+ours=
+theirs=
+onto=
+goal=
+
+cherry=$(gpath CHERRY_PICK_HEAD)
+revert=$(gpath REVERT_HEAD)
+merge=$(gpath MERGE_HEAD)
+rebase_merge=$(gpath rebase-merge)
+rebase_apply=$(gpath rebase-apply)
+rebase_head=$(gpath REBASE_HEAD)
+
+# Rebase first: modern rebase also writes CHERRY_PICK_HEAD, and that
+# sentinel alone would look like a cherry-pick.
+if [ -d "$rebase_merge" ]; then
+  operation=rebase
+  ours=$head
+  if [ -f "$rebase_head" ]; then
+    theirs=$(short REBASE_HEAD)
+    goal=$(subject REBASE_HEAD)
+  elif [ -f "$rebase_merge/stopped-sha" ]; then
+    theirs=$(short "$(cat "$rebase_merge/stopped-sha")")
+    goal=$(subject "$theirs")
+  fi
+  if [ -f "$rebase_merge/onto" ]; then
+    onto=$(short "$(cat "$rebase_merge/onto")")
+  fi
+  if [ -z "$goal" ] && [ -f "$rebase_merge/message" ]; then
+    goal=$(head -1 "$rebase_merge/message")
+  fi
+elif [ -d "$rebase_apply" ]; then
+  if [ -f "$rebase_apply/applying" ]; then
+    operation=am
+  else
+    operation=rebase
+  fi
+  ours=$head
+  if [ -f "$rebase_head" ]; then
+    theirs=$(short REBASE_HEAD)
+    goal=$(subject REBASE_HEAD)
+  elif [ -f "$rebase_apply/original-commit" ]; then
+    theirs=$(short "$(cat "$rebase_apply/original-commit")")
+    goal=$(subject "$theirs")
+  fi
+  if [ -f "$rebase_apply/onto" ]; then
+    onto=$(short "$(cat "$rebase_apply/onto")")
+  fi
+elif [ -f "$merge" ]; then
+  operation=merge
+  ours=$head
+  theirs=$(short MERGE_HEAD)
+  if [ -f "$(gpath MERGE_MSG)" ]; then
+    goal=$(head -1 "$(gpath MERGE_MSG)")
+  else
+    goal=$(subject MERGE_HEAD)
+  fi
+elif [ -f "$cherry" ]; then
+  operation=cherry-pick
+  ours=$head
+  theirs=$(short CHERRY_PICK_HEAD)
+  goal=$(subject CHERRY_PICK_HEAD)
+elif [ -f "$revert" ]; then
+  operation=revert
+  ours=$head
+  theirs=$(short REVERT_HEAD)
+  goal=$(subject REVERT_HEAD)
+fi
+
+file_list=$(git ls-files -u | cut -f2 | sort -u)
+
+if [ -n "$file_list" ]; then
+  phase=conflicts
+  if [ -z "$operation" ]; then
+    operation=unmerged
+    ours=$head
+  fi
+elif [ -n "$operation" ]; then
+  phase=continue
+fi
+
+printf 'operation=%s\n' "$operation"
+printf 'phase=%s\n' "$phase"
+printf 'head=%s\n' "$head"
+printf 'ours=%s\n' "$ours"
+printf 'theirs=%s\n' "$theirs"
+printf 'onto=%s\n' "$onto"
+printf 'goal=%s\n' "$goal"
+printf 'files\n'
+if [ -n "$file_list" ]; then
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    printf '%s\t%s\n' "$f" "$(file_kind "$f")"
+  done <<< "$file_list"
+fi
