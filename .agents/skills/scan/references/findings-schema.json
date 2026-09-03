@@ -1,0 +1,89 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Code Review Findings",
+  "description": "What each reviewer subagent writes to its artifact file. The compact return is a subset of this.",
+  "type": "object",
+  "required": ["reviewer", "findings", "residual_risks", "testing_gaps"],
+  "properties": {
+    "reviewer": {
+      "description": "Persona name; matches the artifact filename stem.",
+      "type": "string"
+    },
+    "findings": {
+      "description": "Each finding this persona will stand behind at confidence 50 or above. Empty when there are none.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "severity", "file", "line", "why_it_matters", "autofix_class", "owner", "requires_verification", "confidence", "evidence", "pre_existing"],
+        "properties": {
+          "title": {
+            "description": "The symptom, ten words or fewer.",
+            "type": "string",
+            "maxLength": 100
+          },
+          "severity": {
+            "description": "P0 must fix before merge. P1 should fix. P2 fix if straightforward. P3 discretionary.",
+            "type": "string",
+            "enum": ["P0", "P1", "P2", "P3"]
+          },
+          "file": {
+            "description": "Path relative to the repo root.",
+            "type": "string"
+          },
+          "line": {
+            "description": "The line the finding points at. A wrong line is worse than no finding.",
+            "type": "integer",
+            "minimum": 1
+          },
+          "why_it_matters": {
+            "description": "What breaks and for whom, effect first, then why the fix resolves it. Two to four sentences. Never empty.",
+            "type": "string"
+          },
+          "autofix_class": {
+            "description": "Shape of the follow-up; the reviewer applies nothing. gated_auto: a concrete suggested_fix exists and can be applied after a judgment call. manual: fixable but needs a design or cross-cutting decision. advisory: report only.",
+            "type": "string",
+            "enum": ["gated_auto", "manual", "advisory"]
+          },
+          "owner": {
+            "description": "Who acts next. downstream-resolver for anything fixable in code. human only when a product decision, missing authority, or outside coordination blocks it. release for rollout actions.",
+            "type": "string",
+            "enum": ["downstream-resolver", "human", "release"]
+          },
+          "requires_verification": {
+            "description": "True when the fix should not be trusted without targeted tests or a follow-up check.",
+            "type": "boolean"
+          },
+          "suggested_fix": {
+            "description": "The concrete change you would make if you had to choose now, with any assumption named. Name the specific guard or call, never 'add validation'. Null only when no code-level change exists to propose: a pure question, or an organizational resolution. Withholding a fix because information is incomplete is the failure this field exists to prevent.",
+            "type": ["string", "null"]
+          },
+          "confidence": {
+            "description": "One of five anchors, each tied to work you did. 0: does not hold up, or not introduced by this diff. 25: possibly real, unverified. Neither of those is emitted. 50: verified, but a nit, a narrow edge, or low impact; style lives here. 75: checked the diff and surrounding code and can name the observable consequence in normal use. 100: provable from the code alone (compile or type error, definitive logic bug, quotable standards violation).",
+            "type": "integer",
+            "enum": [0, 25, 50, 75, 100]
+          },
+          "evidence": {
+            "description": "Code-grounded proof: quoted lines with file:line, or pattern descriptions. At 75 or 100 the first item must be the verbatim line that makes the finding true; if you cannot quote it, drop to 50. When history carries the claim (pre_existing, intentional design, introduced by this diff, or P0/P1 severity that depends on age), append one provenance line from a targeted git blame or log: short sha, author, date, subject. Provenance never replaces the quoted line and is omitted when the diff alone justifies the finding.",
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1
+          },
+          "pre_existing": {
+            "description": "True only for unchanged code the diff neither touches nor makes newly reachable.",
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "residual_risks": {
+      "description": "Concerns you could not raise to a finding, including coverage limits of your own search.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "testing_gaps": {
+      "description": "Scenarios the change should have tests for and does not.",
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}
