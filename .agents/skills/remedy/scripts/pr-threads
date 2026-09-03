@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# pr-threads: read and resolve GitHub PR review threads through `gh api graphql`.
+#
+#   fetch   <pr> [owner/repo]                 pending_review, review_threads,
+#                                             pr_comments, review_bodies
+#   thread  <pr> <comment-node-id> [owner/repo]
+#                                             the thread that holds that comment
+#   resolve <thread-id>                       {id, isResolved} after resolving
+#
+# Honors GH_HOST for GitHub Enterprise. Needs only `gh`: every bit of JSON
+# shaping runs through `gh --jq`, so no separate jq binary is required.
+
+set -euo pipefail
+
+SCRATCH=""
+trap '[ -n "$SCRATCH" ] && rm -f "$SCRATCH"' EXIT
+
+usage() {
+  cat <<'EOF'
+usage: pr-threads <subcommand> [args]
+
+  fetch   <pr-number> [owner/repo]
+      Print one JSON object with four keys:
+        pending_review   node id of your own unsubmitted review, or null
+        review_threads   unresolved inline threads (id, isOutdated, path, line,
+                         originalLine, startLine, originalStartLine, comments)
+        pr_comments      top-level conversation comments, PR author excluded
+        review_bodies    non-empty review submissions, PR author excluded
+
+  thread  <pr-number> <comment-node-id> [owner/repo]
+      Print {id, isResolved, isOutdated, path, line} for the thread that
+      contains the given comment node id. Exits 1 when no thread matches.
+
+  resolve <thread-id>
+      Mark a review thread resolved. Prints {id, isResolved}.
+
+Without owner/repo the current checkout's repo is used (gh repo view).
+Set GH_HOST=<host> for GitHub Enterprise.
+EOF
+}
+
+die() {
+  echo "pr-threads: $*" >&2
+  exit 1
+}
+
+# Sets OWNER and REPO from an explicit owner/repo argument or the current checkout.
+locate_repo() {
+  local spec="${1:-}"
+  if [ -z "$spec" ]; then
+    # `|| true` keeps set -e from killing the script before the message below.
+    spec=$(gh repo view --json owner,name -q '"\(.owner.login)/\(.name)"' 2>/dev/null || true)
+  fi
+  case "$spec" in
+    */*) OWNER="${spec%%/*}"; REPO="${spec#*/}" ;;
+    *) die "cannot tell which repository to use; run inside a checkout or pass owner/repo" ;;
+  esac
+  [ -n "$OWNER" ] && [ -n "$REPO" ] || die "malformed owner/repo: '$spec'"
+}
+
+# One query serves both read subcommands. Threads are paged through $endCursor;
+# the conversation comments and review submissions ride along on every page and
+# are taken from the first page only.
+QUERY='
+query($owner: String!, $repo: String!, $pr: Int!, $endCursor: String) {
+  viewer { login }
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $pr) {
+      author { login }
+      reviewThreads(first: 100, after: $endCursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id isResolved isOutdated path line originalLine startLine originalStartLine
+          comments(first: 100) {
+            nodes { id databaseId url body createdAt author { login } }
+          }
+        }
+      }
+      comments(first: 100) { nodes { url body createdAt author { login } } }
+      reviews(first: 100) { nodes { id state body submittedAt author { login } } }
+    }
+  }
+}'
+
+# Each page filter prints the next cursor (or an empty line) first, then one
+# compact JSON value per line via tojson. Callers split on line position.
+NEXT_CURSOR='(.data.repository.pullRequest.reviewThreads.pageInfo
+  | if .hasNextPage then .endCursor else "" end)'
+
+# $1 pr, $2 cursor ("" for the first page), $3 jq filter
+query_page() {
+  local -a cursor=()
+  [ -n "$2" ] && cursor=(-f endCursor="$2")
+  gh api graphql -f owner="$OWNER" -f repo="$REPO" -F pr="$1" ${cursor[@]+"${cursor[@]}"} \
+    -f query="$QUERY" --jq "$3"
+}
+
+cmd_fetch() {
+  [ $# -ge 1 ] || die "fetch needs a PR number"
+  local pr="$1" cursor="" page pending="null" comments="[]" reviews="[]" threads=""
+  locate_repo "${2:-}"
+  SCRATCH=$(mktemp)
+
+  while :; do
+    page=$(query_page "$pr" "$cursor" "$NEXT_CURSOR"',
+      (.data.viewer.login as $me | .data.repository.pullRequest as $p
+       | ($p.author.login) as $author
+       | (first($p.reviews.nodes[]
+            | select(.state == "PENDING" and .author.login == $me) | .id) // null | tojson),
+         ([$p.comments.nodes[]
+            | select(.author.login != $author) | select(.body | test("\\S"))
+            | { author: .author.login, body, url, createdAt }] | tojson),
+         ([$p.reviews.nodes[]
+            | select(.author.login != $author) | select(.body | test("\\S"))
+            | { author: .author.login, state, body, submittedAt }] | tojson),
+         ($p.reviewThreads.nodes[] | select(.isResolved | not)
+            | { id, isOutdated, path, line, originalLine, startLine, originalStartLine,
+                comments: [.comments.nodes[]
+                  | { id, databaseId, author: .author.login, body, url, createdAt }] }
+            | tojson))')
+    if [ -z "$cursor" ]; then
+      pending=$(sed -n 2p <<<"$page")
+      comments=$(sed -n 3p <<<"$page")
+      reviews=$(sed -n 4p <<<"$page")
+    fi
+    sed -n '5,$p' <<<"$page" >>"$SCRATCH"
+    cursor=$(sed -n 1p <<<"$page")
+    [ -n "$cursor" ] || break
+  done
+
+  threads=$(paste -sd, "$SCRATCH")
+  printf '{"pending_review":%s,"review_threads":[%s],"pr_comments":%s,"review_bodies":%s}\n' \
+    "$pending" "$threads" "$comments" "$reviews"
+}
+
+cmd_thread() {
+  [ $# -ge 2 ] || die "thread needs a PR number and a comment node id"
+  local pr="$1" cid="$2" cursor="" page hit
+  case "$cid" in
+    *[!A-Za-z0-9_=-]*|"") die "comment node id looks wrong: '$cid'" ;;
+  esac
+  locate_repo "${3:-}"
+  while :; do
+    page=$(query_page "$pr" "$cursor" "$NEXT_CURSOR"',
+      (.data.repository.pullRequest.reviewThreads.nodes[]
+       | select(any(.comments.nodes[]; .id == "'"$cid"'"))
+       | { id, isResolved, isOutdated, path, line } | tojson)')
+    hit=$(sed -n 2p <<<"$page")
+    if [ -n "$hit" ]; then
+      printf '%s\n' "$hit"
+      return 0
+    fi
+    cursor=$(sed -n 1p <<<"$page")
+    [ -n "$cursor" ] || break
+  done
+  die "no review thread on PR #$pr contains comment $cid"
+}
+
+cmd_resolve() {
+  [ $# -ge 1 ] || die "resolve needs a thread id"
+  gh api graphql -f threadId="$1" --jq '.data.resolveReviewThread.thread' -f query='
+mutation($threadId: ID!) {
+  resolveReviewThread(input: { threadId: $threadId }) {
+    thread { id isResolved }
+  }
+}'
+}
+
+main() {
+  [ $# -ge 1 ] || { usage >&2; exit 1; }
+  local sub="$1"
+  shift
+  case "$sub" in
+    fetch) cmd_fetch "$@" ;;
+    thread) cmd_thread "$@" ;;
+    resolve) cmd_resolve "$@" ;;
+    -h|--help|help) usage ;;
+    *) usage >&2; die "unknown subcommand '$sub'" ;;
+  esac
+}
+
+main "$@"

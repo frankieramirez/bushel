@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "skills": {
+    "banish": {
+      "source": "frankieramirez/mana",
+      "sourceType": "github",
+      "skillPath": "skills/banish/SKILL.md",
+      "computedHash": "4e230d54759d0923691239ae4076bf29fad587dac1cf6ef80b24be1c49fecfc5"
+    },
+    "dispel": {
+      "source": "frankieramirez/mana",
+      "sourceType": "github",
+      "skillPath": "skills/dispel/SKILL.md",
+      "computedHash": "664050708d25db648a9d15fccac73e37073cc686bb9cee80610e7093e87e297f"
+    },
+    "mimic": {
+      "source": "frankieramirez/mana",
+      "sourceType": "github",
+      "skillPath": "skills/mimic/SKILL.md",
+      "computedHash": "ee8dde3363fb8304694478e27b08a40d9ba9aafac9ae3461ece958bf027fc2c1"
+    },
+    "remedy": {
+      "source": "frankieramirez/mana",
+      "sourceType": "github",
+      "skillPath": "skills/remedy/SKILL.md",
+      "computedHash": "d53b5a22db5537ddbcc8b899bee1983f0808624f5acb1d4a39b1d942f24df5ef"
+    },
+    "scan": {
+      "source": "frankieramirez/mana",
+      "sourceType": "github",
+      "skillPath": "skills/scan/SKILL.md",
+      "computedHash": "6ffcd3e328ff2a812926d92a84c44835384e787c432d3c6da580f909b5e48c54"
+    }
+  }
+}
