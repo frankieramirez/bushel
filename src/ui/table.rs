@@ -82,7 +82,13 @@ const GUTTER: usize = 2;
 /// The selection bar and the space after it.
 const ROW_PREFIX: u16 = 2;
 
+/// The planned row always fits `width`: `ROW_PREFIX` plus every column and its
+/// gutter never exceeds it, so [`draw_table`] never clips.
 fn plan_columns(pane: Pane, width: u16) -> Vec<Col> {
+    let room = match width.checked_sub(ROW_PREFIX + GUTTER as u16) {
+        Some(room) => room,
+        None => return Vec::new(),
+    };
     let all = columns(pane);
     let mut kept: Vec<Col> = all
         .iter()
@@ -90,9 +96,9 @@ fn plan_columns(pane: Pane, width: u16) -> Vec<Col> {
         .filter(|c| width >= c.min_terminal_width)
         .collect();
     let fixed: u16 = kept.iter().skip(1).map(|c| c.width + GUTTER as u16).sum();
-    let flexible = width.saturating_sub(fixed + ROW_PREFIX + GUTTER as u16);
+    let flexible = room.saturating_sub(fixed);
     if let Some(first) = kept.first_mut() {
-        first.width = flexible.max(8);
+        first.width = flexible.max(8).min(room);
     }
     kept
 }
@@ -460,7 +466,7 @@ mod tests {
     #[test]
     fn a_planned_row_fits_the_terminal() {
         for pane in Pane::all() {
-            for width in [40u16, 55, 80, 100, 120, 152, 200] {
+            for width in ROW_PREFIX..=200 {
                 let planned = plan_columns(pane, width);
                 let drawn: usize = ROW_PREFIX as usize
                     + planned

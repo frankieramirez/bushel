@@ -25,7 +25,7 @@ pub fn epoch_secs(ts: &str) -> Option<i64> {
     if !(1..=12).contains(&month) || !(1..=days_in_month(year, month)).contains(&day) {
         return None;
     }
-    if hour > 23 || min > 59 || sec > 60 {
+    if hour > 23 || min > 59 || sec > 59 {
         return None;
     }
     let secs = days_from_civil(year, month, day) * 86_400 + hour * 3_600 + min * 60 + sec;
@@ -255,14 +255,15 @@ mod tests {
     }
 
     #[test]
-    fn out_of_range_times_are_rejected_but_a_leap_second_is_not() {
+    fn out_of_range_times_including_a_leap_second_are_rejected() {
         assert_eq!(epoch_secs("2026-08-25T24:00:00Z"), None);
         assert_eq!(epoch_secs("2026-08-25T00:60:00Z"), None);
         assert_eq!(
             epoch_secs("2026-08-25T23:59:60Z"),
-            Some(1_787_702_400),
-            "RFC 3339 permits second 60"
+            None,
+            "second 60 needs a leap-second table this parser does not carry"
         );
+        assert_eq!(epoch_secs("2026-08-25T12:00:60Z"), None);
     }
 
     #[test]

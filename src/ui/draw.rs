@@ -938,10 +938,25 @@ fn draw_settings(frame: &mut Frame, state: &AppState, th: &Theme, cursor: usize)
     }
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
-        format!(" saved to {}", crate::config::Config::display_path()),
+        saved_to_line(&crate::config::Config::display_path(), inner.width),
         Style::new().fg(th.dim()),
     )));
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+const SAVED_TO: &str = " saved to ";
+
+/// Never returns more than `width` characters, so the caller can render it as a
+/// single unwrapped line without the path being clipped.
+fn saved_to_line(path: &str, width: u16) -> String {
+    let width = width as usize;
+    if width <= SAVED_TO.len() {
+        return SAVED_TO.chars().take(width).collect();
+    }
+    format!(
+        "{SAVED_TO}{}",
+        crate::ui::humanize::elide(path, width - SAVED_TO.len())
+    )
 }
 
 pub(crate) fn help_lines(th: &Theme, width: u16) -> Vec<Line<'static>> {
@@ -1650,6 +1665,37 @@ mod tests {
             frame.contains("[1] containers 1"),
             "the layout behind the panel follows: {frame}"
         );
+    }
+
+    #[test]
+    fn a_long_config_path_is_elided_to_the_settings_panel_width() {
+        let inner = layout::SETTINGS_W as usize - 2;
+        let short = saved_to_line(crate::config::Config::DOC_PATH, inner as u16);
+        assert_eq!(
+            short,
+            format!(" saved to {}", crate::config::Config::DOC_PATH)
+        );
+        assert!(short.chars().count() <= inner, "{short}");
+
+        let long = format!(
+            "/Users/somebody/{}/bushel/config.toml",
+            "a-very-long-directory-name".repeat(4)
+        );
+        let line = saved_to_line(&long, inner as u16);
+        assert_eq!(line.chars().count(), inner, "{line}");
+        assert!(line.starts_with(" saved to /Users/somebody/"), "{line}");
+        assert!(
+            line.ends_with("config.toml"),
+            "the filename survives: {line}"
+        );
+
+        for width in 0..=12u16 {
+            let line = saved_to_line(&long, width);
+            assert!(
+                line.chars().count() <= width as usize,
+                "width {width} gave {line}"
+            );
+        }
     }
 
     #[test]
