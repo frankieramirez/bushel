@@ -154,10 +154,17 @@ async fn main() -> std::io::Result<()> {
         }
         None => {}
     }
-    let cfg = Config::load();
-    let no_splash = args.no_splash || cfg.no_splash;
-    let reduced_motion = args.reduced_motion || cfg.reduced_motion;
-    let ascii = args.ascii || cfg.ascii;
+    let persisted = Config::load();
+    let mut cfg = persisted;
+    cfg.no_splash |= args.no_splash;
+    cfg.reduced_motion |= args.reduced_motion;
+    cfg.ascii |= args.ascii;
+    if let Some(layout) = args.layout {
+        cfg.layout = layout;
+    }
+    let no_splash = cfg.no_splash;
+    let reduced_motion = cfg.reduced_motion;
+    let ascii = cfg.ascii;
 
     let first_run = match Config::dir().map(|d| d.join(".launched")) {
         Some(marker) if !marker.exists() => {
@@ -172,6 +179,8 @@ async fn main() -> std::io::Result<()> {
     let client = Client::new(Arc::new(CliRunner));
     let (tx, mut rx) = mpsc::channel(1024);
     let mut engine = Engine::new(client, tx, no_splash || reduced_motion);
+    engine.state.config = cfg;
+    engine.state.persisted = persisted;
     engine.state.first_run = first_run && !(no_splash || reduced_motion);
     let mut ui = Ui::new(Theme::detect(ascii), reduced_motion);
 
@@ -187,6 +196,7 @@ async fn main() -> std::io::Result<()> {
         engine.maybe_dissolve_splash();
         let elapsed = last_frame.elapsed();
         last_frame = Instant::now();
+        ui.sync_config(&engine.state.config);
         if let Err(e) = terminal.draw(|f| ui.render(f, &engine.state, elapsed)) {
             break Err(e);
         }

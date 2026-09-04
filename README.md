@@ -58,8 +58,19 @@ bushel
 ```
 
 Press `?` for the cheatsheet, `space` for the actions valid on whatever is
-selected. Everything below is generated from bushel's own source — the same list
-the help overlay draws — so it cannot drift from the binary you are running.
+selected, and `,` for settings. Everything below is generated from bushel's own
+source — the same list the help overlay draws — so it cannot drift from the
+binary you are running.
+
+bushel draws its body one of two ways, and `,` switches between them live:
+
+- **rail** (the default) keeps all four panes in one column beside the detail
+  pane, so you can see what else is running while you read one thing.
+- **table** gives the active pane one full-width table and the detail below it,
+  so logs get every column the terminal has and container rows carry state,
+  uptime, memory ceiling, image, network, and volumes without truncating.
+
+Whichever you pick is written to the config file, so it is there next launch.
 
 <!-- keys:start -->
 
@@ -67,6 +78,7 @@ the help overlay draws — so it cannot drift from the binary you are running.
 
 - `1/2/3/4, tab` — expand pane (containers / images / volumes / networks)
 - `f` — zoom focused side
+- `,` — settings (layout, glyphs, motion, splash)
 - `m` — message log
 - `b` — dismiss version banner
 - `q` — quit
@@ -98,9 +110,12 @@ Flags, and the `~/.config/bushel/config.toml` keys that set the same things:
 - `--no-splash` / `no_splash = false` — Skip the splash screen
 - `--reduced-motion` / `reduced_motion = false` — Disable all animation and effects
 - `--ascii` / `ascii = false` — ASCII icons and spinners (no Unicode glyphs)
+- `--layout` / `layout = "rail"` — Body layout: rail keeps all four panes in view, table gives one full-width table
 <!-- options:end -->
 
-A flag can only switch something on; it is ORed with the file. Full reference:
+The boolean flags can only switch something on; each is ORed with the file.
+`--layout` replaces the configured layout for that run. Neither is written back
+to the file. Full reference:
 **[bushel.sh/docs/keys](https://bushel.sh/docs/keys)** and
 **[bushel.sh/docs/config](https://bushel.sh/docs/config)**.
 

@@ -3,9 +3,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bushel::client::Client;
+use bushel::config::{Config, LayoutMode};
 use bushel::engine::{
     ActionKind, AppEvent, AppState, Command, DetailTab, Engine, Overlay, Pane, PendingPhase,
-    Screen, UiAction,
+    Screen, Setting, UiAction,
 };
 use bushel::runner::{MockRunner, Output, StreamEvent};
 use tokio::sync::mpsc;
@@ -1594,4 +1595,105 @@ engine_test!(tag_is_images_pane_only, || {
             .iter()
             .any(|a| a.action == UiAction::Tag || a.label.contains("push"))
     );
+});
+
+engine_test!(the_settings_panel_moves_toggles_and_persists, || {
+    let dir = std::env::temp_dir().join(format!("bushel-settings-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    // SAFETY: this is the only test that touches the config directory.
+    unsafe { std::env::set_var(Config::DIR_ENV, &dir) };
+
+    let mut h = Harness::started(MockRunner::new());
+    assert_eq!(
+        h.state().layout(),
+        LayoutMode::Rail,
+        "the rail is the default"
+    );
+
+    h.engine.dispatch(Command::OpenSettings);
+    assert_eq!(h.state().overlay, Overlay::Settings { cursor: 0 });
+
+    h.engine.dispatch(Command::SettingsMove(-1));
+    assert_eq!(h.state().overlay, Overlay::Settings { cursor: 0 });
+    for _ in 0..10 {
+        h.engine.dispatch(Command::SettingsMove(1));
+    }
+    assert_eq!(
+        h.state().overlay,
+        Overlay::Settings {
+            cursor: Setting::ALL.len() - 1
+        }
+    );
+
+    for _ in 0..10 {
+        h.engine.dispatch(Command::SettingsMove(-1));
+    }
+    h.engine.dispatch(Command::SettingsToggle);
+    assert_eq!(h.state().layout(), LayoutMode::Table);
+    let saved = std::fs::read_to_string(dir.join("config.toml")).expect("config was written");
+    assert!(saved.contains("layout = \"table\""), "{saved}");
+
+    h.engine.dispatch(Command::SettingsToggle);
+    assert_eq!(h.state().layout(), LayoutMode::Rail);
+    assert!(
+        std::fs::read_to_string(dir.join("config.toml"))
+            .unwrap()
+            .contains("layout = \"rail\"")
+    );
+
+    h.engine.dispatch(Command::SettingsMove(1));
+    h.engine.dispatch(Command::SettingsToggle);
+    assert!(h.state().config.ascii);
+    assert_eq!(h.state().layout(), LayoutMode::Rail);
+    assert!(h.state().toast.is_none(), "a successful save says nothing");
+
+    h.engine.dispatch(Command::CloseOverlay);
+    assert_eq!(h.state().overlay, Overlay::None);
+
+    h.engine.state.persisted = Config::default();
+    h.engine.state.config = Config {
+        ascii: true,
+        ..Config::default()
+    };
+    h.engine
+        .state
+        .persisted
+        .save()
+        .expect("the file starts from the flagless config");
+    h.engine.dispatch(Command::OpenSettings);
+
+    for _ in 0..10 {
+        h.engine.dispatch(Command::SettingsMove(1));
+    }
+    h.engine.dispatch(Command::SettingsToggle);
+    assert!(h.state().config.no_splash, "the splash row flipped");
+    let saved = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+    assert!(saved.contains("no_splash = true"), "{saved}");
+    assert!(
+        saved.contains("ascii = false"),
+        "a command-line --ascii must not ride along: {saved}"
+    );
+
+    for _ in 0..10 {
+        h.engine.dispatch(Command::SettingsMove(-1));
+    }
+    h.engine.dispatch(Command::SettingsMove(1));
+    h.engine.dispatch(Command::SettingsToggle);
+    assert!(!h.state().config.ascii, "the screen drops the ascii glyphs");
+    let saved = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+    assert!(
+        saved.contains("ascii = false"),
+        "turning the override off matches what the file already said: {saved}"
+    );
+
+    h.engine.dispatch(Command::SettingsToggle);
+    assert!(h.state().config.ascii);
+    let saved = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+    assert!(
+        saved.contains("ascii = true"),
+        "a deliberate toggle in the panel is written: {saved}"
+    );
+
+    unsafe { std::env::remove_var(Config::DIR_ENV) };
+    let _ = std::fs::remove_dir_all(&dir);
 });

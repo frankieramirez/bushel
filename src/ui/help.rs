@@ -17,6 +17,7 @@ pub const HELP: &[HelpRow] = &[
         "expand pane (containers / images / volumes / networks)",
     ),
     bind("f", "zoom focused side"),
+    bind(",", "settings (layout, glyphs, motion, splash)"),
     bind("m", "message log"),
     bind("b", "dismiss version banner"),
     bind("q", "quit"),

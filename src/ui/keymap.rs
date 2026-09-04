@@ -67,6 +67,22 @@ pub fn map_key(state: &AppState, key: KeyEvent, drawn: &DrawInfo) -> Vec<Command
                 _ => vec![],
             };
         }
+        Overlay::Settings { .. } => {
+            return match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char(',') => {
+                    vec![Command::CloseOverlay]
+                }
+                KeyCode::Char('j') | KeyCode::Down => vec![Command::SettingsMove(1)],
+                KeyCode::Char('k') | KeyCode::Up => vec![Command::SettingsMove(-1)],
+                KeyCode::Enter
+                | KeyCode::Char(' ')
+                | KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Char('h')
+                | KeyCode::Char('l') => vec![Command::SettingsToggle],
+                _ => vec![],
+            };
+        }
         Overlay::PullInput { .. }
         | Overlay::TagInput { .. }
         | Overlay::CreateVolumeInput { .. } => {
@@ -111,6 +127,7 @@ pub fn map_key(state: &AppState, key: KeyEvent, drawn: &DrawInfo) -> Vec<Command
         KeyCode::Char('4') => vec![Command::SwitchPane(Pane::Networks)],
         KeyCode::Tab => vec![Command::NextPane],
         KeyCode::Char('?') => vec![Command::OpenHelp],
+        KeyCode::Char(',') => vec![Command::OpenSettings],
         KeyCode::Char('m') => vec![Command::OpenMessageLog],
         KeyCode::Char('b') => vec![Command::DismissBanner],
         KeyCode::Char('f') => vec![Command::ToggleZoom],
@@ -184,7 +201,9 @@ mod tests {
             image: "alpine:latest".into(),
             state: "running".into(),
             created: None,
+            started: None,
             cpus: None,
+            mem_limit: None,
             volumes: vec![],
             networks: vec![],
             cpu_percent: None,
@@ -418,16 +437,21 @@ mod tests {
     fn documented_keys() -> Vec<String> {
         crate::ui::help::HELP
             .iter()
-            .flat_map(|row| row.keys.split([' ', ',']))
+            .flat_map(|row| {
+                row.keys
+                    .replace(", ", " ")
+                    .split(' ')
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
             .flat_map(|tok| {
                 if tok.len() > 1 {
-                    tok.split('/').collect::<Vec<_>>()
+                    tok.split('/').map(str::to_string).collect::<Vec<_>>()
                 } else {
                     vec![tok]
                 }
             })
             .filter(|t| !t.is_empty())
-            .map(str::to_string)
             .collect()
     }
 
@@ -524,6 +548,43 @@ mod tests {
         );
         s.pane = Pane::Containers;
         assert_eq!(map_key(&s, key(KeyCode::Char('c')), &drawn(0, 0)), vec![]);
+    }
+
+    #[test]
+    fn the_comma_opens_the_settings_panel_and_the_panel_swallows_the_rest() {
+        let mut s = main_state();
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char(',')), &drawn(0, 0)),
+            vec![Command::OpenSettings]
+        );
+        s.overlay = Overlay::Settings { cursor: 0 };
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('j')), &drawn(0, 0)),
+            vec![Command::SettingsMove(1)]
+        );
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('k')), &drawn(0, 0)),
+            vec![Command::SettingsMove(-1)]
+        );
+        for code in [KeyCode::Enter, KeyCode::Char(' '), KeyCode::Right] {
+            assert_eq!(
+                map_key(&s, key(code), &drawn(0, 0)),
+                vec![Command::SettingsToggle],
+                "{code:?} should toggle"
+            );
+        }
+        for code in [KeyCode::Esc, KeyCode::Char('q'), KeyCode::Char(',')] {
+            assert_eq!(
+                map_key(&s, key(code), &drawn(0, 0)),
+                vec![Command::CloseOverlay],
+                "{code:?} should close"
+            );
+        }
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('d')), &drawn(0, 0)),
+            vec![],
+            "a destructive action key must not reach the list from the panel"
+        );
     }
 
     #[test]
