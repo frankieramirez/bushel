@@ -9,3 +9,6 @@ prototype-layout/
 /bushel.bash
 /bushel.zsh
 /bushel.fish
+
+# macOS Finder metadata
+.DS_Store
