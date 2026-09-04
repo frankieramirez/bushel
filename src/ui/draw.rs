@@ -938,7 +938,7 @@ fn draw_settings(frame: &mut Frame, state: &AppState, th: &Theme, cursor: usize)
     }
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
-        format!(" saved to {}", crate::config::Config::DOC_PATH),
+        format!(" saved to {}", crate::config::Config::display_path()),
         Style::new().fg(th.dim()),
     )));
     frame.render_widget(Paragraph::new(lines), inner);

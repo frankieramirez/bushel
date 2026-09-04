@@ -7,30 +7,81 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// grammar we need.
 pub fn epoch_secs(ts: &str) -> Option<i64> {
     let bytes = ts.as_bytes();
-    if bytes.len() < 19 {
+    if bytes.len() < 20 {
         return None;
     }
-    let num = |range: std::ops::Range<usize>| -> Option<i64> { ts.get(range)?.parse().ok() };
-    let (year, month, day) = (num(0..4)?, num(5..7)?, num(8..10)?);
-    let (hour, min, sec) = (num(11..13)?, num(14..16)?, num(17..19)?);
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    if bytes[4] != b'-' || bytes[7] != b'-' || bytes[13] != b':' || bytes[16] != b':' {
         return None;
     }
-    let mut secs = days_from_civil(year, month, day) * 86_400 + hour * 3_600 + min * 60 + sec;
+    if bytes[10] != b'T' && bytes[10] != b't' {
+        return None;
+    }
+    let (year, month, day) = (digits(ts, 0..4)?, digits(ts, 5..7)?, digits(ts, 8..10)?);
+    let (hour, min, sec) = (
+        digits(ts, 11..13)?,
+        digits(ts, 14..16)?,
+        digits(ts, 17..19)?,
+    );
+    if !(1..=12).contains(&month) || !(1..=days_in_month(year, month)).contains(&day) {
+        return None;
+    }
+    if hour > 23 || min > 59 || sec > 60 {
+        return None;
+    }
+    let secs = days_from_civil(year, month, day) * 86_400 + hour * 3_600 + min * 60 + sec;
+    Some(secs - zone_offset(&ts[19..])?)
+}
 
-    // Trailing zone: `Z`, or `±HH:MM` after the optional fractional seconds.
-    let rest = &ts[19..];
-    let zone = rest.trim_start_matches(|c: char| c == '.' || c.is_ascii_digit());
-    if let Some(sign) = zone.chars().next() {
-        if sign == '+' || sign == '-' {
-            let off = &zone[1..];
-            let oh: i64 = off.get(0..2)?.parse().ok()?;
-            let om: i64 = off.get(3..5).unwrap_or("00").parse().unwrap_or(0);
-            let delta = oh * 3_600 + om * 60;
-            secs += if sign == '+' { -delta } else { delta };
-        }
+/// An all-digit field parsed as a number, or `None` for anything else.
+fn digits(s: &str, range: std::ops::Range<usize>) -> Option<i64> {
+    let field = s.get(range)?;
+    if field.bytes().all(|b| b.is_ascii_digit()) {
+        field.parse().ok()
+    } else {
+        None
     }
-    Some(secs)
+}
+
+fn days_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+/// Seconds to subtract for the zone closing a timestamp: `Z` or `±HH:MM`, after
+/// the optional fractional seconds. `None` for a missing zone or trailing junk.
+fn zone_offset(rest: &str) -> Option<i64> {
+    let zone = match rest.strip_prefix('.') {
+        Some(frac) => {
+            let taken = frac.len() - frac.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+            if taken == 0 {
+                return None;
+            }
+            &frac[taken..]
+        }
+        None => rest,
+    };
+    if zone == "Z" || zone == "z" {
+        return Some(0);
+    }
+    let bytes = zone.as_bytes();
+    if bytes.len() != 6 || bytes[3] != b':' {
+        return None;
+    }
+    let (oh, om) = (digits(zone, 1..3)?, digits(zone, 4..6)?);
+    if oh > 23 || om > 59 {
+        return None;
+    }
+    let delta = oh * 3_600 + om * 60;
+    match bytes[0] {
+        b'+' => Some(delta),
+        b'-' => Some(-delta),
+        _ => None,
+    }
 }
 
 /// Days between 1970-01-01 and y-m-d (Howard Hinnant's `days_from_civil`).
@@ -176,6 +227,70 @@ mod tests {
     #[test]
     fn garbage_timestamps_are_none_not_zero() {
         for bad in ["", "yesterday", "2026-08-25", "2026-13-01T00:00:00Z"] {
+            assert_eq!(epoch_secs(bad), None, "{bad:?} should not parse");
+        }
+    }
+
+    #[test]
+    fn a_timestamp_without_a_zone_is_not_silently_utc() {
+        assert_eq!(epoch_secs("2026-08-25T00:00:00"), None);
+        assert_eq!(epoch_secs("2026-08-25T00:00:00.128"), None);
+        assert_eq!(epoch_secs("2026-08-25T00:00:00+01"), None);
+    }
+
+    #[test]
+    fn the_separators_are_fixed() {
+        for bad in [
+            "2026-08-25 00:00:00Z",
+            "2026/08/25T00:00:00Z",
+            "2026-08-25T00-00-00Z",
+        ] {
+            assert_eq!(epoch_secs(bad), None, "{bad:?} should not parse");
+        }
+        assert_eq!(
+            epoch_secs("2026-08-25t00:59:14z"),
+            Some(1_787_619_554),
+            "the lowercase spellings are still RFC 3339"
+        );
+    }
+
+    #[test]
+    fn out_of_range_times_are_rejected_but_a_leap_second_is_not() {
+        assert_eq!(epoch_secs("2026-08-25T24:00:00Z"), None);
+        assert_eq!(epoch_secs("2026-08-25T00:60:00Z"), None);
+        assert_eq!(
+            epoch_secs("2026-08-25T23:59:60Z"),
+            Some(1_787_702_400),
+            "RFC 3339 permits second 60"
+        );
+    }
+
+    #[test]
+    fn the_day_is_checked_against_the_real_month() {
+        assert_eq!(epoch_secs("2026-02-29T00:00:00Z"), None);
+        assert_eq!(epoch_secs("2026-02-30T00:00:00Z"), None);
+        assert_eq!(epoch_secs("2026-04-31T00:00:00Z"), None);
+        assert_eq!(epoch_secs("1900-02-29T00:00:00Z"), None);
+        assert!(epoch_secs("2024-02-29T00:00:00Z").is_some());
+        assert!(epoch_secs("2000-02-29T00:00:00Z").is_some());
+    }
+
+    #[test]
+    fn month_and_day_zero_are_not_dates() {
+        assert_eq!(epoch_secs("2026-00-01T00:00:00Z"), None);
+        assert_eq!(epoch_secs("2026-08-00T00:00:00Z"), None);
+    }
+
+    #[test]
+    fn a_malformed_zone_is_rejected() {
+        for bad in [
+            "2026-08-25T00:00:00+24:00",
+            "2026-08-25T00:00:00+00:60",
+            "2026-08-25T00:00:00+0100",
+            "2026-08-25T00:00:00.Z",
+            "2026-08-25T00:00:00Zulu",
+            "2026-08-25T00:00:00.128Z ",
+        ] {
             assert_eq!(epoch_secs(bad), None, "{bad:?} should not parse");
         }
     }

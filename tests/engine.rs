@@ -1650,6 +1650,50 @@ engine_test!(the_settings_panel_moves_toggles_and_persists, || {
     h.engine.dispatch(Command::CloseOverlay);
     assert_eq!(h.state().overlay, Overlay::None);
 
+    h.engine.state.persisted = Config::default();
+    h.engine.state.config = Config {
+        ascii: true,
+        ..Config::default()
+    };
+    h.engine
+        .state
+        .persisted
+        .save()
+        .expect("the file starts from the flagless config");
+    h.engine.dispatch(Command::OpenSettings);
+
+    for _ in 0..10 {
+        h.engine.dispatch(Command::SettingsMove(1));
+    }
+    h.engine.dispatch(Command::SettingsToggle);
+    assert!(h.state().config.no_splash, "the splash row flipped");
+    let saved = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+    assert!(saved.contains("no_splash = true"), "{saved}");
+    assert!(
+        saved.contains("ascii = false"),
+        "a command-line --ascii must not ride along: {saved}"
+    );
+
+    for _ in 0..10 {
+        h.engine.dispatch(Command::SettingsMove(-1));
+    }
+    h.engine.dispatch(Command::SettingsMove(1));
+    h.engine.dispatch(Command::SettingsToggle);
+    assert!(!h.state().config.ascii, "the screen drops the ascii glyphs");
+    let saved = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+    assert!(
+        saved.contains("ascii = false"),
+        "turning the override off matches what the file already said: {saved}"
+    );
+
+    h.engine.dispatch(Command::SettingsToggle);
+    assert!(h.state().config.ascii);
+    let saved = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+    assert!(
+        saved.contains("ascii = true"),
+        "a deliberate toggle in the panel is written: {saved}"
+    );
+
     unsafe { std::env::remove_var(Config::DIR_ENV) };
     let _ = std::fs::remove_dir_all(&dir);
 });

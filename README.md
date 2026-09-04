@@ -113,7 +113,9 @@ Flags, and the `~/.config/bushel/config.toml` keys that set the same things:
 - `--layout` / `layout = "rail"` — Body layout: rail keeps all four panes in view, table gives one full-width table
 <!-- options:end -->
 
-A flag can only switch something on; it is ORed with the file. Full reference:
+The boolean flags can only switch something on; each is ORed with the file.
+`--layout` replaces the configured layout for that run. Neither is written back
+to the file. Full reference:
 **[bushel.sh/docs/keys](https://bushel.sh/docs/keys)** and
 **[bushel.sh/docs/config](https://bushel.sh/docs/config)**.
 

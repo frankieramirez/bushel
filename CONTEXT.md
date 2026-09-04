@@ -86,7 +86,7 @@ _Avoid_: status bar (ambiguous with the status cluster)
 Service state, CLI version, and the poll spinner, right-aligned in the header. Dropped at the floor, where the row is not long enough to hold it.
 
 **Settings panel**:
-The overlay on `,` listing every field of the config file — layout, ascii glyphs, reduced motion, splash — with its current value. Toggling a row takes effect at once and writes `~/.config/bushel/config.toml`.
+The overlay on `,` listing every field of the config file — layout, ascii glyphs, reduced motion, splash — with its current value. Toggling a row takes effect at once and writes `~/.config/bushel/config.toml`. Only the row you toggle is written, so a command-line override stays out of the file.
 _Avoid_: preferences, options dialog
 
 **Message log**:

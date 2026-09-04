@@ -310,6 +310,16 @@ impl Setting {
             Setting::Splash => cfg.no_splash = !cfg.no_splash,
         }
     }
+
+    /// Copies only this row's field, leaving every other field of `to` alone.
+    pub fn apply(self, from: &Config, to: &mut Config) {
+        match self {
+            Setting::Layout => to.layout = from.layout,
+            Setting::Ascii => to.ascii = from.ascii,
+            Setting::ReducedMotion => to.reduced_motion = from.reduced_motion,
+            Setting::Splash => to.no_splash = from.no_splash,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -357,7 +367,11 @@ pub struct Toast {
 }
 
 pub struct AppState {
+    /// The config in force: the file with the command-line flags folded in.
     pub config: Config,
+    /// What the config file said, with no command-line flags folded in. Only
+    /// this is ever written back, so a flag-only override never reaches disk.
+    pub persisted: Config,
     pub screen: Screen,
     pub pane: Pane,
     pub focus: Focus,
@@ -415,6 +429,7 @@ impl AppState {
     pub fn new(no_splash: bool) -> Self {
         Self {
             config: Config::default(),
+            persisted: Config::default(),
             screen: if no_splash {
                 Screen::Main
             } else {

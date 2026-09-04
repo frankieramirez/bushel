@@ -61,6 +61,15 @@ impl Config {
         Self::dir().map(|d| d.join("config.toml"))
     }
 
+    /// Where `save` writes, phrased for a reader: the tilde form unless
+    /// `BUSHEL_CONFIG_DIR` has moved it somewhere else.
+    pub fn display_path() -> String {
+        match (std::env::var_os(Self::DIR_ENV), Self::path()) {
+            (Some(_), Some(path)) => path.display().to_string(),
+            _ => Self::DOC_PATH.to_string(),
+        }
+    }
+
     pub fn load() -> Self {
         let Some(path) = Self::path() else {
             return Self::default();
@@ -137,7 +146,12 @@ mod tests {
                 "/tmp/bushel-config-test/config.toml"
             ))
         );
+        assert_eq!(
+            Config::display_path(),
+            "/tmp/bushel-config-test/config.toml"
+        );
         unsafe { std::env::remove_var(Config::DIR_ENV) };
+        assert_eq!(Config::display_path(), Config::DOC_PATH);
     }
 
     #[test]

@@ -36,4 +36,5 @@ The settings panel is a view of `Config`, not a superset of it: every row is a f
 - Every render test runs against both layouts, and the no-panic size sweep covers both.
 - The table layout needs data the rail never asked for: `startedDate` for uptime and `memoryInBytes` for the memory ceiling. Both were already in the CLI's JSON.
 - `BUSHEL_CONFIG_DIR` now overrides the config directory, so the settings panel's writes can be tested without touching a real dotfile.
+- The panel shows the effective config, which is the file with the command-line flags folded in, but writes only the row you toggled back into the config the file gave. So a transient `--ascii` never lands on disk while a toggle made in the panel does.
 - Not taken from 1c's 200×50 board: the structured image summary with layer history and a raw-JSON toggle. It needs data bushel does not fetch, and it is a separate decision.

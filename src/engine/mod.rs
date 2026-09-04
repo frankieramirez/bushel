@@ -701,7 +701,8 @@ impl<R: Runner> Engine<R> {
                 if let Overlay::Settings { cursor } = self.state.overlay {
                     if let Some(setting) = Setting::ALL.get(cursor) {
                         setting.cycle(&mut self.state.config);
-                        match self.state.config.save() {
+                        setting.apply(&self.state.config, &mut self.state.persisted);
+                        match self.state.persisted.save() {
                             Ok(_) => {}
                             Err(e) => self
                                 .state

@@ -79,8 +79,8 @@ fn columns(pane: Pane) -> &'static [Col] {
 }
 
 const GUTTER: usize = 2;
-/// The selection bar, the space after it, and the gutter past the last column.
-const ROW_MARGIN: u16 = 3;
+/// The selection bar and the space after it.
+const ROW_PREFIX: u16 = 2;
 
 fn plan_columns(pane: Pane, width: u16) -> Vec<Col> {
     let all = columns(pane);
@@ -90,7 +90,7 @@ fn plan_columns(pane: Pane, width: u16) -> Vec<Col> {
         .filter(|c| width >= c.min_terminal_width)
         .collect();
     let fixed: u16 = kept.iter().skip(1).map(|c| c.width + GUTTER as u16).sum();
-    let flexible = width.saturating_sub(fixed + ROW_MARGIN);
+    let flexible = width.saturating_sub(fixed + ROW_PREFIX + GUTTER as u16);
     if let Some(first) = kept.first_mut() {
         first.width = flexible.max(8);
     }
@@ -455,6 +455,24 @@ mod tests {
         );
         let used: u16 = wide.iter().map(|c| c.width).sum();
         assert!(used <= 200, "columns overflow the table: {used}");
+    }
+
+    #[test]
+    fn a_planned_row_fits_the_terminal() {
+        for pane in Pane::all() {
+            for width in [40u16, 55, 80, 100, 120, 152, 200] {
+                let planned = plan_columns(pane, width);
+                let drawn: usize = ROW_PREFIX as usize
+                    + planned
+                        .iter()
+                        .map(|c| c.width as usize + GUTTER)
+                        .sum::<usize>();
+                assert!(
+                    drawn <= width as usize,
+                    "{pane:?} at {width} draws {drawn} cells"
+                );
+            }
+        }
     }
 
     #[test]

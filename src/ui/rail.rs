@@ -259,7 +259,7 @@ fn row_line(
             if let Some(s) = pending_span(th, im.pending.is_some()) {
                 spans.push(s);
             }
-            let name_w = ref_w.saturating_sub(3);
+            let name_w = ref_w.saturating_sub(3 + usize::from(im.pending.is_some()) * 2);
             spans.extend(reference_spans(th, &im.reference, name_w));
             if size_w > 0 {
                 let used: usize = spans
@@ -281,7 +281,7 @@ fn row_line(
                 return Line::from(spans);
             };
             let badge_w = if body >= BADGE_MIN { 8 } else { 0 };
-            let name_w = body.saturating_sub(badge_w);
+            let name_w = body.saturating_sub(badge_w + usize::from(v.pending.is_some()) * 2);
             if let Some(s) = pending_span(th, v.pending.is_some()) {
                 spans.push(s);
             }
@@ -355,5 +355,60 @@ mod tests {
         assert_eq!(rpad("abcdefgh", 4).chars().count(), 4);
         assert!(pad("abcdefgh", 4).contains('…'), "long cells elide");
         assert_eq!(pad("abc", 0), "");
+    }
+
+    #[test]
+    fn pending_rows_stay_inside_the_rail() {
+        use crate::engine::state::{ActionKind, ImageEntry, Pending, PendingPhase, VolumeEntry};
+
+        let th = Theme {
+            truecolor: false,
+            ascii: false,
+        };
+        let pending = |kind| {
+            Some(Pending {
+                kind,
+                phase: PendingPhase::InFlight,
+            })
+        };
+        let width = |line: &Line<'static>| -> usize {
+            line.spans.iter().map(|s| s.content.chars().count()).sum()
+        };
+
+        for pending in [None, pending(ActionKind::DeleteImage)] {
+            let mut state = AppState::new(true);
+            state.images.push(ImageEntry {
+                reference: "ghcr.io/frankieramirez/bushel:0.3.3-arm64".into(),
+                size: Some(1_234_567),
+                created: None,
+                pending,
+            });
+            for w in 8..=80 {
+                let line = row_line(&state, &th, Pane::Images, 0, false, w);
+                assert!(
+                    width(&line) <= w,
+                    "image row {} wide at width {w}",
+                    width(&line)
+                );
+            }
+        }
+
+        for pending in [None, pending(ActionKind::CreateVolume)] {
+            let mut state = AppState::new(true);
+            state.volumes.push(VolumeEntry {
+                name: "a-very-long-volume-name-that-elides".into(),
+                in_use_by: vec!["web".into()],
+                created: None,
+                pending,
+            });
+            for w in 8..=80 {
+                let line = row_line(&state, &th, Pane::Volumes, 0, false, w);
+                assert!(
+                    width(&line) <= w,
+                    "volume row {} wide at width {w}",
+                    width(&line)
+                );
+            }
+        }
     }
 }
