@@ -30,6 +30,7 @@ pub const HELP: &[HelpRow] = &[
         "start/stop · restart · kill · delete · prune · exec",
     ),
     bind("u", "pull image (images pane)"),
+    bind("t", "tag image (images pane)"),
     head(" detail"),
     bind("l / i", "logs / inspect tab (containers)"),
     bind("F", "toggle follow"),

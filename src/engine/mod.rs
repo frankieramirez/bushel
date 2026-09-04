@@ -590,7 +590,9 @@ impl<R: Runner> Engine<R> {
                         .log_message(format!("$ {command} → ok, awaiting poll confirmation"));
                 }
                 match kind {
-                    ActionKind::DeleteImage | ActionKind::PruneImages => self.images_dirty = true,
+                    ActionKind::DeleteImage | ActionKind::TagImage | ActionKind::PruneImages => {
+                        self.images_dirty = true
+                    }
                     ActionKind::DeleteVolume | ActionKind::PruneVolumes => {
                         self.volumes_dirty = true
                     }
@@ -605,6 +607,9 @@ impl<R: Runner> Engine<R> {
                     self.state.activity = None;
                 } else {
                     self.state.set_pending(&id, None);
+                    if kind == ActionKind::TagImage {
+                        self.state.tag_dest = None;
+                    }
                 }
                 self.state.log_message(format!("$ {command}\n{}", e.raw()));
                 match e {
@@ -681,7 +686,19 @@ impl<R: Runner> Engine<R> {
                 self.state.help_scroll = 0;
             }
             Command::OpenMessageLog => self.state.overlay = Overlay::MessageLog,
-            Command::CloseOverlay => self.state.overlay = Overlay::None,
+            Command::CloseOverlay => {
+                if matches!(
+                    self.state.overlay,
+                    Overlay::TagInput { .. }
+                        | Overlay::Confirm {
+                            action: ActionKind::TagImage,
+                            ..
+                        }
+                ) {
+                    self.state.tag_dest = None;
+                }
+                self.state.overlay = Overlay::None;
+            }
             Command::DismissBanner => self.state.version_banner = None,
             Command::Run(action) => self.run_ui_action(action),
             Command::ConfirmYes => {
@@ -700,23 +717,33 @@ impl<R: Runner> Engine<R> {
                         self.state.overlay = Overlay::None;
                     }
                 }
-                Overlay::PullInput { text } => text.push(c),
+                Overlay::PullInput { text } | Overlay::TagInput { text } => text.push(c),
                 _ => {}
             },
-            Command::OverlayBackspace => {
-                if let Overlay::PullInput { text } = &mut self.state.overlay {
+            Command::OverlayBackspace => match &mut self.state.overlay {
+                Overlay::PullInput { text } | Overlay::TagInput { text } => {
                     text.pop();
                 }
-            }
-            Command::OverlaySubmit => {
-                if let Overlay::PullInput { text } = &self.state.overlay {
+                _ => {}
+            },
+            Command::OverlaySubmit => match &self.state.overlay {
+                Overlay::PullInput { text } => {
                     let reference = text.trim().to_string();
                     self.state.overlay = Overlay::None;
                     if !reference.is_empty() {
                         self.start_pull(reference);
                     }
                 }
-            }
+                Overlay::TagInput { text } => {
+                    let dest = text.trim().to_string();
+                    if dest.is_empty() {
+                        self.state.toast("enter a new reference", true);
+                    } else {
+                        self.submit_tag(dest);
+                    }
+                }
+                _ => {}
+            },
             Command::ScrollDetail(delta) => {
                 let s = &mut self.state.detail_scroll;
                 *s = if delta < 0 {
@@ -846,6 +873,14 @@ impl<R: Runner> Engine<R> {
                     text: String::new(),
                 };
             }
+            (Pane::Images, UiAction::Tag) => {
+                if self.state.selected_image().is_none() {
+                    return;
+                }
+                self.state.overlay = Overlay::TagInput {
+                    text: String::new(),
+                };
+            }
             (Pane::Images, UiAction::Delete) => {
                 let Some(i) = self.state.selected_image() else {
                     return;
@@ -894,6 +929,19 @@ impl<R: Runner> Engine<R> {
         }
     }
 
+    fn submit_tag(&mut self, dest: String) {
+        let Some(source) = self.state.selected_image().map(|i| i.reference.clone()) else {
+            self.state.overlay = Overlay::None;
+            return;
+        };
+        self.state.tag_dest = Some(dest.clone());
+        self.open_confirm(
+            ActionKind::TagImage,
+            source.clone(),
+            Client::<R>::tag_image_args(&source, &dest),
+        );
+    }
+
     fn open_confirm(&mut self, action: ActionKind, target: String, args: Vec<String>) {
         if !target.is_empty() && self.state.pending_of(&target).is_some() {
             self.state
@@ -914,6 +962,13 @@ impl<R: Runner> Engine<R> {
             ActionKind::DeleteContainer => Client::<R>::delete_container_args(&target),
             ActionKind::PruneContainers => Client::<R>::prune_containers_args(),
             ActionKind::DeleteImage => Client::<R>::delete_image_args(&target),
+            ActionKind::TagImage => {
+                let dest = self.state.tag_dest.clone().unwrap_or_default();
+                if dest.is_empty() {
+                    return;
+                }
+                Client::<R>::tag_image_args(&target, &dest)
+            }
             ActionKind::PruneImages => Client::<R>::prune_images_args(),
             ActionKind::DeleteVolume => Client::<R>::delete_volume_args(&target),
             ActionKind::PruneVolumes => Client::<R>::prune_volumes_args(),

@@ -1240,3 +1240,206 @@ engine_test!(help_scroll_resets_each_time_the_cheatsheet_opens, || {
     h.engine.dispatch(Command::OpenHelp);
     assert_eq!(h.state().help_scroll, 0);
 });
+
+fn type_overlay(h: &mut Harness, text: &str) {
+    for c in text.chars() {
+        h.engine.dispatch(Command::OverlayChar(c));
+    }
+}
+
+fn image_ls_with_extra_ref(reference: &str) -> String {
+    let mut images: Vec<serde_json::Value> =
+        serde_json::from_slice(&fixture("image_ls.json")).unwrap();
+    let mut extra = images[0].clone();
+    extra["id"] = serde_json::json!(reference);
+    extra["configuration"]["name"] = serde_json::json!(reference);
+    images.push(extra);
+    serde_json::to_string(&images).unwrap()
+}
+
+engine_test!(
+    images_pane_tag_previews_the_command_then_runs_through_the_runner,
+    || {
+        let source = "docker.io/library/alpine:latest";
+        let dest = "myapp:v1";
+        let mock = happy_mock();
+        mock.on(&["image", "tag", source, dest], Output::ok(""));
+        let mut h = Harness::started(mock);
+        h.engine.dispatch(Command::SwitchPane(Pane::Images));
+        h.pump();
+        assert!(
+            !h.state().images.iter().any(|i| i.reference == dest),
+            "dest is not listed until after tag"
+        );
+
+        let keys: Vec<char> = h
+            .state()
+            .available_actions()
+            .iter()
+            .map(|a| a.key)
+            .collect();
+        assert_eq!(keys, vec!['u', 't', 'd', 'P']);
+        assert!(
+            !h.state()
+                .available_actions()
+                .iter()
+                .any(|a| a.label.contains("push")),
+            "push is out of scope"
+        );
+
+        h.engine.dispatch(Command::Run(UiAction::Tag));
+        assert!(matches!(h.state().overlay, Overlay::TagInput { .. }));
+        type_overlay(&mut h, dest);
+        h.engine.dispatch(Command::OverlaySubmit);
+        match &h.state().overlay {
+            Overlay::Confirm {
+                command, action, ..
+            } => {
+                assert_eq!(
+                    command,
+                    "container image tag docker.io/library/alpine:latest myapp:v1"
+                );
+                assert_eq!(*action, ActionKind::TagImage);
+            }
+            other => panic!("expected confirm overlay, got {other:?}"),
+        }
+        assert!(
+            !h.mock.commands().iter().any(|c| c.contains("image tag")),
+            "confirm is preview-only"
+        );
+
+        let alpine = h
+            .state()
+            .images
+            .iter()
+            .find(|i| i.reference == source)
+            .unwrap();
+        assert!(alpine.pending.is_none());
+
+        h.mock.set(
+            &["image", "ls", "--format", "json"],
+            Output::ok(image_ls_with_extra_ref(dest)),
+        );
+        h.engine.dispatch(Command::ConfirmYes);
+        assert!(
+            h.state()
+                .images
+                .iter()
+                .find(|i| i.reference == source)
+                .unwrap()
+                .pending
+                .is_some(),
+            "pending on the source while the tag runs"
+        );
+        h.pump();
+
+        assert!(
+            h.mock
+                .commands()
+                .iter()
+                .any(|c| c == "container image tag docker.io/library/alpine:latest myapp:v1"),
+            "{:?}",
+            h.mock.commands()
+        );
+        assert!(
+            h.state().images.iter().any(|i| i.reference == dest),
+            "poll listed the new reference"
+        );
+        let alpine = h
+            .state()
+            .images
+            .iter()
+            .find(|i| i.reference == source)
+            .unwrap();
+        assert!(
+            alpine.pending.is_none(),
+            "pending clears once poll confirms"
+        );
+        let toast = h.state().toast.clone().expect("toast");
+        assert_eq!(toast.text, "tagged myapp:v1");
+        assert!(!toast.error);
+        assert!(
+            !h.mock
+                .commands()
+                .iter()
+                .any(|c| c.contains("image push") || c.contains(" push ")),
+            "tag must not push: {:?}",
+            h.mock.commands()
+        );
+    }
+);
+
+engine_test!(tag_rejects_empty_and_whitespace_references, || {
+    let mut h = Harness::started(happy_mock());
+    h.engine.dispatch(Command::SwitchPane(Pane::Images));
+    h.pump();
+
+    h.engine.dispatch(Command::Run(UiAction::Tag));
+    h.engine.dispatch(Command::OverlaySubmit);
+    assert!(
+        matches!(h.state().overlay, Overlay::TagInput { .. }),
+        "empty stays in the dialog"
+    );
+    assert!(!h.mock.commands().iter().any(|c| c.contains("image tag")));
+    let toast = h.state().toast.clone().expect("toast");
+    assert!(toast.error);
+    assert!(toast.text.contains("reference"), "{}", toast.text);
+
+    type_overlay(&mut h, "   ");
+    h.engine.dispatch(Command::OverlaySubmit);
+    assert!(matches!(h.state().overlay, Overlay::TagInput { .. }));
+    assert!(!h.mock.commands().iter().any(|c| c.contains("image tag")));
+});
+
+engine_test!(tag_failure_toasts_stderr_and_clears_pending, || {
+    let source = "docker.io/library/alpine:latest";
+    let dest = "bad:tag";
+    let mock = happy_mock();
+    mock.on(
+        &["image", "tag", source, dest],
+        Output::fail(1, "Error: invalid reference\n"),
+    );
+    let mut h = Harness::started(mock);
+    h.engine.dispatch(Command::SwitchPane(Pane::Images));
+    h.pump();
+    h.engine.dispatch(Command::Run(UiAction::Tag));
+    type_overlay(&mut h, dest);
+    h.engine.dispatch(Command::OverlaySubmit);
+    h.engine.dispatch(Command::ConfirmYes);
+    h.pump();
+
+    let alpine = h
+        .state()
+        .images
+        .iter()
+        .find(|i| i.reference == source)
+        .unwrap();
+    assert!(alpine.pending.is_none());
+    let toast = h.state().toast.clone().expect("toast");
+    assert!(toast.error);
+    assert!(toast.text.contains("invalid reference"), "{}", toast.text);
+    assert!(
+        h.state()
+            .messages
+            .iter()
+            .any(|m| m.contains("invalid reference")),
+        "{:?}",
+        h.state().messages
+    );
+});
+
+engine_test!(tag_is_images_pane_only, || {
+    let mut h = Harness::started(happy_mock());
+    h.engine.dispatch(Command::Run(UiAction::Tag));
+    assert_eq!(h.state().overlay, Overlay::None);
+    h.engine.dispatch(Command::SwitchPane(Pane::Volumes));
+    h.pump();
+    h.engine.dispatch(Command::Run(UiAction::Tag));
+    assert_eq!(h.state().overlay, Overlay::None);
+    assert!(
+        !h.state()
+            .available_actions()
+            .iter()
+            .any(|a| a.action == UiAction::Tag || a.label.contains("push"))
+    );
+});
