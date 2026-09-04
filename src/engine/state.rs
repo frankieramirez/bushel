@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
-use crate::client::model::{ContainerJson, ImageJson, StatsJson, VolumeJson};
+use crate::client::model::{ContainerJson, ImageJson, NetworkJson, StatsJson, VolumeJson};
 
 pub const LOG_RING_CAP: usize = 10_000;
 pub const MESSAGE_LOG_CAP: usize = 1_000;
@@ -22,14 +22,18 @@ pub enum Pane {
     Containers,
     Images,
     Volumes,
+    Networks,
 }
 
 impl Pane {
+    pub const COUNT: usize = 4;
+
     pub fn index(self) -> usize {
         match self {
             Pane::Containers => 0,
             Pane::Images => 1,
             Pane::Volumes => 2,
+            Pane::Networks => 3,
         }
     }
 
@@ -37,7 +41,8 @@ impl Pane {
         match self {
             Pane::Containers => Pane::Images,
             Pane::Images => Pane::Volumes,
-            Pane::Volumes => Pane::Containers,
+            Pane::Volumes => Pane::Networks,
+            Pane::Networks => Pane::Containers,
         }
     }
 
@@ -46,6 +51,7 @@ impl Pane {
             Pane::Containers => "containers",
             Pane::Images => "images",
             Pane::Volumes => "volumes",
+            Pane::Networks => "networks",
         }
     }
 
@@ -54,11 +60,17 @@ impl Pane {
             Pane::Containers => '1',
             Pane::Images => '2',
             Pane::Volumes => '3',
+            Pane::Networks => '4',
         }
     }
 
-    pub const fn all() -> [Pane; 3] {
-        [Pane::Containers, Pane::Images, Pane::Volumes]
+    pub const fn all() -> [Pane; Self::COUNT] {
+        [
+            Pane::Containers,
+            Pane::Images,
+            Pane::Volumes,
+            Pane::Networks,
+        ]
     }
 }
 
@@ -147,6 +159,7 @@ pub struct ContainerEntry {
     pub created: Option<String>,
     pub cpus: Option<u32>,
     pub volumes: Vec<String>,
+    pub networks: Vec<(String, Option<String>)>,
     pub cpu_percent: Option<f64>,
     pub mem_bytes: Option<u64>,
     pub telemetry: VecDeque<TelemetrySample>,
@@ -199,6 +212,16 @@ impl VolumeEntry {
     pub fn in_use(&self) -> bool {
         !self.in_use_by.is_empty()
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct NetworkEntry {
+    pub name: String,
+    pub mode: String,
+    pub ipv4_subnet: Option<String>,
+    pub builtin: bool,
+    pub attached: Vec<(String, Option<String>)>,
+    pub created: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -266,7 +289,8 @@ pub struct AppState {
     pub containers: Vec<ContainerEntry>,
     pub images: Vec<ImageEntry>,
     pub volumes: Vec<VolumeEntry>,
-    pub selected: [Option<String>; 3],
+    pub networks: Vec<NetworkEntry>,
+    pub selected: [Option<String>; Pane::COUNT],
 
     pub filter: String,
     pub filter_input: bool,
@@ -324,7 +348,8 @@ impl AppState {
             containers: Vec::new(),
             images: Vec::new(),
             volumes: Vec::new(),
-            selected: [None, None, None],
+            networks: Vec::new(),
+            selected: [None, None, None, None],
             filter: String::new(),
             filter_input: false,
             detail_scroll: 0,
@@ -422,6 +447,23 @@ impl AppState {
                 .filter(|(_, v)| Self::fuzzy_match(f, &v.name))
                 .map(|(i, _)| i)
                 .collect(),
+            Pane::Networks => self
+                .networks
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| {
+                    Self::fuzzy_match(
+                        f,
+                        &format!(
+                            "{} {} {}",
+                            n.name,
+                            n.mode,
+                            n.ipv4_subnet.as_deref().unwrap_or("")
+                        ),
+                    )
+                })
+                .map(|(i, _)| i)
+                .collect(),
         }
     }
 
@@ -430,6 +472,7 @@ impl AppState {
             Pane::Containers => self.containers.len(),
             Pane::Images => self.images.len(),
             Pane::Volumes => self.volumes.len(),
+            Pane::Networks => self.networks.len(),
         }
     }
 
@@ -438,6 +481,7 @@ impl AppState {
             Pane::Containers => self.containers.get(idx).map(|c| c.id.clone()),
             Pane::Images => self.images.get(idx).map(|i| i.reference.clone()),
             Pane::Volumes => self.volumes.get(idx).map(|v| v.name.clone()),
+            Pane::Networks => self.networks.get(idx).map(|n| n.name.clone()),
         }
     }
 
@@ -479,6 +523,13 @@ impl AppState {
         self.selected_row().and_then(|i| self.volumes.get(i))
     }
 
+    pub fn selected_network(&self) -> Option<&NetworkEntry> {
+        if self.pane != Pane::Networks {
+            return None;
+        }
+        self.selected_row().and_then(|i| self.networks.get(i))
+    }
+
     pub fn move_selection(&mut self, delta: isize) {
         let rows = self.visible_rows();
         if rows.is_empty() {
@@ -497,11 +548,12 @@ impl AppState {
     }
 
     pub fn clamp_selection(&mut self) {
-        for pane in [Pane::Containers, Pane::Images, Pane::Volumes] {
+        for pane in Pane::all() {
             let exists = |id: &str| match pane {
                 Pane::Containers => self.containers.iter().any(|c| c.id == id),
                 Pane::Images => self.images.iter().any(|i| i.reference == id),
                 Pane::Volumes => self.volumes.iter().any(|v| v.name == id),
+                Pane::Networks => self.networks.iter().any(|n| n.name == id),
             };
             let sel = &mut self.selected[pane.index()];
             if let Some(id) = sel {
@@ -514,6 +566,7 @@ impl AppState {
                     Pane::Containers => self.containers.first().map(|c| c.id.clone()),
                     Pane::Images => self.images.first().map(|i| i.reference.clone()),
                     Pane::Volumes => self.volumes.first().map(|v| v.name.clone()),
+                    Pane::Networks => self.networks.first().map(|n| n.name.clone()),
                 };
             }
         }
@@ -532,6 +585,10 @@ impl AppState {
                 created: c.configuration.creation_date.clone(),
                 cpus: c.configuration.resources.as_ref().and_then(|r| r.cpus),
                 volumes: c.volume_sources().map(|s| s.to_string()).collect(),
+                networks: c
+                    .network_attachments()
+                    .map(|(name, addr)| (name.to_string(), addr.map(str::to_string)))
+                    .collect(),
                 cpu_percent: None,
                 mem_bytes: None,
                 telemetry: VecDeque::new(),
@@ -644,6 +701,24 @@ impl AppState {
         self.clamp_selection();
     }
 
+    pub fn update_networks(&mut self, fresh: &[NetworkJson]) {
+        let mut next: Vec<NetworkEntry> = fresh
+            .iter()
+            .map(|n| NetworkEntry {
+                name: n.name().to_string(),
+                mode: n.mode().to_string(),
+                ipv4_subnet: n.ipv4_subnet().map(str::to_string),
+                builtin: n.is_builtin(),
+                attached: Vec::new(),
+                created: n.configuration.creation_date.clone(),
+            })
+            .collect();
+        next.sort_by(|a, b| a.name.cmp(&b.name));
+        self.networks = next;
+        self.recompute_network_attachments();
+        self.clamp_selection();
+    }
+
     pub fn recompute_in_use(&mut self) {
         for v in &mut self.volumes {
             v.in_use_by = self
@@ -651,6 +726,21 @@ impl AppState {
                 .iter()
                 .filter(|c| c.volumes.iter().any(|s| s == &v.name))
                 .map(|c| c.id.clone())
+                .collect();
+        }
+        self.recompute_network_attachments();
+    }
+
+    pub fn recompute_network_attachments(&mut self) {
+        for n in &mut self.networks {
+            n.attached = self
+                .containers
+                .iter()
+                .flat_map(|c| {
+                    c.networks.iter().filter_map(|(name, addr)| {
+                        (name == &n.name).then(|| (c.id.clone(), addr.clone()))
+                    })
+                })
                 .collect();
         }
     }
@@ -849,6 +939,7 @@ impl AppState {
                 items.push(item('P', "prune unreferenced", true, UiAction::Prune));
                 items
             }
+            Pane::Networks => Vec::new(),
         }
     }
 }
@@ -867,6 +958,7 @@ mod tests {
                 created: None,
                 cpus: None,
                 volumes: vec![],
+                networks: vec![],
                 cpu_percent: None,
                 mem_bytes: None,
                 telemetry: VecDeque::new(),
@@ -879,6 +971,7 @@ mod tests {
                 created: None,
                 cpus: None,
                 volumes: vec![],
+                networks: vec![],
                 cpu_percent: None,
                 mem_bytes: None,
                 telemetry: VecDeque::new(),
@@ -913,6 +1006,24 @@ mod tests {
                 pending: None,
             },
         ]);
+        s.networks.extend([
+            NetworkEntry {
+                name: "default".into(),
+                mode: "nat".into(),
+                ipv4_subnet: Some("192.168.64.0/24".into()),
+                builtin: true,
+                attached: vec![],
+                created: None,
+            },
+            NetworkEntry {
+                name: "foo".into(),
+                mode: "nat".into(),
+                ipv4_subnet: Some("192.168.65.0/24".into()),
+                builtin: false,
+                attached: vec![],
+                created: None,
+            },
+        ]);
         s.clamp_selection();
         s
     }
@@ -926,6 +1037,7 @@ mod tests {
         assert_eq!(s.containers[containers[0]].id, "old-batch");
         assert_eq!(s.visible_rows_for(Pane::Images).len(), 2);
         assert_eq!(s.visible_rows_for(Pane::Volumes).len(), 2);
+        assert_eq!(s.visible_rows_for(Pane::Networks).len(), 2);
     }
 
     #[test]
@@ -940,6 +1052,20 @@ mod tests {
         assert_eq!(s.selected[0].as_deref(), Some("old-batch"));
         s.pane = Pane::Images;
         assert_eq!(s.selected[1].as_deref(), Some("postgres:16"));
+        s.pane = Pane::Networks;
+        s.move_selection(1);
+        assert_eq!(s.selected[3].as_deref(), Some("foo"));
+        s.pane = Pane::Containers;
+        assert_eq!(s.selected[0].as_deref(), Some("old-batch"));
+        s.pane = Pane::Networks;
+        assert_eq!(s.selected[3].as_deref(), Some("foo"));
+    }
+
+    #[test]
+    fn networks_offer_no_mutate_actions() {
+        let mut s = sample();
+        s.pane = Pane::Networks;
+        assert!(s.available_actions().is_empty());
     }
 
     #[test]

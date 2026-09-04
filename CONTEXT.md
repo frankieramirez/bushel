@@ -26,7 +26,7 @@ One of the four entity views (containers, images, volumes, networks). All four a
 _Avoid_: tab, screen, page
 
 **Rail**:
-The always-present column of all four panes. Inactive panes collapse; the active panel takes the flexible space. Below three rows there is not one row per pane to give, and the active panel takes what the rail has.
+The always-present column of all four panes. Inactive panes collapse; the active panel takes the flexible space. Below four rows there is not one row per pane to give, and the active panel takes what the rail has.
 _Avoid_: sidebar, stack
 
 **Active panel**:

@@ -17,7 +17,7 @@ pub const HELP_W: u16 = 68;
 pub struct LayoutFacts {
     pub zoom: bool,
     pub active: Pane,
-    pub visible: [u16; 3],
+    pub visible: [u16; Pane::COUNT],
     pub banner_rows: u16,
 }
 
@@ -26,11 +26,7 @@ impl LayoutFacts {
         Self {
             zoom: state.zoom,
             active: state.pane,
-            visible: [
-                state.visible_rows_for(Pane::Containers).len() as u16,
-                state.visible_rows_for(Pane::Images).len() as u16,
-                state.visible_rows_for(Pane::Volumes).len() as u16,
-            ],
+            visible: Pane::all().map(|p| state.visible_rows_for(p).len() as u16),
             banner_rows: 0,
         }
     }
@@ -44,7 +40,7 @@ pub struct LayoutPlan {
     pub bottom: Rect,
     pub rail: Rect,
     pub detail: Rect,
-    pub slots: [Rect; 3],
+    pub slots: [Rect; Pane::COUNT],
     pub stacked: bool,
     pub tight: bool,
     pub floor: bool,
@@ -91,7 +87,7 @@ impl LayoutPlan {
                 bottom,
                 rail: body,
                 detail: body,
-                slots: [body, Rect::default(), Rect::default()],
+                slots: [body, Rect::default(), Rect::default(), Rect::default()],
                 stacked: false,
                 tight: floor,
                 floor,
@@ -182,7 +178,7 @@ pub fn centered(area: Rect, w: u16, h: u16) -> Rect {
 }
 
 fn stacked_rail_height(body_h: u16, active_rows: u16) -> u16 {
-    let inactive = 2u16;
+    let inactive = Pane::COUNT as u16 - 1;
     let active_h = (active_rows + 2).clamp(4, 8);
     let want = inactive + active_h;
     let spare = (body_h / 2).max(6).min(body_h.saturating_sub(4));
@@ -190,7 +186,7 @@ fn stacked_rail_height(body_h: u16, active_rows: u16) -> u16 {
     want.clamp(least, spare.max(least))
 }
 
-fn rail_slots(rail: Rect, facts: LayoutFacts, tight: bool) -> [Rect; 3] {
+fn rail_slots(rail: Rect, facts: LayoutFacts, tight: bool) -> [Rect; Pane::COUNT] {
     let panes = Pane::all();
     let collapsed_rows = if rail.height < RAIL_MIN_H { 0 } else { 1 };
     let constraints: Vec<Constraint> = panes
@@ -208,7 +204,7 @@ fn rail_slots(rail: Rect, facts: LayoutFacts, tight: bool) -> [Rect; 3] {
         })
         .collect();
     let split = Layout::vertical(constraints).split(rail);
-    [split[0], split[1], split[2]]
+    std::array::from_fn(|i| split.get(i).copied().unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -219,7 +215,7 @@ mod tests {
         LayoutFacts {
             zoom: false,
             active: Pane::Containers,
-            visible: [8, 5, 3],
+            visible: [8, 5, 3, 2],
             banner_rows: 0,
         }
     }
@@ -243,7 +239,8 @@ mod tests {
         assert_eq!(p.rail.x, p.detail.x);
         assert_eq!(p.slots[Pane::Images.index()].height, 1);
         assert_eq!(p.slots[Pane::Volumes.index()].height, 1);
-        assert_eq!(p.slots[Pane::Containers.index()].height, 7);
+        assert_eq!(p.slots[Pane::Networks.index()].height, 1);
+        assert_eq!(p.slots[Pane::Containers.index()].height, 6);
     }
 
     #[test]
@@ -270,7 +267,8 @@ mod tests {
         assert!(p.rail.x < p.detail.x);
         assert_eq!(p.slots[Pane::Images.index()].height, 7);
         assert_eq!(p.slots[Pane::Volumes.index()].height, 5);
-        assert_eq!(p.slots[Pane::Containers.index()].height, 15);
+        assert_eq!(p.slots[Pane::Networks.index()].height, 4);
+        assert_eq!(p.slots[Pane::Containers.index()].height, 11);
     }
 
     #[test]
@@ -290,6 +288,7 @@ mod tests {
         assert!(p.tight);
         assert_eq!(p.slots[Pane::Images.index()].height, 1);
         assert_eq!(p.slots[Pane::Volumes.index()].height, 1);
+        assert_eq!(p.slots[Pane::Networks.index()].height, 1);
     }
 
     #[test]
@@ -319,6 +318,7 @@ mod tests {
             created: None,
             cpus: None,
             volumes: vec![],
+            networks: vec![],
             cpu_percent: None,
             mem_bytes: None,
             telemetry: std::collections::VecDeque::new(),
@@ -362,6 +362,7 @@ mod tests {
             created: None,
             cpus: None,
             volumes: vec![],
+            networks: vec![],
             cpu_percent: None,
             mem_bytes: None,
             telemetry: std::collections::VecDeque::new(),
@@ -495,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rail_too_short_for_three_panes_keeps_the_active_one() {
+    fn a_rail_too_short_for_four_panes_keeps_the_active_one() {
         let p = plan(40, 5);
         assert!(p.stacked);
         assert_eq!(p.rail.height, 2);
@@ -503,6 +504,7 @@ mod tests {
         assert_eq!(p.slots[Pane::Containers.index()].height, 2);
         assert_eq!(p.slots[Pane::Images.index()].height, 0);
         assert_eq!(p.slots[Pane::Volumes.index()].height, 0);
+        assert_eq!(p.slots[Pane::Networks.index()].height, 0);
     }
 
     #[test]
@@ -524,7 +526,7 @@ mod tests {
         let f = LayoutFacts {
             zoom: false,
             active: Pane::Containers,
-            visible: [2, 40, 40],
+            visible: [2, 40, 40, 40],
             banner_rows: 0,
         };
         let p = LayoutPlan::compute(Rect::new(0, 0, 100, 40), f);
@@ -532,5 +534,6 @@ mod tests {
         assert_eq!(cap, 9);
         assert_eq!(p.slots[Pane::Images.index()].height, cap);
         assert_eq!(p.slots[Pane::Volumes.index()].height, cap);
+        assert_eq!(p.slots[Pane::Networks.index()].height, cap);
     }
 }

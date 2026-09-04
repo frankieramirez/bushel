@@ -93,6 +93,11 @@ impl<R: Runner> Client<R> {
         self.read_json(&["volume", "ls", "--format", "json"]).await
     }
 
+    pub async fn list_networks(&self) -> Result<Vec<NetworkJson>> {
+        self.read_json(&["network", "list", "--format", "json"])
+            .await
+    }
+
     pub async fn stats(&self) -> Result<Vec<StatsJson>> {
         self.read_json(&["stats", "--no-stream", "--format", "json"])
             .await
@@ -139,6 +144,10 @@ impl<R: Runner> Client<R> {
 
     pub async fn inspect_volume(&self, name: &str) -> Result<String> {
         Ok(self.read(&["volume", "inspect", name]).await?.stdout_str())
+    }
+
+    pub async fn inspect_network(&self, name: &str) -> Result<String> {
+        Ok(self.read(&["network", "inspect", name]).await?.stdout_str())
     }
 
     pub async fn logs_backlog(&self, id: &str) -> Result<Vec<String>> {
@@ -263,6 +272,11 @@ mod tests {
         let stopped = &containers[1];
         assert!(!stopped.is_running());
         assert_eq!(stopped.volume_sources().collect::<Vec<_>>(), vec!["qvol"]);
+        assert_eq!(
+            running.network_attachments().collect::<Vec<_>>(),
+            vec![("default", Some("192.168.64.2/24"))]
+        );
+        assert_eq!(stopped.network_attachments().count(), 0);
     }
 
     #[tokio::test]
@@ -296,6 +310,67 @@ mod tests {
             volumes.iter().map(|v| v.name()).collect::<Vec<_>>(),
             vec!["qvol", "scratch"]
         );
+    }
+
+    #[tokio::test]
+    async fn list_networks_parses_fixture() {
+        let mock = MockRunner::new();
+        mock.on(
+            &["network", "list", "--format", "json"],
+            Output::ok(fixture("network_ls.json")),
+        );
+        let client = client_with(mock);
+
+        let networks = client.list_networks().await.unwrap();
+
+        assert_eq!(
+            networks.iter().map(|n| n.name()).collect::<Vec<_>>(),
+            vec!["default", "foo", "internal"]
+        );
+        assert!(networks[0].is_builtin());
+        assert_eq!(networks[0].mode(), "nat");
+        assert_eq!(networks[0].ipv4_subnet(), Some("192.168.64.0/24"));
+        assert!(!networks[1].is_builtin());
+        assert_eq!(networks[2].mode(), "hostOnly");
+        assert_eq!(networks[2].ipv4_subnet(), Some("192.168.66.0/24"));
+    }
+
+    #[test]
+    fn network_json_tolerates_extra_keys_and_legacy_subnet() {
+        let raw = r#"[{
+            "id": "legacy",
+            "unexpected": true,
+            "configuration": {
+                "name": "legacy",
+                "mode": "nat",
+                "subnet": "10.0.0.0/24",
+                "pluginInfo": {"plugin": "old"},
+                "extra": 1
+            },
+            "status": {
+                "ipv4Gateway": "10.0.0.1",
+                "mystery": "ignored"
+            }
+        }]"#;
+        let networks: Vec<NetworkJson> = serde_json::from_str(raw).unwrap();
+        assert_eq!(networks[0].name(), "legacy");
+        assert_eq!(networks[0].ipv4_subnet(), Some("10.0.0.0/24"));
+        assert!(!networks[0].is_builtin());
+    }
+
+    #[tokio::test]
+    async fn inspect_network_returns_raw_pretty_json() {
+        let mock = MockRunner::new();
+        mock.on(
+            &["network", "inspect", "default"],
+            Output::ok(fixture("network_inspect.json")),
+        );
+        let client = client_with(mock);
+
+        let text = client.inspect_network("default").await.unwrap();
+        assert!(text.trim_start().starts_with('['));
+        assert!(text.contains("\"default\""));
+        assert!(text.contains("192.168.64.0/24"));
     }
 
     #[tokio::test]

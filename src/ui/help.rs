@@ -12,7 +12,10 @@ const fn bind(keys: &'static str, desc: &'static str) -> HelpRow {
 
 pub const HELP: &[HelpRow] = &[
     head(" global"),
-    bind("1/2/3, tab", "expand pane (containers / images / volumes)"),
+    bind(
+        "1/2/3/4, tab",
+        "expand pane (containers / images / volumes / networks)",
+    ),
     bind("f", "zoom focused side"),
     bind("m", "message log"),
     bind("b", "dismiss version banner"),

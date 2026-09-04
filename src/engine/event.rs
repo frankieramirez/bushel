@@ -1,5 +1,7 @@
 use crate::client::CliError;
-use crate::client::model::{ContainerJson, ImageJson, StatsJson, SystemStatusJson, VolumeJson};
+use crate::client::model::{
+    ContainerJson, ImageJson, NetworkJson, StatsJson, SystemStatusJson, VolumeJson,
+};
 use crate::engine::state::{ActionKind, DetailTab, Pane, UiAction};
 
 type CliResult<T> = Result<T, CliError>;
@@ -9,6 +11,7 @@ pub enum AppEvent {
     Containers(CliResult<Vec<ContainerJson>>),
     Images(CliResult<Vec<ImageJson>>),
     Volumes(CliResult<Vec<VolumeJson>>),
+    Networks(CliResult<Vec<NetworkJson>>),
     Stats(CliResult<Vec<StatsJson>>),
     ServiceProbe(CliResult<SystemStatusJson>),
     VersionChecked(CliResult<String>),

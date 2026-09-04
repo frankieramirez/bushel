@@ -1,6 +1,6 @@
 # bushel
 
-A terminal UI for managing [Apple Containers](https://github.com/apple/container) — containers, images, and volumes from the comfort of your terminal. A bushel is a container that holds apples.
+A terminal UI for managing [Apple Containers](https://github.com/apple/container) — containers, images, volumes, and networks from the comfort of your terminal. A bushel is a container that holds apples.
 
 bushel is a lazydocker-style TUI built in Rust with [Ratatui](https://github.com/ratatui/ratatui). It wraps the `container` CLI as a subprocess and manages what already exists — it is a manager, not a launcher. Containers are born on the command line and managed in bushel.
 
@@ -52,7 +52,7 @@ the help overlay draws — so it cannot drift from the binary you are running.
 
 **global**
 
-- `1/2/3, tab` — expand pane (containers / images / volumes)
+- `1/2/3/4, tab` — expand pane (containers / images / volumes / networks)
 - `f` — zoom focused side
 - `m` — message log
 - `b` — dismiss version banner

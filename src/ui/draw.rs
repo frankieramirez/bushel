@@ -482,6 +482,52 @@ fn draw_list_pane(
                 vec![Constraint::Min(10), Constraint::Length(8)],
             )
         }
+        Pane::Networks => {
+            let wide = active && area.width >= 32;
+            let rows = rows_idx
+                .iter()
+                .map(|&i| {
+                    let n = &state.networks[i];
+                    let badge = if n.builtin {
+                        Span::styled("builtin", Style::new().fg(th.yellow()))
+                    } else {
+                        Span::styled("-", Style::new().fg(th.dim()))
+                    };
+                    if wide {
+                        Row::new(vec![
+                            Cell::from(n.name.clone()),
+                            Cell::from(n.mode.clone()),
+                            Cell::from(n.ipv4_subnet.clone().unwrap_or_else(|| "-".into())),
+                            Cell::from(Line::from(badge)),
+                        ])
+                    } else {
+                        Row::new(vec![
+                            Cell::from(n.name.clone()),
+                            Cell::from(Line::from(badge)),
+                        ])
+                    }
+                })
+                .collect();
+            if wide {
+                (
+                    Row::new(vec!["name", "mode", "subnet", ""])
+                        .style(Style::new().fg(th.dim()).bold()),
+                    rows,
+                    vec![
+                        Constraint::Min(8),
+                        Constraint::Length(8),
+                        Constraint::Min(10),
+                        Constraint::Length(8),
+                    ],
+                )
+            } else {
+                (
+                    Row::new(vec!["name", ""]).style(Style::new().fg(th.dim()).bold()),
+                    rows,
+                    vec![Constraint::Min(8), Constraint::Length(8)],
+                )
+            }
+        }
     };
 
     let mut table = Table::new(rows, widths)
@@ -646,6 +692,34 @@ fn draw_detail(
             inspect_lines(state.selected_volume().map(|v| v.name.as_str())),
             false,
         ),
+        Pane::Networks => {
+            let mut lines = Vec::new();
+            if let Some(n) = state.selected_network() {
+                lines.push(Line::from(Span::styled(
+                    "containers on this network",
+                    Style::new().fg(th.dim()),
+                )));
+                if n.attached.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        "  none",
+                        Style::new().fg(th.dim()),
+                    )));
+                } else {
+                    for (id, addr) in &n.attached {
+                        let addr = addr.as_deref().unwrap_or("-");
+                        lines.push(Line::from(Span::styled(
+                            format!("  {id}  {addr}"),
+                            Style::new().fg(th.text()),
+                        )));
+                    }
+                }
+                lines.push(Line::raw(""));
+            }
+            lines.extend(inspect_lines(
+                state.selected_network().map(|n| n.name.as_str()),
+            ));
+            (lines, false)
+        }
     };
 
     let logs = state.pane == Pane::Containers && state.detail_tab == DetailTab::Logs;
@@ -859,14 +933,14 @@ fn draw_bottom_bar(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, 
     } else {
         let hints: &[(&str, &str)] = if floor {
             &[
-                ("1/2/3", "expand"),
+                ("1/2/3/4", "expand"),
                 ("j/k", "move"),
                 ("/", "filter"),
                 ("f", "zoom"),
             ]
         } else if state.focus == Focus::List {
             &[
-                ("1/2/3", "expand"),
+                ("1/2/3/4", "expand"),
                 ("j/k", "move"),
                 ("enter", "focus"),
                 ("/", "filter"),
@@ -1116,7 +1190,7 @@ fn draw_message_log(frame: &mut Frame, state: &AppState, th: &Theme) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::state::{ContainerEntry, ImageEntry, VolumeEntry};
+    use crate::engine::state::{ContainerEntry, ImageEntry, NetworkEntry, VolumeEntry};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use std::collections::VecDeque;
@@ -1131,6 +1205,7 @@ mod tests {
             created: None,
             cpus: None,
             volumes: vec![],
+            networks: vec![],
             cpu_percent: Some(1.2),
             mem_bytes: Some(4_000_000),
             telemetry: VecDeque::new(),
@@ -1147,6 +1222,14 @@ mod tests {
             in_use_by: vec!["qtest".into()],
             created: None,
             pending: None,
+        });
+        s.networks.push(NetworkEntry {
+            name: "default".into(),
+            mode: "nat".into(),
+            ipv4_subnet: Some("192.168.64.0/24".into()),
+            builtin: true,
+            attached: vec![("qtest".into(), Some("192.168.64.2/24".into()))],
+            created: None,
         });
         s.clamp_selection();
         s
@@ -1267,12 +1350,13 @@ mod tests {
     }
 
     #[test]
-    fn floor_55x20_keeps_all_three_panes_and_drops_floor_chrome() {
+    fn floor_55x20_keeps_all_four_panes_and_drops_floor_chrome() {
         let frame = render(55, 20, &sample());
         let header = frame.lines().next().unwrap();
         assert!(header.contains("1 containers"), "{header}");
         assert!(header.contains("2 images"), "{header}");
         assert!(header.contains("3 volumes"), "{header}");
+        assert!(header.contains("4 networks"), "{header}");
         assert!(
             !header.contains("containers 1"),
             "counts live on the rail, not the header: {header}"
@@ -1285,6 +1369,7 @@ mod tests {
         assert!(frame.contains("containers 1"), "{frame}");
         assert!(frame.contains("2 images 1"), "{frame}");
         assert!(frame.contains("3 volumes 1"), "{frame}");
+        assert!(frame.contains("4 networks 1"), "{frame}");
         assert!(
             !frame.contains("name"),
             "no table headers at the floor: {frame}"
@@ -1302,6 +1387,7 @@ mod tests {
         assert!(frame.contains("containers 1"), "{frame}");
         assert!(frame.contains("images 1"), "{frame}");
         assert!(frame.contains("volumes 1"), "{frame}");
+        assert!(frame.contains("networks 1"), "{frame}");
         assert!(frame.contains("Logs [l]"), "{frame}");
         assert!(frame.contains("service"), "{frame}");
         let body = frame.lines().nth(2).unwrap();
@@ -1318,6 +1404,7 @@ mod tests {
         assert!(frame.contains("containers 1"), "{frame}");
         assert!(frame.contains("images 1"), "{frame}");
         assert!(frame.contains("volumes 1"), "{frame}");
+        assert!(frame.contains("networks 1"), "{frame}");
         assert!(frame.contains("Logs [l]"), "{frame}");
         assert!(frame.contains("service"), "{frame}");
         assert!(frame.contains("cpu"), "{frame}");
@@ -1337,6 +1424,7 @@ mod tests {
         assert!(frame.contains("containers 1"), "{frame}");
         assert!(!frame.contains("images 1"), "{frame}");
         assert!(!frame.contains("volumes 1"), "{frame}");
+        assert!(!frame.contains("networks 1"), "{frame}");
         assert!(!frame.contains("Logs [l]"), "{frame}");
     }
 
@@ -1349,17 +1437,20 @@ mod tests {
         assert!(frame.contains("Logs [l]"), "{frame}");
         assert!(!frame.contains("containers 1"), "{frame}");
         assert!(!frame.contains("images 1"), "{frame}");
+        assert!(!frame.contains("networks 1"), "{frame}");
     }
 
     #[test]
-    fn images_and_volumes_have_inspect_only() {
-        let mut s = sample();
-        s.pane = Pane::Images;
-        let frame = render(100, 30, &s);
-        assert!(frame.contains("images 1"), "{frame}");
-        assert!(!frame.contains("Logs [l]"), "{frame}");
-        assert!(!frame.contains("dsk r"), "{frame}");
-        assert!(!frame.contains("net ^"), "{frame}");
+    fn images_volumes_and_networks_have_inspect_only() {
+        for pane in [Pane::Images, Pane::Volumes, Pane::Networks] {
+            let mut s = sample();
+            s.pane = pane;
+            let frame = render(100, 30, &s);
+            assert!(frame.contains(&format!("{} 1", pane.title())), "{frame}");
+            assert!(!frame.contains("Logs [l]"), "{frame}");
+            assert!(!frame.contains("dsk r"), "{frame}");
+            assert!(!frame.contains("net ^"), "{frame}");
+        }
     }
 
     #[test]
@@ -1370,6 +1461,7 @@ mod tests {
         assert!(frame.contains("images 1"), "{frame}");
         assert!(frame.contains("1 containers 1"), "{frame}");
         assert!(frame.contains("3 volumes 1"), "{frame}");
+        assert!(frame.contains("4 networks 1"), "{frame}");
         assert!(!frame.contains("Logs [l]"), "{frame}");
         assert!(!frame.contains("dsk r"), "{frame}");
     }
@@ -1612,6 +1704,7 @@ mod tests {
             assert!(frame.contains("containers 1"), "{w}x{h}:\n{frame}");
             assert!(frame.contains("images 1"), "{w}x{h}:\n{frame}");
             assert!(frame.contains("volumes 1"), "{w}x{h}:\n{frame}");
+            assert!(frame.contains("networks 1"), "{w}x{h}:\n{frame}");
             if w < 80 {
                 let rail_bottom = box_origin(&frame, "detail").0;
                 assert!(
@@ -1672,7 +1765,10 @@ mod tests {
             floor.contains("expand pane (containers / images / volu"),
             "{floor}"
         );
-        assert!(floor.contains("mes)"), "{floor}");
+        assert!(
+            floor.contains("mes / networks)") || floor.contains("networks)"),
+            "{floor}"
+        );
         assert!(floor.contains("j/k scroll"), "{floor}");
         let mut scrolled = sample();
         scrolled.overlay = Overlay::Help;
@@ -1687,11 +1783,29 @@ mod tests {
         roomy.overlay = Overlay::Help;
         let wide = render(100, 30, &roomy);
         assert!(
-            wide.contains("expand pane (containers / images / volumes)"),
+            wide.contains("expand pane (containers / images / volumes / networks)"),
             "{wide}"
         );
         assert!(wide.contains("back to list"), "{wide}");
         assert!(!wide.contains("j/k scroll"), "{wide}");
+    }
+
+    #[test]
+    fn networks_inspect_shows_attachment_gist_and_no_strip() {
+        let mut s = sample();
+        s.pane = Pane::Networks;
+        s.inspect_cache.insert(
+            "default".into(),
+            "[\n  {\n    \"id\": \"default\"\n  }\n]".into(),
+        );
+        let frame = render(100, 30, &s);
+        assert!(frame.contains("containers on this network"), "{frame}");
+        assert!(frame.contains("qtest"), "{frame}");
+        assert!(frame.contains("192.168.64.2/24"), "{frame}");
+        assert!(frame.contains("\"default\""), "{frame}");
+        assert!(!frame.contains("Logs [l]"), "{frame}");
+        assert!(!frame.contains("dsk r"), "{frame}");
+        assert!(!frame.contains("  s  stop"), "{frame}");
     }
 
     #[test]
