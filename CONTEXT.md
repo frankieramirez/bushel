@@ -13,17 +13,20 @@ A container known to the Apple Containers service, running or stopped. bushel's 
 A locally-present OCI image, pullable by reference.
 
 **Volume**:
-A named storage volume. A volume is **in use** when at least one container references it.
+A named storage volume. A volume is **in use** when at least one container references it. bushel can create one by name only, and delete it; advanced create flags stay on the CLI.
 _Avoid_: mount
+
+**Network**:
+A network known to the Apple Containers service. Read-only in bushel v1.
 
 ### Interaction
 
 **Pane**:
-One of the three entity views (containers, images, volumes). All three are present in the rail; one is the active panel.
+One of the four entity views (containers, images, volumes, networks). All four are present in the rail; one is the active panel.
 _Avoid_: tab, screen, page
 
 **Rail**:
-The always-present column of all three panes. Inactive panes collapse; the active panel takes the flexible space. Below three rows there is not one row per pane to give, and the active panel takes what the rail has.
+The always-present column of all four panes. Inactive panes collapse; the active panel takes the flexible space. Below three rows there is not one row per pane to give, and the active panel takes what the rail has.
 _Avoid_: sidebar, stack
 
 **Active panel**:
@@ -37,11 +40,11 @@ The shrinking of an inactive rail pane: shrink-to-fit names when roomy, a 1-row 
 A layout size band. The ladder has two placements: stacked (body width under 80) and beside (otherwise). Below that sits the **floor**: a frame of 22 rows or fewer, or 60 columns or fewer, where chrome is shed. Nothing refuses to draw at any size.
 
 **Detail pane**:
-The view of the current selection. Beside the rail on medium and wide terminals; below it when stacked. For containers it has two detail tabs (Logs, Inspect) and the strip; images and volumes have Inspect only.
+The view of the current selection. Beside the rail on medium and wide terminals; below it when stacked. For containers it has two detail tabs (Logs, Inspect) and the strip; images, volumes, and networks have Inspect only.
 
 **Strip**:
-The persistent telemetry view at the top of the detail pane for the selected container: cpu and memory sparks, plus network and disk rates.
-_Avoid_: dashboard, graph (the sparkline is the glyph, not the view)
+The persistent telemetry view at the top of the detail pane for the selected container: cpu and memory sparks, plus network and disk rates. A short ring buffer (~300 samples at the poll rate) backs the sparks; display is clipped to spark width. Rates stay instantaneous.
+_Avoid_: dashboard, graph (the sparkline is the glyph, not the view), configurable history, overview
 
 **Focus**:
 Which side of the layout receives input — the rail's active panel or the detail pane. Enter moves focus into the detail pane; Esc returns it to the list.
@@ -96,6 +99,10 @@ _Avoid_: attach, shell into
 
 **Prune**:
 The CLI's own bulk-cleanup action per entity (stopped containers, unused images, unreferenced volumes). bushel's only bulk operation.
+
+**Tag**:
+The images-pane action that assigns a new local reference to an existing image.
+_Avoid_: push
 
 **Pending**:
 The state of an entity whose action is in flight. An entity can have at most one pending action; pending clears when a poll tick confirms the outcome.
