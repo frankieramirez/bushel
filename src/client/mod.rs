@@ -128,11 +128,7 @@ impl<R: Runner> Client<R> {
                 .filter(|part| !part.is_empty())
                 .collect::<Vec<_>>()
                 .join("\n");
-            let classified = CliError::classify(out.code, &combined);
-            return Err(match classified {
-                CliError::ServiceDown { raw } => CliError::Other { raw },
-                other => other,
-            });
+            return Err(CliError::classify(out.code, &combined));
         }
         serde_json::from_slice(&out.stdout).map_err(|e| CliError::ParseFailure {
             raw: format!("{}: {e}\nstdout: {}", preview(&args), out.stdout_str()),
@@ -502,23 +498,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn system_status_xpc_failure_preserves_the_error_without_claiming_service_down() {
+    async fn system_status_and_read_agree_that_xpc_stderr_is_service_down() {
         for version in FIXTURE_VERSIONS {
-            let mock = MockRunner::new();
             let stderr = fixture_version(version, "stderr/service_down_ls.txt");
-            mock.on(
+
+            let status_mock = MockRunner::new();
+            status_mock.on(
                 &["system", "status", "--format", "json"],
                 Output::fail(1, stderr.clone()),
             );
-            let client = client_with(mock);
+            let status_err = client_with(status_mock).system_status().await.unwrap_err();
 
-            let err = client.system_status().await.unwrap_err();
+            let read_mock = MockRunner::new();
+            read_mock.on(
+                &["ls", "-a", "--format", "json"],
+                Output::fail(1, stderr.clone()),
+            );
+            let read_err = client_with(read_mock).list_containers().await.unwrap_err();
 
             assert!(
-                matches!(err, CliError::Other { .. }),
-                "fixture generation {version}: {err:?}"
+                matches!(status_err, CliError::ServiceDown { .. }),
+                "fixture generation {version}: {status_err:?}"
             );
-            assert_eq!(err.raw(), String::from_utf8_lossy(&stderr).trim());
+            assert_eq!(status_err, read_err, "fixture generation {version}");
+            assert_eq!(status_err.raw(), String::from_utf8_lossy(&stderr).trim());
         }
     }
 
