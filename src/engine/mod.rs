@@ -30,6 +30,7 @@ pub struct Engine<R: Runner> {
     probe_inflight: bool,
     images_dirty: bool,
     volumes_dirty: bool,
+    networks_dirty: bool,
     service_down: bool,
 }
 
@@ -48,6 +49,7 @@ impl<R: Runner> Engine<R> {
             probe_inflight: false,
             images_dirty: false,
             volumes_dirty: false,
+            networks_dirty: false,
             service_down: false,
         }
     }
@@ -58,6 +60,7 @@ impl<R: Runner> Engine<R> {
         self.spawn_containers_poll();
         self.images_dirty = true;
         self.volumes_dirty = true;
+        self.networks_dirty = true;
         self.refresh_dirty();
     }
 
@@ -81,6 +84,7 @@ impl<R: Runner> Engine<R> {
         if self.state.tick % SLOW_POLL_TICKS == 0 {
             self.images_dirty = true;
             self.volumes_dirty = true;
+            self.networks_dirty = true;
         }
         self.refresh_dirty();
     }
@@ -124,6 +128,16 @@ impl<R: Runner> Engine<R> {
             tokio::spawn(async move {
                 let _ = tx
                     .send(AppEvent::Volumes(client.list_volumes().await))
+                    .await;
+            });
+        }
+        if self.networks_dirty {
+            self.networks_dirty = false;
+            let client = self.client.clone();
+            let tx = self.tx.clone();
+            tokio::spawn(async move {
+                let _ = tx
+                    .send(AppEvent::Networks(client.list_networks().await))
                     .await;
             });
         }
@@ -286,6 +300,10 @@ impl<R: Runner> Engine<R> {
                 .state
                 .selected_volume()
                 .map(|v| (Pane::Volumes, v.name.clone())),
+            Pane::Networks => self
+                .state
+                .selected_network()
+                .map(|n| (Pane::Networks, n.name.clone())),
             _ => None,
         };
         let Some((pane, id)) = target else { return };
@@ -302,6 +320,7 @@ impl<R: Runner> Engine<R> {
                 Pane::Containers => client.inspect_container(&id).await,
                 Pane::Images => client.inspect_image(&id).await,
                 Pane::Volumes => client.inspect_volume(&id).await,
+                Pane::Networks => client.inspect_network(&id).await,
             };
             let _ = tx.send(AppEvent::InspectLoaded { id, result }).await;
         });
@@ -342,6 +361,11 @@ impl<R: Runner> Engine<R> {
                 self.ensure_inspect();
             }
             AppEvent::Volumes(Err(e)) => self.on_poll_error(e, false),
+            AppEvent::Networks(Ok(list)) => {
+                self.state.update_networks(&list);
+                self.ensure_inspect();
+            }
+            AppEvent::Networks(Err(e)) => self.on_poll_error(e, false),
             AppEvent::Stats(Ok(stats)) => {
                 self.stats_prev = self
                     .state
@@ -361,6 +385,7 @@ impl<R: Runner> Engine<R> {
                             self.spawn_containers_poll();
                             self.images_dirty = true;
                             self.volumes_dirty = true;
+                            self.networks_dirty = true;
                             self.refresh_dirty();
                         }
                     }
@@ -729,6 +754,7 @@ impl<R: Runner> Engine<R> {
         match pane {
             Pane::Images => self.images_dirty = true,
             Pane::Volumes => self.volumes_dirty = true,
+            Pane::Networks => self.networks_dirty = true,
             Pane::Containers => {}
         }
         self.refresh_dirty();

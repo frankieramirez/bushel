@@ -106,6 +106,7 @@ pub fn map_key(state: &AppState, key: KeyEvent, drawn: &DrawInfo) -> Vec<Command
         KeyCode::Char('1') => vec![Command::SwitchPane(Pane::Containers)],
         KeyCode::Char('2') => vec![Command::SwitchPane(Pane::Images)],
         KeyCode::Char('3') => vec![Command::SwitchPane(Pane::Volumes)],
+        KeyCode::Char('4') => vec![Command::SwitchPane(Pane::Networks)],
         KeyCode::Tab => vec![Command::NextPane],
         KeyCode::Char('?') => vec![Command::OpenHelp],
         KeyCode::Char('m') => vec![Command::OpenMessageLog],
@@ -183,6 +184,7 @@ mod tests {
             created: None,
             cpus: None,
             volumes: vec![],
+            networks: vec![],
             cpu_percent: None,
             mem_bytes: None,
             telemetry: std::collections::VecDeque::new(),
@@ -190,6 +192,31 @@ mod tests {
         });
         s.clamp_selection();
         s
+    }
+
+    #[test]
+    fn digit_keys_switch_all_four_panes() {
+        let s = main_state();
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('1')), &drawn(0, 0)),
+            vec![Command::SwitchPane(Pane::Containers)]
+        );
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('2')), &drawn(0, 0)),
+            vec![Command::SwitchPane(Pane::Images)]
+        );
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('3')), &drawn(0, 0)),
+            vec![Command::SwitchPane(Pane::Volumes)]
+        );
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('4')), &drawn(0, 0)),
+            vec![Command::SwitchPane(Pane::Networks)]
+        );
+        assert_eq!(
+            map_key(&s, key(KeyCode::Tab), &drawn(0, 0)),
+            vec![Command::NextPane]
+        );
     }
 
     #[test]
@@ -436,7 +463,19 @@ mod tests {
         volumes.pane = Pane::Volumes;
         volumes.clamp_selection();
 
-        vec![list, detail, images, volumes]
+        let mut networks = main_state();
+        networks.pane = Pane::Networks;
+        networks.networks.push(crate::engine::state::NetworkEntry {
+            name: "default".into(),
+            mode: "nat".into(),
+            ipv4_subnet: Some("192.168.64.0/24".into()),
+            builtin: true,
+            attached: vec![],
+            created: None,
+        });
+        networks.clamp_selection();
+
+        vec![list, detail, images, volumes, networks]
     }
 
     fn is_bound(code: KeyCode) -> bool {

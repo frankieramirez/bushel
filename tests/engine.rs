@@ -41,6 +41,10 @@ fn happy_mock() -> MockRunner {
         Output::ok(fixture("volume_ls.json")),
     );
     mock.on(
+        &["network", "list", "--format", "json"],
+        Output::ok(fixture("network_ls.json")),
+    );
+    mock.on(
         &["stats", "--no-stream", "--format", "json"],
         Output::ok(fixture("stats.json")),
     );
@@ -104,7 +108,7 @@ macro_rules! engine_test {
     };
 }
 
-engine_test!(startup_populates_all_three_panes_from_fixtures, || {
+engine_test!(startup_populates_all_four_panes_from_fixtures, || {
     let h = Harness::started(happy_mock());
     let s = h.state();
 
@@ -114,9 +118,35 @@ engine_test!(startup_populates_all_three_panes_from_fixtures, || {
     assert!(s.containers[0].is_running());
     assert_eq!(s.images.len(), 2);
     assert_eq!(s.volumes.len(), 2);
+    let nets: Vec<&str> = s.networks.iter().map(|n| n.name.as_str()).collect();
+    assert_eq!(nets, vec!["default", "foo", "internal"]);
+    assert!(s.networks[0].builtin);
+    assert_eq!(s.networks[0].mode, "nat");
+    assert_eq!(
+        s.networks[0].ipv4_subnet.as_deref(),
+        Some("192.168.64.0/24")
+    );
+    assert_eq!(s.networks[2].mode, "hostOnly");
     assert_eq!(s.cli_version.as_deref(), Some("1.2.0"));
     assert!(s.version_banner.is_none());
     assert_eq!(s.selected[0].as_deref(), Some("qtest"));
+    assert_eq!(s.selected[3].as_deref(), Some("default"));
+});
+
+engine_test!(network_attachments_derive_from_container_status, || {
+    let h = Harness::started(happy_mock());
+    let default = h
+        .state()
+        .networks
+        .iter()
+        .find(|n| n.name == "default")
+        .unwrap();
+    assert_eq!(
+        default.attached,
+        vec![("qtest".into(), Some("192.168.64.2/24".into()))]
+    );
+    let foo = h.state().networks.iter().find(|n| n.name == "foo").unwrap();
+    assert!(foo.attached.is_empty());
 });
 
 engine_test!(volume_in_use_badge_derives_from_container_mounts, || {
@@ -205,6 +235,14 @@ engine_test!(service_recovery_returns_to_main_and_repolls, || {
     mock.on(
         &["volume", "ls", "--format", "json"],
         Output::ok(fixture("volume_ls.json")),
+    );
+    mock.on(
+        &["network", "list", "--format", "json"],
+        Output::fail(1, fixture("stderr/service_down_ls.txt")),
+    );
+    mock.on(
+        &["network", "list", "--format", "json"],
+        Output::ok(fixture("network_ls.json")),
     );
     mock.on(&["logs", "-n", "200", "qtest"], Output::ok(""));
     mock.on_stream(&["logs", "-f", "qtest"], vec![]);
@@ -949,6 +987,56 @@ engine_test!(action_menu_lists_valid_actions_for_the_selection, || {
             .destructive
     );
 });
+
+engine_test!(
+    networks_pane_lists_and_inspects_with_no_mutate_actions,
+    || {
+        let mock = happy_mock();
+        mock.on(
+            &["network", "inspect", "default"],
+            Output::ok(fixture("network_inspect.json")),
+        );
+        let mut h = Harness::started(mock);
+        h.engine.dispatch(Command::SwitchPane(Pane::Networks));
+        h.pump();
+
+        assert_eq!(h.state().pane, Pane::Networks);
+        assert_eq!(h.state().selected[3].as_deref(), Some("default"));
+        assert!(h.state().available_actions().is_empty());
+        assert!(h.state().inspect_cache.contains_key("default"));
+        assert!(
+            h.mock
+                .commands()
+                .iter()
+                .any(|c| c == "container network inspect default"),
+            "{:?}",
+            h.mock.commands()
+        );
+        assert!(
+            !h.mock
+                .commands()
+                .iter()
+                .any(|c| c.contains("network create")
+                    || c.contains("network delete")
+                    || c.contains("network rm")
+                    || c.contains("network prune")),
+            "{:?}",
+            h.mock.commands()
+        );
+
+        h.engine.dispatch(Command::Run(UiAction::Delete));
+        h.engine.dispatch(Command::Run(UiAction::Prune));
+        h.pump();
+        assert!(
+            !h.mock
+                .commands()
+                .iter()
+                .any(|c| c.contains("network delete") || c.contains("network prune")),
+            "{:?}",
+            h.mock.commands()
+        );
+    }
+);
 
 engine_test!(inspect_is_fetched_lazily_and_cached, || {
     let mock = happy_mock();
