@@ -23,19 +23,11 @@ Shell installer, no Homebrew required:
 curl -LsSf https://bushel.sh/install | sh
 ```
 
-From source — a secondary path. Prefer Homebrew or the curl installer;
+From crates.io — a secondary path. Prefer Homebrew or the curl installer;
 `bushel update` still follows GitHub Releases, not crates.io.
-
-When published to crates.io:
 
 ```sh
 cargo install bushel
-```
-
-Until the first crates.io version is live:
-
-```sh
-cargo install --git https://github.com/frankieramirez/bushel
 ```
 
 `https://bushel.sh/install` is a 302 to the checksummed installer attached to the
