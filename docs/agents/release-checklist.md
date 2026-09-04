@@ -24,6 +24,6 @@ cargo publish
 
 CI on every PR runs `cargo publish --dry-run`, which does not need a token.
 
-Leave the README `--git` fallback until the first crates.io publish lands; `cargo install bushel` is already documented as the secondary command.
+README documents `cargo install bushel` as the secondary command. The `--git` fallback is gone now that crates.io publish is wired.
 
 A crates.io-only prerelease without a matching tag stays out, as does yank-as-update. The publish job also skips cargo-dist prerelease tags.
