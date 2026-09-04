@@ -25,9 +25,27 @@ A network known to the Apple Containers service. Read-only in bushel v1.
 One of the four entity views (containers, images, volumes, networks). All four are present in the rail; one is the active panel.
 _Avoid_: tab, screen, page
 
-**Rail**:
-The always-present column of all four panes. Inactive panes collapse; the active panel takes the flexible space. Below four rows there is not one row per pane to give, and the active panel takes what the rail has.
+**Layout**:
+Which of two shapes the body takes, chosen in the settings panel and stored as `layout` in the config file. **Rail** is the default. **Table** is the alternative. The ladder, the floor, zoom, focus, and every key are the same in both; only the body differs.
+_Avoid_: mode (Table makes the *pane* a mode; the layout is not one), theme, view
+
+**Rail** (the layout):
+All four panes in one borderless column beside the detail pane, separated from it by a single rule. Four typographic sections, no boxes. Each section shrinks to fit its rows and the leftover pools once, at the bottom of the rail, above the footer.
 _Avoid_: sidebar, stack
+
+**Table** (the layout):
+One full-width table above one full-width detail pane. The resource type becomes a mode: only the active pane's rows are on screen, and the header carries the counts for the other three. Spare width buys columns, not padding.
+_Avoid_: grid, list view
+
+**Section**:
+One pane's block in the rail: a label row carrying the pane's name and count, then its rows. What used to be a bordered box.
+_Avoid_: box, card
+
+**Rail footer**:
+The rail's last row: reclaimable image bytes and the key that frees them.
+
+**Selection bar**:
+The `▎` in the first column of the selected row. Accent when the list has focus, dim when the detail pane does. It replaces the highlighted rectangle in the rail; the table keeps a highlight behind it.
 
 **Active panel**:
 The pane in the rail that currently receives list input and owns the detail pane's selection.
@@ -43,7 +61,7 @@ A layout size band. The ladder has two placements: stacked (body width under 80)
 The view of the current selection. Beside the rail on medium and wide terminals; below it when stacked. For containers it has two detail tabs (Logs, Inspect) and the strip; images, volumes, and networks have Inspect only.
 
 **Strip**:
-The persistent telemetry view at the top of the detail pane for the selected container: cpu and memory sparks, plus network and disk rates. A short ring buffer (~300 samples at the poll rate) backs the sparks; display is clipped to spark width. Rates stay instantaneous.
+The persistent telemetry view at the top of the detail pane for the selected container: cpu and memory sparks, plus network and disk rates. A short ring buffer (~300 samples at the poll rate) backs the sparks; display is clipped to spark width. Rates stay instantaneous. Three shapes by width: one row in the table layout, two beside the rail, three when neither fits.
 _Avoid_: dashboard, graph (the sparkline is the glyph, not the view), configurable history, overview
 
 **Focus**:
@@ -61,8 +79,15 @@ The bottom sheet opened with `space`, listing the valid actions for the current 
 _Avoid_: context menu, palette
 
 **Bottom bar**:
-The persistent bar of context-sensitive key hints plus the status cluster (service state, CLI version, poll spinner).
+The persistent bar of context-sensitive key hints on the left and, on the right, the actions valid on the current selection. A toast or a running activity takes the whole bar while it lasts.
 _Avoid_: status bar (ambiguous with the status cluster)
+
+**Status cluster**:
+Service state, CLI version, and the poll spinner, right-aligned in the header. Dropped at the floor, where the row is not long enough to hold it.
+
+**Settings panel**:
+The overlay on `,` listing every field of the config file — layout, ascii glyphs, reduced motion, splash — with its current value. Toggling a row takes effect at once and writes `~/.config/bushel/config.toml`.
+_Avoid_: preferences, options dialog
 
 **Message log**:
 The scrollback of recent errors and notices, holding the full stderr behind each one-line gist on the bottom bar. Every toast writes through it, so it is a superset of what the bottom bar showed. Last 1,000 entries.

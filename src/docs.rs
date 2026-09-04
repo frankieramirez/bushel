@@ -255,10 +255,16 @@ mod tests {
                 ("no_splash", "--no-splash"),
                 ("reduced_motion", "--reduced-motion"),
                 ("ascii", "--ascii"),
+                ("layout", "--layout"),
             ]
         );
         for o in &docs.options {
-            assert_eq!(o.default, serde_json::json!(false), "{} default", o.key);
+            let want = if o.key == "layout" {
+                serde_json::json!("rail")
+            } else {
+                serde_json::json!(false)
+            };
+            assert_eq!(o.default, want, "{} default", o.key);
             assert!(!o.desc.is_empty(), "{} has help text", o.key);
         }
     }

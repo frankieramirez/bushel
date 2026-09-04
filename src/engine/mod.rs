@@ -690,6 +690,26 @@ impl<R: Runner> Engine<R> {
                 self.state.overlay = Overlay::Help;
                 self.state.help_scroll = 0;
             }
+            Command::OpenSettings => self.state.overlay = Overlay::Settings { cursor: 0 },
+            Command::SettingsMove(delta) => {
+                if let Overlay::Settings { cursor } = &mut self.state.overlay {
+                    let last = Setting::ALL.len() as isize - 1;
+                    *cursor = (*cursor as isize + delta).clamp(0, last) as usize;
+                }
+            }
+            Command::SettingsToggle => {
+                if let Overlay::Settings { cursor } = self.state.overlay {
+                    if let Some(setting) = Setting::ALL.get(cursor) {
+                        setting.cycle(&mut self.state.config);
+                        match self.state.config.save() {
+                            Ok(_) => {}
+                            Err(e) => self
+                                .state
+                                .toast(format!("could not save config: {e}"), true),
+                        }
+                    }
+                }
+            }
             Command::OpenMessageLog => self.state.overlay = Overlay::MessageLog,
             Command::CloseOverlay => {
                 if matches!(

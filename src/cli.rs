@@ -1,5 +1,7 @@
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
+use crate::config::LayoutMode;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "bushel",
@@ -18,6 +20,9 @@ pub struct Args {
     /// ASCII icons and spinners (no Unicode glyphs)
     #[arg(long)]
     pub ascii: bool,
+    /// Body layout: rail keeps all four panes in view, table gives one full-width table
+    #[arg(long, value_name = "MODE")]
+    pub layout: Option<LayoutMode>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -74,6 +79,21 @@ mod tests {
                 .unwrap_or_else(|e| panic!("completions {name} should parse: {e}"));
             assert!(matches!(args.command, Some(Cmd::Completions { .. })));
         }
+    }
+
+    #[test]
+    fn layout_takes_rail_or_table_and_nothing_else() {
+        for (name, want) in [("rail", LayoutMode::Rail), ("table", LayoutMode::Table)] {
+            let args = Args::try_parse_from(["bushel", "--layout", name])
+                .unwrap_or_else(|e| panic!("--layout {name} should parse: {e}"));
+            assert_eq!(args.layout, Some(want));
+        }
+        assert!(Args::try_parse_from(["bushel", "--layout", "grid"]).is_err());
+        assert_eq!(
+            Args::try_parse_from(["bushel"]).expect("no flag").layout,
+            None,
+            "an absent flag must not override the config file"
+        );
     }
 
     #[test]

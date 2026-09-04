@@ -1,8 +1,13 @@
 pub mod draw;
 pub mod help;
+pub mod humanize;
 pub mod keymap;
 pub mod layout;
 pub mod log_view;
+pub mod rail;
+pub mod rows;
+pub mod strip;
+pub mod table;
 pub mod theme;
 
 use std::time::Duration;
@@ -63,6 +68,21 @@ impl Ui {
             prev: None,
             last_toast_at: None,
             last_info: DrawInfo::default(),
+        }
+    }
+
+    /// The settings panel edits `Config` in place; pick the changes up before
+    /// the next frame so ascii glyphs and motion follow the toggle immediately.
+    pub fn sync_config(&mut self, cfg: &crate::config::Config) {
+        if self.theme.ascii != cfg.ascii {
+            self.theme.ascii = cfg.ascii;
+        }
+        if self.reduced_motion != cfg.reduced_motion {
+            self.reduced_motion = cfg.reduced_motion;
+            if cfg.reduced_motion {
+                self.transitions = EffectManager::default();
+                self.ambient = EffectManager::default();
+            }
         }
     }
 

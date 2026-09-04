@@ -2,6 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use crate::client::model::{ContainerJson, ImageJson, NetworkJson, StatsJson, VolumeJson};
+use crate::config::{Config, LayoutMode};
 
 pub const LOG_RING_CAP: usize = 10_000;
 pub const MESSAGE_LOG_CAP: usize = 1_000;
@@ -163,7 +164,9 @@ pub struct ContainerEntry {
     pub image: String,
     pub state: String,
     pub created: Option<String>,
+    pub started: Option<String>,
     pub cpus: Option<u32>,
+    pub mem_limit: Option<u64>,
     pub volumes: Vec<String>,
     pub networks: Vec<(String, Option<String>)>,
     pub cpu_percent: Option<f64>,
@@ -250,6 +253,67 @@ pub enum Overlay {
     CreateVolumeInput {
         text: String,
     },
+    Settings {
+        cursor: usize,
+    },
+}
+
+/// One row of the settings panel.
+///
+/// The panel is a view of [`Config`], so every row here is a field there and
+/// nothing is toggleable that does not survive a restart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Setting {
+    Layout,
+    Ascii,
+    ReducedMotion,
+    Splash,
+}
+
+impl Setting {
+    pub const ALL: [Setting; 4] = [
+        Setting::Layout,
+        Setting::Ascii,
+        Setting::ReducedMotion,
+        Setting::Splash,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Setting::Layout => "layout",
+            Setting::Ascii => "ascii glyphs",
+            Setting::ReducedMotion => "reduced motion",
+            Setting::Splash => "splash on launch",
+        }
+    }
+
+    pub fn value(self, cfg: &Config) -> &'static str {
+        let onoff = |b: bool| if b { "on" } else { "off" };
+        match self {
+            Setting::Layout => cfg.layout.title(),
+            Setting::Ascii => onoff(cfg.ascii),
+            Setting::ReducedMotion => onoff(cfg.reduced_motion),
+            Setting::Splash => onoff(!cfg.no_splash),
+        }
+    }
+
+    pub fn blurb(self, cfg: &Config) -> &'static str {
+        match self {
+            Setting::Layout => cfg.layout.blurb(),
+            Setting::Ascii => "no Unicode dots, sparks or spinners",
+            Setting::ReducedMotion => "no transitions, no ambient shimmer",
+            Setting::Splash => "the launch screen while probes run",
+        }
+    }
+
+    pub fn cycle(self, cfg: &mut Config) {
+        match self {
+            Setting::Layout => cfg.layout = cfg.layout.next(),
+            Setting::Ascii => cfg.ascii = !cfg.ascii,
+            Setting::ReducedMotion => cfg.reduced_motion = !cfg.reduced_motion,
+            Setting::Splash => cfg.no_splash = !cfg.no_splash,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -290,6 +354,7 @@ pub struct Toast {
 }
 
 pub struct AppState {
+    pub config: Config,
     pub screen: Screen,
     pub pane: Pane,
     pub focus: Focus,
@@ -346,6 +411,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(no_splash: bool) -> Self {
         Self {
+            config: Config::default(),
             screen: if no_splash {
                 Screen::Main
             } else {
@@ -597,7 +663,13 @@ impl AppState {
                 image: c.image_reference().to_string(),
                 state: c.status.state.clone(),
                 created: c.configuration.creation_date.clone(),
+                started: c.status.started_date.clone(),
                 cpus: c.configuration.resources.as_ref().and_then(|r| r.cpus),
+                mem_limit: c
+                    .configuration
+                    .resources
+                    .as_ref()
+                    .and_then(|r| r.memory_in_bytes),
                 volumes: c.volume_sources().map(|s| s.to_string()).collect(),
                 networks: c
                     .network_attachments()
@@ -1010,6 +1082,43 @@ impl AppState {
         }
     }
 
+    pub fn layout(&self) -> LayoutMode {
+        self.config.layout
+    }
+
+    /// Bytes the images pane could hand back: every image no container references.
+    ///
+    /// This is what `container image prune` would free, so the rail footer can
+    /// name a number next to the key that does it.
+    pub fn reclaimable_bytes(&self) -> u64 {
+        self.images
+            .iter()
+            .filter(|i| !self.containers.iter().any(|c| c.image == i.reference))
+            .filter_map(|i| i.size)
+            .sum()
+    }
+
+    /// The keys the bottom bar offers for the current selection.
+    ///
+    /// The detail-tab jumps are chrome the tab row already shows, so they stay
+    /// out of the bar even though they are real actions.
+    pub fn selection_actions(&self) -> Vec<ActionItem> {
+        self.available_actions()
+            .into_iter()
+            .filter(|a| !matches!(a.action, UiAction::LogsTab | UiAction::InspectTab))
+            .collect()
+    }
+
+    /// What the bottom bar and detail header call the current selection.
+    pub fn selection_label(&self) -> Option<String> {
+        match self.pane {
+            Pane::Containers => self.selected_container().map(|c| c.id.clone()),
+            Pane::Images => self.selected_image().map(|i| i.reference.clone()),
+            Pane::Volumes => self.selected_volume().map(|v| v.name.clone()),
+            Pane::Networks => self.selected_network().map(|n| n.name.clone()),
+        }
+    }
+
     pub fn available_actions(&self) -> Vec<ActionItem> {
         match self.pane {
             Pane::Containers => {
@@ -1070,7 +1179,9 @@ mod tests {
                 image: "alpine:latest".into(),
                 state: "running".into(),
                 created: None,
+                started: None,
                 cpus: None,
+                mem_limit: None,
                 volumes: vec![],
                 networks: vec![],
                 cpu_percent: None,
@@ -1083,7 +1194,9 @@ mod tests {
                 image: "alpine:latest".into(),
                 state: "stopped".into(),
                 created: None,
+                started: None,
                 cpus: None,
+                mem_limit: None,
                 volumes: vec![],
                 networks: vec![],
                 cpu_percent: None,
