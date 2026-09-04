@@ -737,9 +737,10 @@ impl AppState {
                 .containers
                 .iter()
                 .flat_map(|c| {
-                    c.networks.iter().filter_map(|(name, addr)| {
-                        (name == &n.name).then(|| (c.id.clone(), addr.clone()))
-                    })
+                    c.networks
+                        .iter()
+                        .filter(|(name, _)| *name == n.name)
+                        .map(|(_, addr)| (c.id.clone(), addr.clone()))
                 })
                 .collect();
         }

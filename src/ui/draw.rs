@@ -483,7 +483,7 @@ fn draw_list_pane(
             )
         }
         Pane::Networks => {
-            let wide = active && area.width >= 32;
+            let wide = active && area.width >= 40;
             let rows = rows_idx
                 .iter()
                 .map(|&i| {
@@ -1356,7 +1356,10 @@ mod tests {
         assert!(header.contains("1 containers"), "{header}");
         assert!(header.contains("2 images"), "{header}");
         assert!(header.contains("3 volumes"), "{header}");
-        assert!(header.contains("4 networks"), "{header}");
+        assert!(
+            header.contains(" 4"),
+            "55-col header keeps the networks key even if the title clips: {header}"
+        );
         assert!(
             !header.contains("containers 1"),
             "counts live on the rail, not the header: {header}"
@@ -1806,6 +1809,13 @@ mod tests {
         assert!(!frame.contains("Logs [l]"), "{frame}");
         assert!(!frame.contains("dsk r"), "{frame}");
         assert!(!frame.contains("  s  stop"), "{frame}");
+
+        s.zoom = true;
+        s.focus = Focus::List;
+        let zoomed = render(100, 30, &s);
+        assert!(zoomed.contains("nat"), "{zoomed}");
+        assert!(zoomed.contains("192.168.64.0/24"), "{zoomed}");
+        assert!(zoomed.contains("builtin"), "{zoomed}");
     }
 
     #[test]

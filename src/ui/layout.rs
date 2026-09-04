@@ -11,7 +11,7 @@ const RAIL_MIN_H: u16 = Pane::all().len() as u16;
 pub const SHEET_MAX_H: u16 = 9;
 pub const CONFIRM_W: u16 = 48;
 pub const CONFIRM_H: u16 = 7;
-pub const HELP_W: u16 = 68;
+pub const HELP_W: u16 = 72;
 
 #[derive(Clone, Copy, Debug)]
 pub struct LayoutFacts {
