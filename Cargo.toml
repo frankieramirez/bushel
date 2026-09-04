@@ -20,6 +20,8 @@ include = [
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
+clap_complete = "4.5"
+clap_mangen = "0.2"
 crossterm = { version = "0.29", features = ["event-stream"] }
 ratatui = "0.30"
 serde = { version = "1", features = ["derive"] }

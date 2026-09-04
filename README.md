@@ -47,6 +47,18 @@ The rest — `BUSHEL_INSTALL_DIR`, `BUSHEL_NO_MODIFY_PATH`, the hardened-curl
 direct-asset form, pinning a version, and what `bushel update` does per install
 method — is on **[bushel.sh/docs/install](https://bushel.sh/docs/install)**.
 
+## Completions
+
+```sh
+bushel completions bash   # or zsh, fish
+```
+
+prints a script you can drop on your shell's completion path. That works for
+Homebrew, the curl installer, and `cargo install`. GitHub releases also attach
+the scripts and `bushel.1` so packagers can install them on the usual paths.
+`man bushel` once that page is on your manpath. **[bushel.sh/docs](https://bushel.sh/docs)**
+links those generated files instead of keeping a second copy of the man text.
+
 ## Use
 
 ```sh
