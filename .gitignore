@@ -1,6 +1,7 @@
 /target
 prototype-layout/target
 prototype-layout/
+.DS_Store
 
 # Emitted by `cargo run --example docs-json` / `dist-assets`, and by dist as release artifacts.
 /docs.json
