@@ -20,7 +20,7 @@ Use the body from `map-shape.md`. Add a status line at the top:
 # Map: <destination in a few words>
 
 Status: open
-Type: wayfinder:map
+Type: scry:map
 Tracker: local fallback. GitHub issue write returned 403 from this token.
 
 ## Destination
@@ -35,7 +35,7 @@ Under Decisions so far, link tickets as `issues/01-<slug>.md`.
 # <title>
 
 Status: open
-Type: wayfinder:<type>
+Type: scry:<type>
 Part of: ../map.md
 Blocked by:
 

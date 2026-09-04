@@ -13,6 +13,8 @@
 #   close         NUMBER
 #   update-body   NUMBER                body on stdin
 #
+# Labels are scry:map and scry:<type>. Reads also accept the older wayfinder:* names
+# so maps filed before 0.11.0 still walk; nothing writes them.
 # Prints TSV or a small field list. Exit 3 when GitHub refuses a write (403).
 # Honors GH_HOST. Optional last owner/repo argument on commands that take numbers;
 # without it, gh repo view in this checkout.
@@ -98,8 +100,8 @@ ticket_type() {
   local n="$1"
   gh api "repos/${OWNER}/${REPO}/issues/${n}" --jq '
     [.labels[].name]
-    | map(select(startswith("wayfinder:") and . != "wayfinder:map"))
-    | map(sub("wayfinder:";""))
+    | map(select((startswith("scry:") or startswith("wayfinder:")) and . != "scry:map" and . != "wayfinder:map"))
+    | map(sub("^(scry|wayfinder):";""))
     | first // ""
   '
 }
@@ -107,7 +109,7 @@ ticket_type() {
 cmd_ensure_labels() {
   local name existing
   existing=$(gh label list --repo "$OWNER/$REPO" --limit 100 --json name --jq '.[].name')
-  for name in wayfinder:map wayfinder:research wayfinder:prototype wayfinder:grilling wayfinder:task; do
+  for name in scry:map scry:research scry:prototype scry:grilling scry:task; do
     if printf '%s\n' "$existing" | grep -qxF "$name"; then
       continue
     fi
@@ -120,7 +122,7 @@ cmd_create_map() {
   local tmp out num url
   tmp=$(mktemp)
   cat > "$tmp"
-  out=$(run_gh gh issue create --repo "$OWNER/$REPO" --title "$title" --label "wayfinder:map" --body-file "$tmp")
+  out=$(run_gh gh issue create --repo "$OWNER/$REPO" --title "$title" --label "scry:map" --body-file "$tmp")
   rm -f "$tmp"
   url=$(printf '%s\n' "$out" | tail -n 1)
   num="${url##*/}"
@@ -149,7 +151,7 @@ cmd_create_ticket() {
   esac
   tmp=$(mktemp)
   cat > "$tmp"
-  out=$(run_gh gh issue create --repo "$OWNER/$REPO" --title "$title" --label "wayfinder:${typ}" --body-file "$tmp")
+  out=$(run_gh gh issue create --repo "$OWNER/$REPO" --title "$title" --label "scry:${typ}" --body-file "$tmp")
   rm -f "$tmp"
   url=$(printf '%s\n' "$out" | tail -n 1)
   num="${url##*/}"

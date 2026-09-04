@@ -33,8 +33,9 @@ Parse tokens, then treat the remainder as the idea, number, or URL.
 
 **A number or issue URL.** Load that issue.
 
-- Label `wayfinder:map`: walk that map.
-- Label `wayfinder:research`, `wayfinder:prototype`, `wayfinder:grilling`, or `wayfinder:task`: walk its parent map and claim this ticket.
+- Label `scry:map`: walk that map.
+- Label `scry:research`, `scry:prototype`, `scry:grilling`, or `scry:task`: walk its parent map and claim this ticket.
+- The same labels under the older `wayfinder:` prefix mean the same thing. Walk them as they are; do not relabel.
 - Any other issue: chart a new map whose destination is informed by that issue.
 
 ## Execution spine
@@ -85,7 +86,7 @@ If this surfaces no fog (the way is already clear, and the whole journey fits on
 
 ### 2c. Write the map
 
-Create the map issue, label `wayfinder:map`. Destination and Notes filled in. Decisions so far empty. Fog sketched into **Not yet specified**.
+Create the map issue, label `scry:map`. Destination and Notes filled in. Decisions so far empty. Fog sketched into **Not yet specified**.
 
 ```bash
 SKILL_DIR="<absolute path of the directory containing this SKILL.md>";
@@ -100,7 +101,7 @@ Notes record: domain; files every session should read; standing preferences; any
 
 A ticket is ready to file when you can state its **Question** precisely. Sharpness of the question matters. Whether you can answer it yet does not.
 
-Create each one as a child of the map, labelled `wayfinder:<type>` (`research`, `prototype`, `grilling`, `task`). See Ticket types in `references/map-shape.md`.
+Create each one as a child of the map, labelled `scry:<type>` (`research`, `prototype`, `grilling`, `task`). See Ticket types in `references/map-shape.md`.
 
 ```bash
 SKILL_DIR="<absolute path of the directory containing this SKILL.md>";

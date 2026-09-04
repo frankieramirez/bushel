@@ -1,6 +1,6 @@
 # Map shape
 
-The map is one GitHub issue labelled `wayfinder:map`. Its tickets are child issues.
+The map is one GitHub issue labelled `scry:map`. Its tickets are child issues.
 
 ## Map body
 
@@ -38,7 +38,7 @@ Each child is one question, sized to one session. The tracker's issue number is 
 <the decision or investigation this ticket resolves>
 ```
 
-Label with exactly one of `wayfinder:research`, `wayfinder:prototype`, `wayfinder:grilling`, `wayfinder:task`.
+Label with exactly one of `scry:research`, `scry:prototype`, `scry:grilling`, `scry:task`.
 
 The answer is written on resolution (a comment), never as part of the filed body.
 
