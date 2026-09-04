@@ -31,6 +31,7 @@ pub const HELP: &[HelpRow] = &[
     ),
     bind("u", "pull image (images pane)"),
     bind("t", "tag image (images pane)"),
+    bind("c", "create volume (volumes pane)"),
     head(" detail"),
     bind("l / i", "logs / inspect tab (containers)"),
     bind("F", "toggle follow"),

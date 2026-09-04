@@ -578,6 +578,9 @@ impl<R: Runner> Engine<R> {
                 if prune {
                     self.state.activity = None;
                     self.state.toast(format!("done: {command}"), false);
+                } else if kind == ActionKind::CreateVolume && self.state.pending_of(&id).is_none() {
+                    self.state
+                        .log_message(format!("$ {command} → ok, awaiting poll confirmation"));
                 } else {
                     self.state.set_pending(
                         &id,
@@ -593,9 +596,9 @@ impl<R: Runner> Engine<R> {
                     ActionKind::DeleteImage | ActionKind::TagImage | ActionKind::PruneImages => {
                         self.images_dirty = true
                     }
-                    ActionKind::DeleteVolume | ActionKind::PruneVolumes => {
-                        self.volumes_dirty = true
-                    }
+                    ActionKind::DeleteVolume
+                    | ActionKind::PruneVolumes
+                    | ActionKind::CreateVolume => self.volumes_dirty = true,
                     _ => {}
                 }
                 self.spawn_containers_poll();
@@ -605,6 +608,8 @@ impl<R: Runner> Engine<R> {
             Err(e) => {
                 if prune {
                     self.state.activity = None;
+                } else if kind == ActionKind::CreateVolume {
+                    self.state.drop_creating_placeholder(&id);
                 } else {
                     self.state.set_pending(&id, None);
                     if kind == ActionKind::TagImage {
@@ -717,11 +722,15 @@ impl<R: Runner> Engine<R> {
                         self.state.overlay = Overlay::None;
                     }
                 }
-                Overlay::PullInput { text } | Overlay::TagInput { text } => text.push(c),
+                Overlay::PullInput { text }
+                | Overlay::TagInput { text }
+                | Overlay::CreateVolumeInput { text } => text.push(c),
                 _ => {}
             },
             Command::OverlayBackspace => match &mut self.state.overlay {
-                Overlay::PullInput { text } | Overlay::TagInput { text } => {
+                Overlay::PullInput { text }
+                | Overlay::TagInput { text }
+                | Overlay::CreateVolumeInput { text } => {
                     text.pop();
                 }
                 _ => {}
@@ -740,6 +749,17 @@ impl<R: Runner> Engine<R> {
                         self.state.toast("enter a new reference", true);
                     } else {
                         self.submit_tag(dest);
+                    }
+                }
+                Overlay::CreateVolumeInput { text } => {
+                    let name = text.trim().to_string();
+                    self.state.overlay = Overlay::None;
+                    if !name.is_empty() {
+                        self.open_confirm(
+                            ActionKind::CreateVolume,
+                            name.clone(),
+                            Client::<R>::create_volume_args(&name),
+                        );
                     }
                 }
                 _ => {}
@@ -898,6 +918,11 @@ impl<R: Runner> Engine<R> {
                     Client::<R>::prune_images_args(),
                 );
             }
+            (Pane::Volumes, UiAction::Create) => {
+                self.state.overlay = Overlay::CreateVolumeInput {
+                    text: String::new(),
+                };
+            }
             (Pane::Volumes, UiAction::Delete) => {
                 let Some(v) = self.state.selected_volume() else {
                     return;
@@ -972,6 +997,10 @@ impl<R: Runner> Engine<R> {
             ActionKind::PruneImages => Client::<R>::prune_images_args(),
             ActionKind::DeleteVolume => Client::<R>::delete_volume_args(&target),
             ActionKind::PruneVolumes => Client::<R>::prune_volumes_args(),
+            ActionKind::CreateVolume => {
+                self.state.insert_creating_volume(&target);
+                Client::<R>::create_volume_args(&target)
+            }
             _ => return,
         };
         if target.is_empty() {

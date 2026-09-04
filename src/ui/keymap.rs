@@ -67,7 +67,9 @@ pub fn map_key(state: &AppState, key: KeyEvent, drawn: &DrawInfo) -> Vec<Command
                 _ => vec![],
             };
         }
-        Overlay::PullInput { .. } | Overlay::TagInput { .. } => {
+        Overlay::PullInput { .. }
+        | Overlay::TagInput { .. }
+        | Overlay::CreateVolumeInput { .. } => {
             return match key.code {
                 KeyCode::Esc => vec![Command::CloseOverlay],
                 KeyCode::Enter => vec![Command::OverlaySubmit],
@@ -510,6 +512,18 @@ mod tests {
                 "`{token}` ({code:?}) does something but is not on the cheatsheet"
             );
         }
+    }
+
+    #[test]
+    fn c_creates_a_volume_from_the_volumes_pane() {
+        let mut s = main_state();
+        s.pane = Pane::Volumes;
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('c')), &drawn(0, 0)),
+            vec![Command::Run(UiAction::Create)]
+        );
+        s.pane = Pane::Containers;
+        assert_eq!(map_key(&s, key(KeyCode::Char('c')), &drawn(0, 0)), vec![]);
     }
 
     #[test]

@@ -220,6 +220,7 @@ fn draw_main(frame: &mut Frame, state: &AppState, th: &Theme, info: &mut DrawInf
         Overlay::MessageLog => draw_message_log(frame, state, th),
         Overlay::PullInput { text } => draw_pull_input(frame, th, text),
         Overlay::TagInput { text } => draw_tag_input(frame, th, text),
+        Overlay::CreateVolumeInput { text } => draw_create_volume_input(frame, th, text),
         Overlay::None => {}
     }
 }
@@ -1129,6 +1130,30 @@ fn draw_tag_input(frame: &mut Frame, th: &Theme, text: &str) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+fn draw_create_volume_input(frame: &mut Frame, th: &Theme, text: &str) {
+    let area = centered(frame.area(), 56, 4);
+    frame.render_widget(Clear, area);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(th.accent()))
+        .title(Span::styled(
+            " create volume ",
+            Style::new().fg(th.accent()).bold(),
+        ))
+        .style(Style::new().bg(th.panel()));
+    let lines = vec![
+        Line::from(vec![
+            Span::raw(" name: "),
+            Span::styled(format!("{text}▏"), Style::new().fg(th.text())),
+        ]),
+        Line::from(Span::styled(
+            " enter continues to confirm · esc cancels",
+            Style::new().fg(th.dim()),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
 pub(crate) fn help_lines(th: &Theme, width: u16) -> Vec<Line<'static>> {
     let desc_w = width.saturating_sub(HELP_KEY_COL).max(8);
     let mut out = Vec::new();
@@ -1357,6 +1382,9 @@ mod tests {
             },
             Overlay::TagInput {
                 text: "myapp:v1".into(),
+            },
+            Overlay::CreateVolumeInput {
+                text: "scratch".into(),
             },
             Overlay::Confirm {
                 command: "container delete qtest".into(),
@@ -1872,5 +1900,20 @@ mod tests {
         let frame = render(55, 20, &log);
         assert!(frame.contains("message log"), "{frame}");
         assert!(frame.contains("boom: it failed"), "{frame}");
+    }
+
+    #[test]
+    fn create_volume_dialog_is_name_only() {
+        let mut s = sample();
+        s.pane = Pane::Volumes;
+        s.overlay = Overlay::CreateVolumeInput {
+            text: "scratch2".into(),
+        };
+        let frame = render(80, 24, &s);
+        assert!(frame.contains("create volume"), "{frame}");
+        assert!(frame.contains("name: scratch2"), "{frame}");
+        assert!(!frame.contains("driver"), "{frame}");
+        assert!(!frame.contains("label"), "{frame}");
+        assert!(!frame.contains("size"), "{frame}");
     }
 }

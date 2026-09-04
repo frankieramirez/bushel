@@ -228,7 +228,7 @@ mod tests {
             .iter()
             .flat_map(|g| g.bindings.iter().map(|b| b.keys))
             .collect();
-        for missed in ["f", "b", "u", "pgup/pgdn"] {
+        for missed in ["f", "b", "u", "c", "t", "pgup/pgdn"] {
             assert!(
                 keys.contains(&missed),
                 "`{missed}` is missing from the emitted keymap"

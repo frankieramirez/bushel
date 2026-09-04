@@ -1231,6 +1231,158 @@ engine_test!(keys_the_floor_sheet_omits_still_work_from_the_sheet, || {
     assert_eq!(h.state().overlay, Overlay::None);
 });
 
+engine_test!(
+    volume_create_name_dialog_then_confirm_then_pending_until_listed,
+    || {
+        let mock = happy_mock();
+        mock.on(&["volume", "create", "newvol"], Output::ok("newvol\n"));
+        let mut h = Harness::started(mock);
+        h.engine.dispatch(Command::SwitchPane(Pane::Volumes));
+        h.pump();
+
+        h.engine.dispatch(Command::Run(UiAction::Create));
+        assert!(matches!(
+            h.state().overlay,
+            Overlay::CreateVolumeInput { .. }
+        ));
+        for c in "newvol".chars() {
+            h.engine.dispatch(Command::OverlayChar(c));
+        }
+        h.engine.dispatch(Command::OverlaySubmit);
+        match &h.state().overlay {
+            Overlay::Confirm {
+                command,
+                action,
+                target,
+            } => {
+                assert_eq!(command, "container volume create newvol");
+                assert_eq!(*action, ActionKind::CreateVolume);
+                assert_eq!(target, "newvol");
+            }
+            other => panic!("expected confirm overlay, got {other:?}"),
+        }
+        assert!(
+            !h.mock
+                .commands()
+                .iter()
+                .any(|c| c == "container volume create newvol")
+        );
+
+        h.engine.dispatch(Command::ConfirmYes);
+        assert!(
+            h.state()
+                .volumes
+                .iter()
+                .any(|v| v.name == "newvol" && v.pending.is_some()),
+            "placeholder is pending until poll lists it"
+        );
+        let mut listed: Vec<serde_json::Value> =
+            serde_json::from_str(&fixture_str("volume_ls.json")).unwrap();
+        let extra = listed[0].clone();
+        listed.push(extra);
+        if let Some(obj) = listed.last_mut() {
+            obj["id"] = serde_json::json!("newvol");
+            obj["configuration"]["name"] = serde_json::json!("newvol");
+        }
+        h.mock.on(
+            &["volume", "ls", "--format", "json"],
+            Output::ok(serde_json::to_string(&listed).unwrap()),
+        );
+        h.pump();
+
+        let created = h
+            .state()
+            .volumes
+            .iter()
+            .find(|v| v.name == "newvol")
+            .expect("listed");
+        assert!(created.pending.is_none(), "poll listing clears pending");
+        let toast = h.state().toast.clone().expect("toast");
+        assert_eq!(toast.text, "created newvol");
+        assert!(
+            h.mock
+                .commands()
+                .iter()
+                .any(|c| c == "container volume create newvol")
+        );
+    }
+);
+
+engine_test!(
+    volume_create_cli_failure_toasts_and_drops_the_placeholder,
+    || {
+        let mock = happy_mock();
+        mock.on(
+            &["volume", "create", "newvol"],
+            Output::fail(1, "Error: volume \"newvol\" already exists"),
+        );
+        let mut h = Harness::started(mock);
+        h.engine.dispatch(Command::SwitchPane(Pane::Volumes));
+        h.pump();
+
+        h.engine.dispatch(Command::Run(UiAction::Create));
+        for c in "newvol".chars() {
+            h.engine.dispatch(Command::OverlayChar(c));
+        }
+        h.engine.dispatch(Command::OverlaySubmit);
+        h.engine.dispatch(Command::ConfirmYes);
+        h.pump();
+
+        assert!(
+            h.state().volumes.iter().all(|v| v.name != "newvol"),
+            "failed create must not leave a placeholder"
+        );
+        let toast = h.state().toast.clone().expect("toast");
+        assert!(toast.error);
+        assert!(
+            toast.text.contains("already exists") || toast.text.contains("newvol"),
+            "{}",
+            toast.text
+        );
+        assert!(
+            h.state()
+                .messages
+                .iter()
+                .any(|m| m.contains("already exists"))
+        );
+    }
+);
+
+engine_test!(volume_create_empty_name_does_not_confirm, || {
+    let mut h = Harness::started(happy_mock());
+    h.engine.dispatch(Command::SwitchPane(Pane::Volumes));
+    h.pump();
+    h.engine.dispatch(Command::Run(UiAction::Create));
+    h.engine.dispatch(Command::OverlaySubmit);
+    assert_eq!(h.state().overlay, Overlay::None);
+    assert!(
+        !h.mock
+            .commands()
+            .iter()
+            .any(|c| c.contains("volume create"))
+    );
+});
+
+engine_test!(volume_create_is_on_the_action_menu, || {
+    let mut h = Harness::started(happy_mock());
+    h.engine.dispatch(Command::SwitchPane(Pane::Volumes));
+    h.pump();
+    let create = h
+        .state()
+        .available_actions()
+        .into_iter()
+        .find(|a| a.key == 'c')
+        .expect("create");
+    assert_eq!(create.label, "create");
+    assert!(!create.destructive);
+    h.engine.dispatch(Command::OpenActionMenu);
+    h.engine.dispatch(Command::OverlayChar('c'));
+    assert!(matches!(
+        h.state().overlay,
+        Overlay::CreateVolumeInput { .. }
+    ));
+});
+
 engine_test!(help_scroll_resets_each_time_the_cheatsheet_opens, || {
     let mut h = Harness::started(happy_mock());
     h.engine.dispatch(Command::OpenHelp);

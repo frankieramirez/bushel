@@ -201,6 +201,16 @@ impl<R: Runner> Client<R> {
         to_args(&["volume", "delete", name])
     }
 
+    pub fn create_volume_args(name: &str) -> Vec<String> {
+        to_args(&["volume", "create", name])
+    }
+
+    pub async fn volume_create(&self, name: &str) -> Result<Output> {
+        let args = Self::create_volume_args(name);
+        let borrowed: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+        self.mutate(&borrowed).await
+    }
+
     pub fn prune_volumes_args() -> Vec<String> {
         to_args(&["volume", "prune"])
     }
@@ -297,6 +307,18 @@ mod tests {
         assert_eq!(images.len(), 2);
         assert_eq!(images[0].reference(), "docker.io/library/alpine:latest");
         assert_eq!(images[0].display_size(), Some(3623807));
+    }
+
+    #[tokio::test]
+    async fn volume_create_runs_name_only_create() {
+        let mock = MockRunner::new();
+        mock.on(&["volume", "create", "scratch2"], Output::ok("scratch2\n"));
+        let client = client_with(mock);
+
+        let out = client.volume_create("scratch2").await.unwrap();
+
+        assert_eq!(out.code, 0);
+        assert_eq!(out.stdout_str(), "scratch2\n");
     }
 
     #[tokio::test]
@@ -474,6 +496,10 @@ mod tests {
         assert_eq!(
             Client::<MockRunner>::prune_images_args().join(" "),
             "image prune"
+        );
+        assert_eq!(
+            Client::<MockRunner>::create_volume_args("scratch").join(" "),
+            "volume create scratch"
         );
         assert_eq!(
             Client::<MockRunner>::prune_volumes_args().join(" "),
