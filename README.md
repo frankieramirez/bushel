@@ -66,6 +66,7 @@ the help overlay draws — so it cannot drift from the binary you are running.
 - `space` — action menu
 - `s r K d P e` — start/stop · restart · kill · delete · prune · exec
 - `u` — pull image (images pane)
+- `t` — tag image (images pane)
 
 **detail**
 

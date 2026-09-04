@@ -184,6 +184,10 @@ impl<R: Runner> Client<R> {
         to_args(&["image", "pull", reference, "--progress", "plain"])
     }
 
+    pub fn tag_image_args(source: &str, target: &str) -> Vec<String> {
+        to_args(&["image", "tag", source, target])
+    }
+
     pub fn delete_volume_args(name: &str) -> Vec<String> {
         to_args(&["volume", "delete", name])
     }
@@ -407,6 +411,20 @@ mod tests {
         assert_eq!(
             Client::<MockRunner>::pull_args("alpine:latest").join(" "),
             "image pull alpine:latest --progress plain"
+        );
+        assert_eq!(
+            Client::<MockRunner>::tag_image_args("docker.io/library/alpine:latest", "myapp:v1")
+                .join(" "),
+            "image tag docker.io/library/alpine:latest myapp:v1"
+        );
+        assert_eq!(
+            preview(&[
+                "image",
+                "tag",
+                "docker.io/library/alpine:latest",
+                "myapp:v1"
+            ]),
+            "container image tag docker.io/library/alpine:latest myapp:v1"
         );
         assert_eq!(
             Client::<MockRunner>::exec_shell_args("web").join(" "),

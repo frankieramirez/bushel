@@ -84,6 +84,7 @@ pub enum UiAction {
     Prune,
     Exec,
     Pull,
+    Tag,
     LogsTab,
     InspectTab,
 }
@@ -97,6 +98,7 @@ pub enum ActionKind {
     DeleteContainer,
     PruneContainers,
     DeleteImage,
+    TagImage,
     PruneImages,
     DeleteVolume,
     PruneVolumes,
@@ -120,6 +122,7 @@ impl ActionKind {
             ActionKind::DeleteContainer | ActionKind::DeleteImage | ActionKind::DeleteVolume => {
                 "deleted"
             }
+            ActionKind::TagImage => "tagged",
             ActionKind::PruneContainers | ActionKind::PruneImages | ActionKind::PruneVolumes => {
                 "pruned"
             }
@@ -215,6 +218,9 @@ pub enum Overlay {
     PullInput {
         text: String,
     },
+    TagInput {
+        text: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -303,6 +309,7 @@ pub struct AppState {
     pub tick: u64,
     pub last_poll_at: Option<Instant>,
     pub exec_request: Option<String>,
+    pub tag_dest: Option<String>,
     confirmations: Vec<(String, ActionKind)>,
 }
 
@@ -352,6 +359,7 @@ impl AppState {
             tick: 0,
             last_poll_at: None,
             exec_request: None,
+            tag_dest: None,
             confirmations: Vec::new(),
         }
     }
@@ -612,6 +620,7 @@ impl AppState {
         }
         self.images = next;
         self.confirm_pending();
+        self.confirm_tag();
         self.clamp_selection();
     }
 
@@ -775,6 +784,9 @@ impl AppState {
                 phase: PendingPhase::Confirming(t),
             }) = i.pending
             {
+                if kind == ActionKind::TagImage {
+                    continue;
+                }
                 i.pending = (t > 1).then_some(Pending {
                     kind,
                     phase: PendingPhase::Confirming(t - 1),
@@ -792,6 +804,58 @@ impl AppState {
                     phase: PendingPhase::Confirming(t - 1),
                 });
             }
+        }
+    }
+
+    fn confirm_tag(&mut self) {
+        let Some(dest) = self.tag_dest.clone() else {
+            return;
+        };
+        let confirming = self.images.iter().any(|i| {
+            matches!(
+                i.pending,
+                Some(Pending {
+                    kind: ActionKind::TagImage,
+                    phase: PendingPhase::Confirming(_),
+                })
+            )
+        });
+        if confirming && self.images.iter().any(|i| i.reference == dest) {
+            for i in &mut self.images {
+                if i.pending.is_some_and(|p| p.kind == ActionKind::TagImage) {
+                    i.pending = None;
+                }
+            }
+            self.confirmations.push((dest, ActionKind::TagImage));
+            self.tag_dest = None;
+            return;
+        }
+        for i in &mut self.images {
+            if let Some(Pending {
+                kind: ActionKind::TagImage,
+                phase: PendingPhase::Confirming(t),
+            }) = i.pending
+            {
+                i.pending = (t > 1).then_some(Pending {
+                    kind: ActionKind::TagImage,
+                    phase: PendingPhase::Confirming(t - 1),
+                });
+            }
+        }
+        let still_pending = self
+            .images
+            .iter()
+            .any(|i| i.pending.is_some_and(|p| p.kind == ActionKind::TagImage));
+        if !still_pending
+            && !matches!(
+                self.overlay,
+                Overlay::Confirm {
+                    action: ActionKind::TagImage,
+                    ..
+                } | Overlay::TagInput { .. }
+            )
+        {
+            self.tag_dest = None;
         }
     }
 
@@ -836,6 +900,7 @@ impl AppState {
             Pane::Images => {
                 let mut items = vec![item('u', "pull by reference", false, UiAction::Pull)];
                 if self.selected_image().is_some() {
+                    items.push(item('t', "tag", false, UiAction::Tag));
                     items.push(item('d', "delete", true, UiAction::Delete));
                 }
                 items.push(item('P', "prune unused", true, UiAction::Prune));
@@ -947,5 +1012,24 @@ mod tests {
         let s = sample();
         assert!(s.available_actions().iter().any(|i| i.key == 'l'));
         assert!(s.available_actions().iter().any(|i| i.key == 'i'));
+    }
+
+    #[test]
+    fn images_pane_offers_tag_on_the_selection() {
+        let mut s = sample();
+        s.pane = Pane::Images;
+        let keys: Vec<char> = s.available_actions().iter().map(|i| i.key).collect();
+        assert_eq!(keys, vec!['u', 't', 'd', 'P']);
+        assert_eq!(
+            s.available_actions()
+                .iter()
+                .find(|i| i.key == 't')
+                .map(|i| i.label),
+            Some("tag")
+        );
+        s.images.clear();
+        s.clamp_selection();
+        let keys: Vec<char> = s.available_actions().iter().map(|i| i.key).collect();
+        assert_eq!(keys, vec!['u', 'P']);
     }
 }

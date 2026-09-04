@@ -219,6 +219,7 @@ fn draw_main(frame: &mut Frame, state: &AppState, th: &Theme, info: &mut DrawInf
         Overlay::Help => info.help_max_scroll = draw_help(frame, state, th),
         Overlay::MessageLog => draw_message_log(frame, state, th),
         Overlay::PullInput { text } => draw_pull_input(frame, th, text),
+        Overlay::TagInput { text } => draw_tag_input(frame, th, text),
         Overlay::None => {}
     }
 }
@@ -1030,6 +1031,30 @@ fn draw_pull_input(frame: &mut Frame, th: &Theme, text: &str) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+fn draw_tag_input(frame: &mut Frame, th: &Theme, text: &str) {
+    let area = centered(frame.area(), 56, 4);
+    frame.render_widget(Clear, area);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(th.accent()))
+        .title(Span::styled(
+            " tag image ",
+            Style::new().fg(th.accent()).bold(),
+        ))
+        .style(Style::new().bg(th.panel()));
+    let lines = vec![
+        Line::from(vec![
+            Span::raw(" new reference: "),
+            Span::styled(format!("{text}▏"), Style::new().fg(th.text())),
+        ]),
+        Line::from(Span::styled(
+            " enter continues to confirm · esc cancels",
+            Style::new().fg(th.dim()),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
 pub(crate) fn help_lines(th: &Theme, width: u16) -> Vec<Line<'static>> {
     let desc_w = width.saturating_sub(HELP_KEY_COL).max(8);
     let mut out = Vec::new();
@@ -1246,6 +1271,9 @@ mod tests {
             Overlay::MessageLog,
             Overlay::PullInput {
                 text: "alpine:latest".into(),
+            },
+            Overlay::TagInput {
+                text: "myapp:v1".into(),
             },
             Overlay::Confirm {
                 command: "container delete qtest".into(),
@@ -1704,6 +1732,15 @@ mod tests {
         let frame = render(55, 20, &pull);
         assert!(frame.contains("pull image"), "{frame}");
         assert!(frame.contains("reference: alpine"), "{frame}");
+
+        let mut tag = sample();
+        tag.pane = Pane::Images;
+        tag.overlay = Overlay::TagInput {
+            text: "myapp:v1".into(),
+        };
+        let frame = render(55, 20, &tag);
+        assert!(frame.contains("tag image"), "{frame}");
+        assert!(frame.contains("new reference: myapp:v1"), "{frame}");
 
         let mut log = sample();
         log.messages.push("boom: it failed".into());

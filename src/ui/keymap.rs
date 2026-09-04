@@ -67,7 +67,7 @@ pub fn map_key(state: &AppState, key: KeyEvent, drawn: &DrawInfo) -> Vec<Command
                 _ => vec![],
             };
         }
-        Overlay::PullInput { .. } => {
+        Overlay::PullInput { .. } | Overlay::TagInput { .. } => {
             return match key.code {
                 KeyCode::Esc => vec![Command::CloseOverlay],
                 KeyCode::Enter => vec![Command::OverlaySubmit],
@@ -500,6 +500,25 @@ mod tests {
                 "the cheatsheet documents `{token}`, but it is bound to nothing"
             );
         }
+    }
+
+    #[test]
+    fn t_on_the_images_pane_runs_tag() {
+        let mut s = main_state();
+        s.pane = Pane::Images;
+        s.images.push(crate::engine::state::ImageEntry {
+            reference: "alpine:latest".into(),
+            size: None,
+            created: None,
+            pending: None,
+        });
+        s.clamp_selection();
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('t')), &drawn(0, 0)),
+            vec![Command::Run(UiAction::Tag)]
+        );
+        s.pane = Pane::Containers;
+        assert_eq!(map_key(&s, key(KeyCode::Char('t')), &drawn(0, 0)), vec![]);
     }
 
     #[test]
