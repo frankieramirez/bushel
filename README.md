@@ -23,7 +23,16 @@ Shell installer, no Homebrew required:
 curl -LsSf https://bushel.sh/install | sh
 ```
 
-From source — bushel isn't published to crates.io, so this needs `--git`:
+From source — a secondary path. Prefer Homebrew or the curl installer;
+`bushel update` still follows GitHub Releases, not crates.io.
+
+When published to crates.io:
+
+```sh
+cargo install bushel
+```
+
+Until the first crates.io version is live:
 
 ```sh
 cargo install --git https://github.com/frankieramirez/bushel

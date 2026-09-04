@@ -32,3 +32,12 @@ jobs:
       - run: cargo run --example docs-json -- --out docs.json
       - name: It is JSON, and it has the shape the site reads
         run: jq -e '.schema_version and .version and (.keymap | length > 0) and (.config.options | length > 0)' docs.json
+
+  publish-dry-run:
+    name: cargo publish --dry-run
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo publish --dry-run

@@ -10,6 +10,13 @@ license = "MIT"
 readme = "README.md"
 keywords = ["tui", "containers", "macos", "ratatui"]
 categories = ["command-line-utilities"]
+include = [
+    "/src/**",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/LICENSE",
+    "/README.md",
+]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }

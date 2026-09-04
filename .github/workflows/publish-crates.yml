@@ -1,0 +1,48 @@
+name: Publish crates.io
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish-crates:
+    name: crates.io (same semver, optional)
+    runs-on: ubuntu-22.04
+    if: ${{ !fromJson(inputs.plan).announcement_is_prerelease }}
+    env:
+      PLAN: ${{ inputs.plan }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Same semver as the GitHub Release
+        run: |
+          tag_version=$(echo "$PLAN" | jq -r '.releases[0].app_version')
+          cargo_version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "bushel") | .version')
+          if [ -z "$tag_version" ] || [ "$tag_version" = "null" ]; then
+            echo "dist plan has no releases[0].app_version" >&2
+            exit 1
+          fi
+          if [ "$tag_version" != "$cargo_version" ]; then
+            echo "tag version ($tag_version) does not match Cargo.toml ($cargo_version)" >&2
+            exit 1
+          fi
+          echo "publishing bushel $cargo_version to crates.io (same as GitHub Release)"
+      - name: cargo publish or skip
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+            echo "CARGO_REGISTRY_TOKEN is unset; skipping crates.io so the GitHub Release path still ships."
+            echo "Publish the same version by hand: cargo publish"
+            exit 0
+          fi
+          cargo publish
