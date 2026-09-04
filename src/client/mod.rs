@@ -121,10 +121,14 @@ impl<R: Runner> Client<R> {
                     });
                 }
             }
-            let combined = format!("{}{}", out.stdout_str(), out.stderr_str());
-            return Err(CliError::ServiceDown {
-                raw: combined.trim().to_string(),
-            });
+            let stdout = out.stdout_str();
+            let stderr = out.stderr_str();
+            let combined = [stdout.trim(), stderr.trim()]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Err(CliError::classify(out.code, &combined));
         }
         serde_json::from_slice(&out.stdout).map_err(|e| CliError::ParseFailure {
             raw: format!("{}: {e}\nstdout: {}", preview(&args), out.stdout_str()),
@@ -259,8 +263,10 @@ mod tests {
     use super::*;
     use crate::runner::MockRunner;
 
-    fn fixture(name: &str) -> Vec<u8> {
-        std::fs::read(format!("fixtures/1.2.0/{name}")).unwrap()
+    const FIXTURE_VERSIONS: [&str; 2] = ["1.2.0", "1.3.1"];
+
+    fn fixture_version(version: &str, name: &str) -> Vec<u8> {
+        std::fs::read(format!("fixtures/{version}/{name}")).unwrap()
     }
 
     fn client_with(mock: MockRunner) -> Client<MockRunner> {
@@ -269,44 +275,48 @@ mod tests {
 
     #[tokio::test]
     async fn list_containers_parses_the_captured_ls_fixture() {
-        let mock = MockRunner::new();
-        mock.on(
-            &["ls", "-a", "--format", "json"],
-            Output::ok(fixture("ls.json")),
-        );
-        let client = client_with(mock);
+        for version in FIXTURE_VERSIONS {
+            let mock = MockRunner::new();
+            mock.on(
+                &["ls", "-a", "--format", "json"],
+                Output::ok(fixture_version(version, "ls.json")),
+            );
+            let client = client_with(mock);
 
-        let containers = client.list_containers().await.unwrap();
+            let containers = client.list_containers().await.unwrap();
 
-        assert_eq!(containers.len(), 2);
-        let running = &containers[0];
-        assert_eq!(running.id, "qtest");
-        assert!(running.is_running());
-        assert_eq!(running.image_reference(), "docker.io/library/alpine:latest");
-        let stopped = &containers[1];
-        assert!(!stopped.is_running());
-        assert_eq!(stopped.volume_sources().collect::<Vec<_>>(), vec!["qvol"]);
-        assert_eq!(
-            running.network_attachments().collect::<Vec<_>>(),
-            vec![("default", Some("192.168.64.2/24"))]
-        );
-        assert_eq!(stopped.network_attachments().count(), 0);
+            assert_eq!(containers.len(), 2, "fixture generation {version}");
+            let running = &containers[0];
+            assert_eq!(running.id, "qtest");
+            assert!(running.is_running());
+            assert_eq!(running.image_reference(), "docker.io/library/alpine:latest");
+            let stopped = &containers[1];
+            assert!(!stopped.is_running());
+            assert_eq!(stopped.volume_sources().collect::<Vec<_>>(), vec!["qvol"]);
+            assert_eq!(
+                running.network_attachments().collect::<Vec<_>>(),
+                vec![("default", Some("192.168.64.2/24"))]
+            );
+            assert_eq!(stopped.network_attachments().count(), 0);
+        }
     }
 
     #[tokio::test]
     async fn list_images_parses_fixture_and_filters_attestation_variants_for_size() {
-        let mock = MockRunner::new();
-        mock.on(
-            &["image", "ls", "--format", "json"],
-            Output::ok(fixture("image_ls.json")),
-        );
-        let client = client_with(mock);
+        for version in FIXTURE_VERSIONS {
+            let mock = MockRunner::new();
+            mock.on(
+                &["image", "ls", "--format", "json"],
+                Output::ok(fixture_version(version, "image_ls.json")),
+            );
+            let client = client_with(mock);
 
-        let images = client.list_images().await.unwrap();
+            let images = client.list_images().await.unwrap();
 
-        assert_eq!(images.len(), 2);
-        assert_eq!(images[0].reference(), "docker.io/library/alpine:latest");
-        assert_eq!(images[0].display_size(), Some(3623807));
+            assert_eq!(images.len(), 2, "fixture generation {version}");
+            assert_eq!(images[0].reference(), "docker.io/library/alpine:latest");
+            assert_eq!(images[0].display_size(), Some(3623807));
+        }
     }
 
     #[tokio::test]
@@ -323,42 +333,48 @@ mod tests {
 
     #[tokio::test]
     async fn list_volumes_parses_fixture() {
-        let mock = MockRunner::new();
-        mock.on(
-            &["volume", "ls", "--format", "json"],
-            Output::ok(fixture("volume_ls.json")),
-        );
-        let client = client_with(mock);
+        for version in FIXTURE_VERSIONS {
+            let mock = MockRunner::new();
+            mock.on(
+                &["volume", "ls", "--format", "json"],
+                Output::ok(fixture_version(version, "volume_ls.json")),
+            );
+            let client = client_with(mock);
 
-        let volumes = client.list_volumes().await.unwrap();
+            let volumes = client.list_volumes().await.unwrap();
 
-        assert_eq!(
-            volumes.iter().map(|v| v.name()).collect::<Vec<_>>(),
-            vec!["qvol", "scratch"]
-        );
+            assert_eq!(
+                volumes.iter().map(|v| v.name()).collect::<Vec<_>>(),
+                vec!["qvol", "scratch"],
+                "fixture generation {version}"
+            );
+        }
     }
 
     #[tokio::test]
     async fn list_networks_parses_fixture() {
-        let mock = MockRunner::new();
-        mock.on(
-            &["network", "list", "--format", "json"],
-            Output::ok(fixture("network_ls.json")),
-        );
-        let client = client_with(mock);
+        for version in FIXTURE_VERSIONS {
+            let mock = MockRunner::new();
+            mock.on(
+                &["network", "list", "--format", "json"],
+                Output::ok(fixture_version(version, "network_ls.json")),
+            );
+            let client = client_with(mock);
 
-        let networks = client.list_networks().await.unwrap();
+            let networks = client.list_networks().await.unwrap();
 
-        assert_eq!(
-            networks.iter().map(|n| n.name()).collect::<Vec<_>>(),
-            vec!["default", "foo", "internal"]
-        );
-        assert!(networks[0].is_builtin());
-        assert_eq!(networks[0].mode(), "nat");
-        assert_eq!(networks[0].ipv4_subnet(), Some("192.168.64.0/24"));
-        assert!(!networks[1].is_builtin());
-        assert_eq!(networks[2].mode(), "hostOnly");
-        assert_eq!(networks[2].ipv4_subnet(), Some("192.168.66.0/24"));
+            assert_eq!(
+                networks.iter().map(|n| n.name()).collect::<Vec<_>>(),
+                vec!["default", "foo", "internal"],
+                "fixture generation {version}"
+            );
+            assert!(networks[0].is_builtin());
+            assert_eq!(networks[0].mode(), "nat");
+            assert_eq!(networks[0].ipv4_subnet(), Some("192.168.64.0/24"));
+            assert!(!networks[1].is_builtin());
+            assert_eq!(networks[2].mode(), "hostOnly");
+            assert_eq!(networks[2].ipv4_subnet(), Some("192.168.66.0/24"));
+        }
     }
 
     #[test]
@@ -386,79 +402,145 @@ mod tests {
 
     #[tokio::test]
     async fn inspect_network_returns_raw_pretty_json() {
-        let mock = MockRunner::new();
-        mock.on(
-            &["network", "inspect", "default"],
-            Output::ok(fixture("network_inspect.json")),
-        );
-        let client = client_with(mock);
+        for version in FIXTURE_VERSIONS {
+            let mock = MockRunner::new();
+            mock.on(
+                &["network", "inspect", "default"],
+                Output::ok(fixture_version(version, "network_inspect.json")),
+            );
+            let client = client_with(mock);
 
-        let text = client.inspect_network("default").await.unwrap();
-        assert!(text.trim_start().starts_with('['));
-        assert!(text.contains("\"default\""));
-        assert!(text.contains("192.168.64.0/24"));
+            let text = client.inspect_network("default").await.unwrap();
+            assert!(text.trim_start().starts_with('['));
+            assert!(text.contains("\"default\""));
+            assert!(text.contains("192.168.64.0/24"));
+        }
     }
 
     #[tokio::test]
     async fn stats_parses_cumulative_cpu_counter() {
-        let mock = MockRunner::new();
-        mock.on(
-            &["stats", "--no-stream", "--format", "json"],
-            Output::ok(fixture("stats.json")),
-        );
-        let client = client_with(mock);
+        for version in FIXTURE_VERSIONS {
+            let mock = MockRunner::new();
+            mock.on(
+                &["stats", "--no-stream", "--format", "json"],
+                Output::ok(fixture_version(version, "stats.json")),
+            );
+            let client = client_with(mock);
 
-        let stats = client.stats().await.unwrap();
+            let stats = client.stats().await.unwrap();
 
-        assert_eq!(stats[0].id, "qtest");
-        assert_eq!(stats[0].cpu_usage_usec, 35372);
-        assert_eq!(stats[0].memory_usage_bytes, 4780032);
-        assert_eq!(stats[0].network_rx_bytes, 29461);
-        assert_eq!(stats[0].network_tx_bytes, 602);
-        assert_eq!(stats[0].block_read_bytes, 3981312);
-        assert_eq!(stats[0].block_write_bytes, 0);
+            assert_eq!(stats[0].id, "qtest");
+            assert_eq!(stats[0].cpu_usage_usec, 35372);
+            assert_eq!(stats[0].memory_usage_bytes, 4780032);
+            assert_eq!(stats[0].network_rx_bytes, 29461);
+            assert_eq!(stats[0].network_tx_bytes, 602);
+            assert_eq!(stats[0].block_read_bytes, 3981312);
+            assert_eq!(stats[0].block_write_bytes, 0);
+        }
     }
 
     #[tokio::test]
     async fn system_status_running_fixture_parses() {
-        let mock = MockRunner::new();
-        mock.on(
-            &["system", "status", "--format", "json"],
-            Output::ok(fixture("system_status_running.json")),
-        );
-        let client = client_with(mock);
+        for version in FIXTURE_VERSIONS {
+            let mock = MockRunner::new();
+            mock.on(
+                &["system", "status", "--format", "json"],
+                Output::ok(fixture_version(version, "system_status_running.json")),
+            );
+            let client = client_with(mock);
 
-        assert!(client.system_status().await.unwrap().is_running());
+            assert!(
+                client.system_status().await.unwrap().is_running(),
+                "fixture generation {version}"
+            );
+        }
     }
 
     #[tokio::test]
     async fn system_status_down_exits_1_with_json_and_maps_to_service_down() {
+        for version in FIXTURE_VERSIONS {
+            let mock = MockRunner::new();
+            mock.on(
+                &["system", "status", "--format", "json"],
+                Output {
+                    code: 1,
+                    stdout: fixture_version(version, "system_status_down.json"),
+                    stderr: Vec::new(),
+                },
+            );
+            let client = client_with(mock);
+
+            let err = client.system_status().await.unwrap_err();
+            assert!(
+                matches!(err, CliError::ServiceDown { .. }),
+                "fixture generation {version}: {err:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn system_status_unknown_failure_is_not_reported_as_service_down() {
         let mock = MockRunner::new();
         mock.on(
             &["system", "status", "--format", "json"],
             Output {
                 code: 1,
-                stdout: fixture("system_status_down.json"),
-                stderr: Vec::new(),
+                stdout: b"migration required\n".to_vec(),
+                stderr: b"Error: authorization denied\n".to_vec(),
             },
         );
         let client = client_with(mock);
 
         let err = client.system_status().await.unwrap_err();
-        assert!(matches!(err, CliError::ServiceDown { .. }), "{err:?}");
+
+        assert!(matches!(err, CliError::Other { .. }), "{err:?}");
+        assert_eq!(err.raw(), "migration required\nError: authorization denied");
+    }
+
+    #[tokio::test]
+    async fn system_status_and_read_agree_that_xpc_stderr_is_service_down() {
+        for version in FIXTURE_VERSIONS {
+            let stderr = fixture_version(version, "stderr/service_down_ls.txt");
+
+            let status_mock = MockRunner::new();
+            status_mock.on(
+                &["system", "status", "--format", "json"],
+                Output::fail(1, stderr.clone()),
+            );
+            let status_err = client_with(status_mock).system_status().await.unwrap_err();
+
+            let read_mock = MockRunner::new();
+            read_mock.on(
+                &["ls", "-a", "--format", "json"],
+                Output::fail(1, stderr.clone()),
+            );
+            let read_err = client_with(read_mock).list_containers().await.unwrap_err();
+
+            assert!(
+                matches!(status_err, CliError::ServiceDown { .. }),
+                "fixture generation {version}: {status_err:?}"
+            );
+            assert_eq!(status_err, read_err, "fixture generation {version}");
+            assert_eq!(status_err.raw(), String::from_utf8_lossy(&stderr).trim());
+        }
     }
 
     #[tokio::test]
     async fn read_failure_with_xpc_stderr_classifies_as_service_down() {
-        let mock = MockRunner::new();
-        mock.on(
-            &["ls", "-a", "--format", "json"],
-            Output::fail(1, fixture("stderr/service_down_ls.txt")),
-        );
-        let client = client_with(mock);
+        for version in FIXTURE_VERSIONS {
+            let mock = MockRunner::new();
+            mock.on(
+                &["ls", "-a", "--format", "json"],
+                Output::fail(1, fixture_version(version, "stderr/service_down_ls.txt")),
+            );
+            let client = client_with(mock);
 
-        let err = client.list_containers().await.unwrap_err();
-        assert!(matches!(err, CliError::ServiceDown { .. }), "{err:?}");
+            let err = client.list_containers().await.unwrap_err();
+            assert!(
+                matches!(err, CliError::ServiceDown { .. }),
+                "fixture generation {version}: {err:?}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -476,13 +558,18 @@ mod tests {
 
     #[tokio::test]
     async fn inspect_returns_raw_pretty_json_untouched() {
-        let mock = MockRunner::new();
-        mock.on(&["inspect", "qtest"], Output::ok(fixture("inspect.json")));
-        let client = client_with(mock);
+        for version in FIXTURE_VERSIONS {
+            let mock = MockRunner::new();
+            mock.on(
+                &["inspect", "qtest"],
+                Output::ok(fixture_version(version, "inspect.json")),
+            );
+            let client = client_with(mock);
 
-        let text = client.inspect_container("qtest").await.unwrap();
-        assert!(text.trim_start().starts_with('['));
-        assert!(text.contains("\"qtest\""));
+            let text = client.inspect_container("qtest").await.unwrap();
+            assert!(text.trim_start().starts_with('['));
+            assert!(text.contains("\"qtest\""));
+        }
     }
 
     #[test]

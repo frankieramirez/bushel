@@ -7,7 +7,7 @@ bushel is a lazydocker-style TUI built in Rust with [Ratatui](https://github.com
 ## Requirements
 
 - macOS 26 (Apple silicon)
-- [`container`](https://github.com/apple/container) CLI **1.2.x** (bushel warns on untested versions but still runs)
+- [`container`](https://github.com/apple/container) CLI **1.2.x** is tested. Version 1.3.1 is recommended for Apple's security fixes and currently shows an untested-version warning while compatibility validation finishes.
 
 ## Install
 
