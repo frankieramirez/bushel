@@ -22,7 +22,7 @@ Also skim [bushel.sh/docs/troubleshooting](https://bushel.sh/docs/troubleshootin
 
 ## Pull requests
 
-- Keep the layering: `runner` → `client` → `engine` → `ui`. Version-fragile parsing belongs in the Client; the Engine stays headless.
+- Keep the layering: `runner` → `client` → `engine` → `ui`. Version-fragile parsing belongs in the Client; the Engine stays headless. Untested CLIs, and the pass before bumping `TESTED_*`, are in [docs/agents/container-compat.md](docs/agents/container-compat.md).
 - `cargo fmt`, `cargo clippy -- -D warnings`, and `cargo test` must pass.
 - New Client parsing needs fixture coverage; new Engine behavior needs a headless test.
 - Any animation must obey ADR 0001's hard rules: ≤150ms, interruptible, disabled by `reduced-motion`.
