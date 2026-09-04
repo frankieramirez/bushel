@@ -9,7 +9,7 @@ targets = ["aarch64-apple-darwin"]
 hosting = "github"
 tap = "frankieramirez/homebrew-tap"
 publish-jobs = ["homebrew"]
-post-announce-jobs = ["./deploy-site"]
+post-announce-jobs = ["./deploy-site", "./publish-crates"]
 
 [[dist.extra-artifacts]]
 artifacts = ["docs.json"]
