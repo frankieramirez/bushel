@@ -75,38 +75,60 @@ impl std::error::Error for CliError {}
 mod tests {
     use super::*;
 
-    fn fixture(name: &str) -> String {
-        std::fs::read_to_string(format!("fixtures/1.2.0/stderr/{name}")).unwrap()
+    const FIXTURE_VERSIONS: [&str; 2] = ["1.2.0", "1.3.1"];
+
+    fn fixture(version: &str, name: &str) -> String {
+        std::fs::read_to_string(format!("fixtures/{version}/stderr/{name}")).unwrap()
     }
 
     #[test]
     fn xpc_error_classifies_as_service_down() {
-        let e = CliError::classify(1, &fixture("service_down_ls.txt"));
-        assert!(matches!(e, CliError::ServiceDown { .. }), "{e:?}");
+        for version in FIXTURE_VERSIONS {
+            let e = CliError::classify(1, &fixture(version, "service_down_ls.txt"));
+            assert!(
+                matches!(e, CliError::ServiceDown { .. }),
+                "fixture generation {version}: {e:?}"
+            );
+        }
     }
 
     #[test]
     fn all_three_not_found_phrasings_classify_as_not_found() {
-        for f in [
-            "not_found_inspect.txt",
-            "not_found_start.txt",
-            "not_found_stop.txt",
-        ] {
-            let e = CliError::classify(1, &fixture(f));
-            assert!(matches!(e, CliError::NotFound { .. }), "{f}: {e:?}");
+        for version in FIXTURE_VERSIONS {
+            for f in [
+                "not_found_inspect.txt",
+                "not_found_start.txt",
+                "not_found_stop.txt",
+            ] {
+                let e = CliError::classify(1, &fixture(version, f));
+                assert!(
+                    matches!(e, CliError::NotFound { .. }),
+                    "fixture generation {version}, {f}: {e:?}"
+                );
+            }
         }
     }
 
     #[test]
     fn delete_running_classifies_as_in_use() {
-        let e = CliError::classify(1, &fixture("delete_running.txt"));
-        assert!(matches!(e, CliError::InUse { .. }), "{e:?}");
+        for version in FIXTURE_VERSIONS {
+            let e = CliError::classify(1, &fixture(version, "delete_running.txt"));
+            assert!(
+                matches!(e, CliError::InUse { .. }),
+                "fixture generation {version}: {e:?}"
+            );
+        }
     }
 
     #[test]
     fn exit_64_classifies_as_usage_regardless_of_stderr() {
-        let e = CliError::classify(64, &fixture("usage.txt"));
-        assert!(matches!(e, CliError::Usage { .. }), "{e:?}");
+        for version in FIXTURE_VERSIONS {
+            let e = CliError::classify(64, &fixture(version, "usage.txt"));
+            assert!(
+                matches!(e, CliError::Usage { .. }),
+                "fixture generation {version}: {e:?}"
+            );
+        }
     }
 
     #[test]
@@ -119,7 +141,7 @@ mod tests {
 
     #[test]
     fn raw_stderr_survives_classification_verbatim_modulo_trim() {
-        let raw = fixture("service_down_ls.txt");
+        let raw = fixture("1.2.0", "service_down_ls.txt");
         let e = CliError::classify(1, &raw);
         assert_eq!(e.raw(), raw.trim());
     }

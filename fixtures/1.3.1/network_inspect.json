@@ -1,0 +1,19 @@
+[
+  {
+    "id": "default",
+    "configuration": {
+      "name": "default",
+      "creationDate": "2026-06-09T00:00:00Z",
+      "mode": "nat",
+      "labels": {
+        "com.apple.container.resource.role": "builtin"
+      },
+      "plugin": "container-network-vmnet",
+      "options": {}
+    },
+    "status": {
+      "ipv4Subnet": "192.168.64.0/24",
+      "ipv4Gateway": "192.168.64.1"
+    }
+  }
+]

@@ -12,7 +12,11 @@ use bushel::runner::{MockRunner, Output, StreamEvent};
 use tokio::sync::mpsc;
 
 fn fixture(name: &str) -> Vec<u8> {
-    std::fs::read(format!("fixtures/1.2.0/{name}")).unwrap()
+    fixture_version("1.2.0", name)
+}
+
+fn fixture_version(version: &str, name: &str) -> Vec<u8> {
+    std::fs::read(format!("fixtures/{version}/{name}")).unwrap()
 }
 
 fn fixture_str(name: &str) -> String {
@@ -20,38 +24,42 @@ fn fixture_str(name: &str) -> String {
 }
 
 fn happy_mock() -> MockRunner {
+    happy_mock_version("1.2.0")
+}
+
+fn happy_mock_version(version: &str) -> MockRunner {
     let mock = MockRunner::new();
     mock.on(
         &["--version"],
-        Output::ok("container CLI version 1.2.0 (build: release, commit: 6e65319)\n"),
+        Output::ok(String::from_utf8(fixture_version(version, "version.txt")).unwrap()),
     );
     mock.on(
         &["system", "status", "--format", "json"],
-        Output::ok(fixture("system_status_running.json")),
+        Output::ok(fixture_version(version, "system_status_running.json")),
     );
     mock.on(
         &["ls", "-a", "--format", "json"],
-        Output::ok(fixture("ls.json")),
+        Output::ok(fixture_version(version, "ls.json")),
     );
     mock.on(
         &["image", "ls", "--format", "json"],
-        Output::ok(fixture("image_ls.json")),
+        Output::ok(fixture_version(version, "image_ls.json")),
     );
     mock.on(
         &["volume", "ls", "--format", "json"],
-        Output::ok(fixture("volume_ls.json")),
+        Output::ok(fixture_version(version, "volume_ls.json")),
     );
     mock.on(
         &["network", "list", "--format", "json"],
-        Output::ok(fixture("network_ls.json")),
+        Output::ok(fixture_version(version, "network_ls.json")),
     );
     mock.on(
         &["stats", "--no-stream", "--format", "json"],
-        Output::ok(fixture("stats.json")),
+        Output::ok(fixture_version(version, "stats.json")),
     );
     mock.on(
         &["logs", "-n", "200", "qtest"],
-        Output::ok("backlog-1\nbacklog-2\n"),
+        Output::ok(fixture_version(version, "logs.txt")),
     );
     mock.on_stream(
         &["logs", "-f", "qtest"],
@@ -133,6 +141,30 @@ engine_test!(startup_populates_all_four_panes_from_fixtures, || {
     assert_eq!(s.selected[0].as_deref(), Some("qtest"));
     assert_eq!(s.selected[3].as_deref(), Some("default"));
 });
+
+engine_test!(
+    startup_parses_supported_and_candidate_fixture_generations,
+    || {
+        for version in ["1.2.0", "1.3.1"] {
+            let h = Harness::started(happy_mock_version(version));
+            let s = h.state();
+
+            assert_eq!(s.screen, Screen::Main, "fixture generation {version}");
+            assert_eq!(s.containers.len(), 2, "fixture generation {version}");
+            assert_eq!(s.images.len(), 2, "fixture generation {version}");
+            assert_eq!(s.volumes.len(), 2, "fixture generation {version}");
+            assert_eq!(s.networks.len(), 3, "fixture generation {version}");
+            assert_eq!(s.cli_version.as_deref(), Some(version));
+            assert_eq!(
+                s.version_banner.is_some(),
+                version == "1.3.1",
+                "fixture generation {version}"
+            );
+            assert_eq!(s.selected[0].as_deref(), Some("qtest"));
+            assert_eq!(s.selected[3].as_deref(), Some("default"));
+        }
+    }
+);
 
 engine_test!(network_attachments_derive_from_container_status, || {
     let h = Harness::started(happy_mock());
@@ -643,17 +675,19 @@ engine_test!(
 );
 
 engine_test!(log_follower_backlog_then_follow_in_order, || {
-    let mut h = Harness::started(happy_mock());
-    assert_eq!(h.engine.follower_id(), Some("qtest"));
-    assert_eq!(
-        h.state().log_lines,
-        vec!["backlog-1", "backlog-2", "follow-1"]
-    );
-    assert!(!h.state().logs_loading);
+    for version in ["1.2.0", "1.3.1"] {
+        let mut h = Harness::started(happy_mock_version(version));
+        assert_eq!(h.engine.follower_id(), Some("qtest"));
+        assert_eq!(
+            h.state().log_lines,
+            vec!["backlog-1", "backlog-2", "follow-1"]
+        );
+        assert!(!h.state().logs_loading);
 
-    h.engine.dispatch(Command::SetDetailTab(DetailTab::Inspect));
-    h.pump();
-    assert_eq!(h.engine.follower_id(), None);
+        h.engine.dispatch(Command::SetDetailTab(DetailTab::Inspect));
+        h.pump();
+        assert_eq!(h.engine.follower_id(), None);
+    }
 });
 
 engine_test!(
@@ -1040,24 +1074,29 @@ engine_test!(
 );
 
 engine_test!(inspect_is_fetched_lazily_and_cached, || {
-    let mock = happy_mock();
-    mock.on(&["inspect", "qtest"], Output::ok(fixture("inspect.json")));
-    let mut h = Harness::started(mock);
+    for version in ["1.2.0", "1.3.1"] {
+        let mock = happy_mock_version(version);
+        mock.on(
+            &["inspect", "qtest"],
+            Output::ok(fixture_version(version, "inspect.json")),
+        );
+        let mut h = Harness::started(mock);
 
-    h.engine.dispatch(Command::SetDetailTab(DetailTab::Inspect));
-    h.pump();
-    assert!(h.state().inspect_cache.contains_key("qtest"));
+        h.engine.dispatch(Command::SetDetailTab(DetailTab::Inspect));
+        h.pump();
+        assert!(h.state().inspect_cache.contains_key("qtest"));
 
-    let calls_before = h.mock.calls().len();
-    h.engine.dispatch(Command::SetDetailTab(DetailTab::Logs));
-    h.pump();
-    h.engine.dispatch(Command::SetDetailTab(DetailTab::Inspect));
-    h.pump();
-    let inspects = h.mock.calls()[calls_before..]
-        .iter()
-        .filter(|c| c.first().map(|s| s.as_str()) == Some("inspect"))
-        .count();
-    assert_eq!(inspects, 0);
+        let calls_before = h.mock.calls().len();
+        h.engine.dispatch(Command::SetDetailTab(DetailTab::Logs));
+        h.pump();
+        h.engine.dispatch(Command::SetDetailTab(DetailTab::Inspect));
+        h.pump();
+        let inspects = h.mock.calls()[calls_before..]
+            .iter()
+            .filter(|c| c.first().map(|s| s.as_str()) == Some("inspect"))
+            .count();
+        assert_eq!(inspects, 0);
+    }
 });
 
 engine_test!(exec_request_pauses_follower_and_resumes_after, || {
