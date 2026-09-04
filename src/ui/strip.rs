@@ -1,9 +1,3 @@
-//! The persistent telemetry view at the top of a container's detail pane.
-//!
-//! Three shapes, chosen by the room the pane has: one row when the detail is
-//! full-terminal wide (table layout), two beside the rail, three when even that
-//! will not fit. The sparks are the glyph; the number beside them is the truth.
-
 use std::collections::VecDeque;
 
 use ratatui::Frame;
@@ -17,9 +11,7 @@ use crate::engine::state::{AppState, ContainerEntry, TelemetrySample};
 use crate::ui::rows::{absent, mem_cell, mem_of_limit};
 use crate::ui::theme::Theme;
 
-/// Below this the two-row strip has no room left for a spark worth drawing.
 const TWO_ROW_MIN: u16 = 56;
-/// Below this the one-row strip cannot carry cpu, mem, net and disk at once.
 const ONE_ROW_MIN: u16 = 96;
 
 const ASCII_BARS: symbols::bar::Set = symbols::bar::Set {
@@ -86,7 +78,6 @@ fn spark_vals(
         .collect()
 }
 
-/// One `label  value  ▁▂▃▅▇` cell of the strip.
 struct Gauge<'a> {
     label: &'static str,
     value: &'a str,
@@ -95,7 +86,6 @@ struct Gauge<'a> {
     data: &'a [Option<u64>],
 }
 
-/// `cpu  14.1% ▁▂▃▅▇` — label, value, spark, in that order and no other.
 fn gauge(frame: &mut Frame, th: &Theme, area: Rect, g: Gauge<'_>) {
     if area.width == 0 || area.height == 0 {
         return;

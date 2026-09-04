@@ -1613,7 +1613,6 @@ engine_test!(the_settings_panel_moves_toggles_and_persists, || {
     h.engine.dispatch(Command::OpenSettings);
     assert_eq!(h.state().overlay, Overlay::Settings { cursor: 0 });
 
-    // The cursor clamps at both ends rather than wrapping.
     h.engine.dispatch(Command::SettingsMove(-1));
     assert_eq!(h.state().overlay, Overlay::Settings { cursor: 0 });
     for _ in 0..10 {
@@ -1626,7 +1625,6 @@ engine_test!(the_settings_panel_moves_toggles_and_persists, || {
         }
     );
 
-    // Toggling the layout row switches the body and writes the file.
     for _ in 0..10 {
         h.engine.dispatch(Command::SettingsMove(-1));
     }
@@ -1635,7 +1633,6 @@ engine_test!(the_settings_panel_moves_toggles_and_persists, || {
     let saved = std::fs::read_to_string(dir.join("config.toml")).expect("config was written");
     assert!(saved.contains("layout = \"table\""), "{saved}");
 
-    // And back again, so the toggle is a toggle.
     h.engine.dispatch(Command::SettingsToggle);
     assert_eq!(h.state().layout(), LayoutMode::Rail);
     assert!(
@@ -1644,7 +1641,6 @@ engine_test!(the_settings_panel_moves_toggles_and_persists, || {
             .contains("layout = \"rail\"")
     );
 
-    // A different row edits a different field and leaves the layout alone.
     h.engine.dispatch(Command::SettingsMove(1));
     h.engine.dispatch(Command::SettingsToggle);
     assert!(h.state().config.ascii);

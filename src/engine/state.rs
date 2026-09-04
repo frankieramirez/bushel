@@ -258,10 +258,6 @@ pub enum Overlay {
     },
 }
 
-/// One row of the settings panel.
-///
-/// The panel is a view of [`Config`], so every row here is a field there and
-/// nothing is toggleable that does not survive a restart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Setting {
     Layout,
@@ -322,6 +318,13 @@ pub struct ActionItem {
     pub label: &'static str,
     pub destructive: bool,
     pub action: UiAction,
+}
+
+impl ActionItem {
+    /// A jump to a detail tab rather than an operation on the entity.
+    pub fn is_tab_jump(&self) -> bool {
+        matches!(self.action, UiAction::LogsTab | UiAction::InspectTab)
+    }
 }
 
 const fn item(key: char, label: &'static str, destructive: bool, action: UiAction) -> ActionItem {
@@ -1086,10 +1089,6 @@ impl AppState {
         self.config.layout
     }
 
-    /// Bytes the images pane could hand back: every image no container references.
-    ///
-    /// This is what `container image prune` would free, so the rail footer can
-    /// name a number next to the key that does it.
     pub fn reclaimable_bytes(&self) -> u64 {
         self.images
             .iter()
@@ -1098,18 +1097,13 @@ impl AppState {
             .sum()
     }
 
-    /// The keys the bottom bar offers for the current selection.
-    ///
-    /// The detail-tab jumps are chrome the tab row already shows, so they stay
-    /// out of the bar even though they are real actions.
     pub fn selection_actions(&self) -> Vec<ActionItem> {
         self.available_actions()
             .into_iter()
-            .filter(|a| !matches!(a.action, UiAction::LogsTab | UiAction::InspectTab))
+            .filter(|a| !a.is_tab_jump())
             .collect()
     }
 
-    /// What the bottom bar and detail header call the current selection.
     pub fn selection_label(&self) -> Option<String> {
         match self.pane {
             Pane::Containers => self.selected_container().map(|c| c.id.clone()),

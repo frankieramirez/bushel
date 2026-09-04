@@ -1,8 +1,3 @@
-//! Cells shared by both body layouts.
-//!
-//! The rail draws them narrow and the table draws them wide, but a container's
-//! cpu reads the same in either, so the formatting lives once, here.
-
 use ratatui::style::Style;
 use ratatui::text::Span;
 
@@ -10,7 +5,6 @@ use crate::engine::state::ContainerEntry;
 use crate::ui::humanize::{age_now, collapse_reference, elide, uptime_now};
 use crate::ui::theme::Theme;
 
-/// The `▎` that marks the selected row. Blank when nothing is selected here.
 pub const SELECT_BAR: &str = "▎";
 pub const SELECT_BAR_ASCII: &str = "|";
 
@@ -22,12 +16,19 @@ pub fn select_bar(th: &Theme) -> &'static str {
     }
 }
 
-/// The dash that stands in for a number a stopped container does not have.
 pub const ABSENT: &str = "·";
 pub const ABSENT_ASCII: &str = "-";
 
 pub fn absent(th: &Theme) -> &'static str {
     if th.ascii { ABSENT_ASCII } else { ABSENT }
+}
+
+/// First row of a window `room` rows tall that still contains `selected`.
+pub fn scroll_start(selected: Option<usize>, room: usize) -> usize {
+    match selected {
+        Some(sel) => sel.saturating_sub(room.saturating_sub(1)),
+        None => 0,
+    }
 }
 
 pub fn state_dot(th: &Theme, running: bool) -> Span<'static> {
@@ -151,6 +152,24 @@ mod tests {
             telemetry: VecDeque::new(),
             pending: None,
         }
+    }
+
+    #[test]
+    fn the_window_scrolls_only_far_enough_to_hold_the_selection() {
+        assert_eq!(scroll_start(Some(0), 5), 0);
+        assert_eq!(scroll_start(Some(3), 5), 0, "still in view, do not scroll");
+        assert_eq!(scroll_start(Some(4), 5), 0);
+        assert_eq!(
+            scroll_start(Some(9), 5),
+            5,
+            "the selection lands on the last row"
+        );
+        assert_eq!(scroll_start(None, 5), 0);
+        assert_eq!(
+            scroll_start(Some(9), 0),
+            9,
+            "a zero-row window cannot hide it"
+        );
     }
 
     #[test]

@@ -71,8 +71,6 @@ impl Ui {
         }
     }
 
-    /// The settings panel edits `Config` in place; pick the changes up before
-    /// the next frame so ascii glyphs and motion follow the toggle immediately.
     pub fn sync_config(&mut self, cfg: &crate::config::Config) {
         if self.theme.ascii != cfg.ascii {
             self.theme.ascii = cfg.ascii;

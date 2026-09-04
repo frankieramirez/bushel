@@ -1,11 +1,3 @@
-//! The tightened rail: four borderless sections in one column.
-//!
-//! ADR 0002's ladder is unchanged — all four panes present, active one flexible,
-//! capped at 36 columns. What is gone is the chrome: no boxes, so the eight
-//! border rows and eight columns go back to the list. Focus is carried by the
-//! accented section label, the `▎` selection bar, and the colour of the single
-//! rule between the rail and the detail pane.
-
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -15,17 +7,26 @@ use ratatui::widgets::Paragraph;
 use crate::engine::state::{AppState, Focus, Pane};
 use crate::ui::humanize::elide;
 use crate::ui::layout::LayoutPlan;
-use crate::ui::rows::{absent, cpu_cell, mem_cell, reference_spans, select_bar, state_dot};
+use crate::ui::rows::{
+    absent, cpu_cell, mem_cell, reference_spans, scroll_start, select_bar, state_dot,
+};
 use crate::ui::theme::{Theme, human_size};
 
-/// Left-align `text` in `w` cells, eliding rather than cutting.
+const NUMBERS_MIN: usize = 30;
+/// The rail caps at 36 columns, so only a zoomed section reaches this.
+const IMAGE_MIN: usize = 64;
+const BADGE_MIN: usize = 24;
+const SUBNET_MIN: usize = 28;
+const SIZE_MIN: usize = 26;
+const MODE_MIN: usize = 50;
+const BUILTIN_MIN: usize = 62;
+
 fn pad(text: &str, w: usize) -> String {
     let text = elide(text, w);
     let used = text.chars().count();
     format!("{text}{}", " ".repeat(w.saturating_sub(used)))
 }
 
-/// Right-align `text` in `w` cells.
 fn rpad(text: &str, w: usize) -> String {
     let text = elide(text, w);
     let used = text.chars().count();
@@ -40,8 +41,6 @@ pub fn draw(frame: &mut Frame, state: &AppState, th: &Theme, plan: &LayoutPlan) 
     draw_divider(frame, state, th, plan);
 }
 
-/// The rule between rail and detail, and the only thing that says which side
-/// has the keyboard.
 fn draw_divider(frame: &mut Frame, state: &AppState, th: &Theme, plan: &LayoutPlan) {
     let area = plan.divider;
     if area.width == 0 || area.height == 0 {
@@ -99,7 +98,6 @@ fn draw_footer(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
-/// `containers` on the left, its count on the right — the one place counts live.
 fn label_line(state: &AppState, th: &Theme, pane: Pane, width: usize) -> Line<'static> {
     let active = pane == state.pane;
     let n = state.pane_len(pane);
@@ -158,7 +156,6 @@ fn draw_section(
     let active = pane == state.pane;
     let width = area.width as usize;
 
-    // A collapsed section is its own label: `2 images 5`, one row, nothing else.
     if tight && !active {
         let n = state.pane_len(pane);
         let line = Line::from(vec![
@@ -181,10 +178,7 @@ fn draw_section(
             Style::new().fg(th.dim()),
         )));
     } else {
-        // Scroll the window so the selection stays in view.
-        let start = sel
-            .map(|s| s.saturating_sub(room.saturating_sub(1)))
-            .unwrap_or(0);
+        let start = scroll_start(sel, room);
         for (pos, &i) in rows_idx.iter().enumerate().skip(start).take(room) {
             let selected = sel == Some(pos);
             lines.push(row_line(state, th, pane, i, selected, width));
@@ -231,10 +225,9 @@ fn row_line(
             let Some(c) = state.containers.get(idx) else {
                 return Line::from(spans);
             };
-            let num_w = if body >= 30 { 6 } else { 0 };
-            let mem_w = if body >= 30 { 7 } else { 0 };
-            // Only a zoomed rail is ever wide enough for the image column.
-            let image_w = if body >= 64 { 28 } else { 0 };
+            let num_w = if body >= NUMBERS_MIN { 6 } else { 0 };
+            let mem_w = if body >= NUMBERS_MIN { 7 } else { 0 };
+            let image_w = if body >= IMAGE_MIN { 28 } else { 0 };
             let name_w = body.saturating_sub(2 + num_w + mem_w + image_w);
             let num_style = Style::new().fg(if c.is_running() { th.text() } else { th.dim() });
             spans.push(state_dot(th, c.is_running()));
@@ -261,7 +254,7 @@ fn row_line(
             let Some(im) = state.images.get(idx) else {
                 return Line::from(spans);
             };
-            let size_w = if body >= 26 { 9 } else { 0 };
+            let size_w = if body >= SIZE_MIN { 9 } else { 0 };
             let ref_w = body.saturating_sub(size_w);
             if let Some(s) = pending_span(th, im.pending.is_some()) {
                 spans.push(s);
@@ -287,7 +280,7 @@ fn row_line(
             let Some(v) = state.volumes.get(idx) else {
                 return Line::from(spans);
             };
-            let badge_w = if body >= 24 { 8 } else { 0 };
+            let badge_w = if body >= BADGE_MIN { 8 } else { 0 };
             let name_w = body.saturating_sub(badge_w);
             if let Some(s) = pending_span(th, v.pending.is_some()) {
                 spans.push(s);
@@ -307,9 +300,9 @@ fn row_line(
                 return Line::from(spans);
             };
             let subnet = n.ipv4_subnet.clone().unwrap_or_else(|| absent(th).into());
-            let sub_w = if body >= 28 { 17 } else { 0 };
-            let mode_w = if body >= 50 { 10 } else { 0 };
-            let badge_w = if body >= 62 { 10 } else { 0 };
+            let sub_w = if body >= SUBNET_MIN { 17 } else { 0 };
+            let mode_w = if body >= MODE_MIN { 10 } else { 0 };
+            let badge_w = if body >= BUILTIN_MIN { 10 } else { 0 };
             let name_w = body.saturating_sub(sub_w + mode_w + badge_w);
             spans.push(text(pad(&n.name, name_w), true));
             if mode_w > 0 {
@@ -346,7 +339,6 @@ pub(crate) fn pending_span(th: &Theme, pending: bool) -> Option<Span<'static>> {
     })
 }
 
-/// The zoomed active panel: the same section, given the whole body.
 pub fn draw_zoomed(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect) {
     draw_section(frame, state, th, state.pane, area, false);
 }

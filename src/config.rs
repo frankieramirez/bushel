@@ -1,10 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-/// How the body spends the terminal.
-///
-/// `Rail` is ADR 0002's unified rail, tightened: four borderless sections in one
-/// column beside (or above) the detail pane. `Table` makes the resource type a
-/// mode instead: one full-width table on top, one full-width detail below.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, clap::ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 #[clap(rename_all = "kebab-case")]
@@ -49,8 +44,6 @@ pub struct Config {
 impl Config {
     pub const DOC_PATH: &'static str = "~/.config/bushel/config.toml";
 
-    /// Overrides the config directory. Lets a test — or a second profile —
-    /// point bushel somewhere other than the real dotfile.
     pub const DIR_ENV: &'static str = "BUSHEL_CONFIG_DIR";
 
     pub fn dir() -> Option<std::path::PathBuf> {
@@ -84,10 +77,6 @@ impl Config {
         }
     }
 
-    /// Write the whole config back to `~/.config/bushel/config.toml`.
-    ///
-    /// The settings panel is the only caller: what the panel shows is what the
-    /// file gets, so a round-trip through `load()` returns the same struct.
     pub fn save(&self) -> std::io::Result<std::path::PathBuf> {
         let path = Self::path().ok_or_else(|| {
             std::io::Error::new(

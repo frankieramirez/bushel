@@ -14,7 +14,6 @@ use crate::ui::rows::{absent, age_cell, state_dot, uptime_cell};
 use crate::ui::theme::{ACCENT_A, ACCENT_B, Theme};
 use crate::ui::{log_view, rail, strip, table};
 
-/// Rows the log needs before the telemetry strip is worth its own.
 const STRIP_MIN_LOG: u16 = 4;
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -211,10 +210,6 @@ fn draw_main(frame: &mut Frame, state: &AppState, th: &Theme, info: &mut DrawInf
     }
 }
 
-/// `bushel  [1] containers …` on the left, the status cluster on the right.
-///
-/// In the rail layout the keys carry no counts — those live on the rail. In the
-/// table layout the header *is* the rail, so it carries them.
 fn draw_header(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, floor: bool) {
     let mut spans = th.gradient_spans(" bushel ", true);
     spans.push(Span::raw("  "));
@@ -246,8 +241,6 @@ fn draw_header(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, floo
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// Service state, CLI version, poll spinner — right-aligned, dropped when the
-/// row cannot hold it.
 fn append_status_cluster(spans: &mut Vec<Span<'static>>, state: &AppState, th: &Theme, width: u16) {
     let service_up = state.screen != Screen::ServiceDown;
     let version = state.cli_version.clone().unwrap_or_else(|| "?".into());
@@ -272,7 +265,6 @@ fn append_status_cluster(spans: &mut Vec<Span<'static>>, state: &AppState, th: &
     spans.push(Span::raw(" "));
 }
 
-/// The one-line identity of the selection, plus the detail tabs.
 fn detail_header(state: &AppState, th: &Theme, width: u16) -> Line<'static> {
     let mut left: Vec<Span> = vec![Span::raw(" ")];
     match state.pane {
@@ -407,8 +399,6 @@ fn draw_detail(
     if area.height == 0 || area.width == 0 {
         return;
     }
-    // One column of breathing room on each side; a borderless pane still needs
-    // its text to stop short of the edge.
     let inner = if area.width >= 4 {
         Rect {
             x: area.x + 1,
@@ -453,8 +443,6 @@ fn draw_detail(
     }
 
     let mut content_area = inner;
-    // Header and its rule, but only when the pane can still show content under
-    // them. At the floor the identity line is the first thing to go.
     if !floor && inner.height >= 5 {
         frame.render_widget(
             Paragraph::new(detail_header(state, th, inner.width)),
@@ -632,7 +620,6 @@ fn draw_detail(
     }
 }
 
-/// `⏎`, `␣` and friends, or their ASCII spellings.
 fn key_glyph(th: &Theme, key: &'static str) -> &'static str {
     if !th.ascii {
         return match key {
@@ -710,8 +697,6 @@ fn draw_bottom_bar(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, 
     );
 }
 
-/// `frigate · s stop  r restart  e exec  d delete` — what the selection accepts,
-/// right-aligned, trimmed action by action until it fits.
 fn append_selection_actions(
     spans: &mut Vec<Span<'static>>,
     state: &AppState,
@@ -724,8 +709,6 @@ fn append_selection_actions(
     let mut actions = state.selection_actions();
     let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
 
-    // Build the tail for real and drop actions from the end until it fits;
-    // guessing its width is how a bar silently loses its whole right half.
     let tail = loop {
         if actions.is_empty() {
             return;
@@ -900,10 +883,7 @@ fn draw_create_volume_input(frame: &mut Frame, th: &Theme, text: &str) {
     );
 }
 
-/// The settings panel: a view of the config file, editable in place.
 fn draw_settings(frame: &mut Frame, state: &AppState, th: &Theme, cursor: usize) {
-    // Every setting, a blank row, the highlighted setting's description, a
-    // blank row, and where the file lives.
     let rows = Setting::ALL.len() as u16 + 4;
     let area = layout::settings_modal(frame.area(), rows);
     frame.render_widget(Clear, area);

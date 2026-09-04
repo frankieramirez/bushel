@@ -1,9 +1,3 @@
-//! Turning the CLI's raw strings into cells that fit a terminal column.
-//!
-//! Two jobs live here: RFC 3339 timestamps become `3h 12m` / `10 days ago`, and
-//! image references shed their registry host into a two-letter token so the name
-//! everyone actually reads starts near the left edge of the pane.
-
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Seconds since the Unix epoch for an RFC 3339 timestamp.
@@ -72,7 +66,6 @@ pub fn short_duration(secs: i64) -> String {
     }
 }
 
-/// How long the container has been up, from its `startedDate`.
 pub fn uptime(started: Option<&str>, now: i64) -> Option<String> {
     let at = epoch_secs(started?)?;
     Some(short_duration(now - at))
@@ -92,7 +85,6 @@ pub fn age_now(created: Option<&str>) -> Option<String> {
     age(created, now_secs())
 }
 
-/// The two-letter stand-in for a registry host.
 fn registry_token(host: &str) -> String {
     match host {
         "docker.io" | "index.docker.io" | "registry-1.docker.io" => "dh".into(),

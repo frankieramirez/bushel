@@ -1,10 +1,3 @@
-//! The wide table: resource type as a mode, not a rail.
-//!
-//! One full-width table on top, one full-width detail below. Cross-type
-//! awareness moves to the header, which is also the switcher — one count per
-//! noun. The trade is real and deliberate: you cannot see images while looking
-//! at containers, and `2` becomes a navigation instead of an expansion.
-
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -16,40 +9,37 @@ use crate::ui::humanize::elide;
 use crate::ui::layout::LayoutPlan;
 use crate::ui::rail::pending_span;
 use crate::ui::rows::{
-    absent, age_cell, cpu_cell, mem_of_limit, reference_spans, select_bar, state_dot, uptime_cell,
+    absent, age_cell, cpu_cell, mem_of_limit, reference_spans, scroll_start, select_bar, state_dot,
+    uptime_cell,
 };
 use crate::ui::theme::{Theme, human_size};
 
-/// One column of the table: a heading, a width, and which side the text hugs.
 #[derive(Clone, Copy)]
 struct Col {
     head: &'static str,
     width: u16,
     right: bool,
-    /// Terminal width below which this column is not worth its cells.
-    needs: u16,
+    min_terminal_width: u16,
 }
 
-const fn col(head: &'static str, width: u16, needs: u16) -> Col {
+const fn col(head: &'static str, width: u16, min_terminal_width: u16) -> Col {
     Col {
         head,
         width,
         right: false,
-        needs,
+        min_terminal_width,
     }
 }
 
-const fn rcol(head: &'static str, width: u16, needs: u16) -> Col {
+const fn rcol(head: &'static str, width: u16, min_terminal_width: u16) -> Col {
     Col {
         head,
         width,
         right: true,
-        needs,
+        min_terminal_width,
     }
 }
 
-/// The columns each pane offers, widest-first in the sense that later entries
-/// are the first to go when the terminal is narrow.
 const CONTAINER_COLS: &[Col] = &[
     col("name", 0, 0),
     col("state", 10, 62),
@@ -88,26 +78,25 @@ fn columns(pane: Pane) -> &'static [Col] {
     }
 }
 
-/// Resolve the column widths for a given table width.
-///
-/// The first column is the flexible one — everything it is not spent on goes to
-/// the name, which is what a person is actually scanning.
-/// Cells between one column and the next.
 const GUTTER: usize = 2;
+/// The selection bar, the space after it, and the gutter past the last column.
+const ROW_MARGIN: u16 = 3;
 
 fn plan_columns(pane: Pane, width: u16) -> Vec<Col> {
     let all = columns(pane);
-    let mut kept: Vec<Col> = all.iter().copied().filter(|c| width >= c.needs).collect();
+    let mut kept: Vec<Col> = all
+        .iter()
+        .copied()
+        .filter(|c| width >= c.min_terminal_width)
+        .collect();
     let fixed: u16 = kept.iter().skip(1).map(|c| c.width + GUTTER as u16).sum();
-    // 2 for the selection bar and its space, 1 for the trailing gutter.
-    let flexible = width.saturating_sub(fixed + 3);
+    let flexible = width.saturating_sub(fixed + ROW_MARGIN);
     if let Some(first) = kept.first_mut() {
         first.width = flexible.max(8);
     }
     kept
 }
 
-/// `text` fitted to its column, gutter included.
 fn cell(text: &str, c: &Col) -> String {
     let w = c.width as usize;
     let text = elide(text, w);
@@ -121,20 +110,20 @@ fn cell(text: &str, c: &Col) -> String {
     }
 }
 
-/// Pad whatever spans were just pushed for `c` out to the column edge.
-fn finish_cell(spans: &mut Vec<Span<'static>>, before: usize, c: &Col) {
-    let drawn: usize = spans
-        .iter()
-        .skip(before)
-        .map(|s| s.content.chars().count())
-        .sum();
+/// Append a cell built from several spans, padded out to its column.
+///
+/// The multi-span cells (a state dot plus a name, a registry token plus a
+/// reference) cannot go through [`cell`], which takes one string.
+fn push_cell(spans: &mut Vec<Span<'static>>, cell: Vec<Span<'static>>, c: &Col) {
+    let drawn: usize = cell.iter().map(|s| s.content.chars().count()).sum();
+    spans.extend(cell);
     spans.push(Span::raw(
         " ".repeat((c.width as usize + GUTTER).saturating_sub(drawn)),
     ));
 }
 
 pub fn draw(frame: &mut Frame, state: &AppState, th: &Theme, plan: &LayoutPlan) {
-    draw_table(frame, state, th, plan.rail, plan.floor);
+    draw_table(frame, state, th, plan.list, plan.floor);
 }
 
 fn draw_table(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, floor: bool) {
@@ -144,7 +133,6 @@ fn draw_table(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, floor
     let cols = plan_columns(state.pane, area.width);
     let mut lines: Vec<Line> = Vec::new();
 
-    // Heading row, then a rule under it — the rule is what a border used to be.
     let mut head = vec![Span::raw("  ")];
     for c in &cols {
         head.push(Span::styled(cell(c.head, c), Style::new().fg(th.dim())));
@@ -168,9 +156,7 @@ fn draw_table(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, floor
             Style::new().fg(th.dim()),
         )));
     } else {
-        let start = sel
-            .map(|s| s.saturating_sub(room.saturating_sub(1)))
-            .unwrap_or(0);
+        let start = scroll_start(sel, room);
         for (pos, &i) in rows_idx.iter().enumerate().skip(start).take(room) {
             lines.push(row_line(state, th, i, sel == Some(pos), &cols));
         }
@@ -229,10 +215,9 @@ fn row_line(
             };
             let num_style = if running { live } else { dim };
             if let Some(name) = get("name") {
-                let before = spans.len();
-                spans.push(state_dot(th, running));
+                let mut c1 = vec![state_dot(th, running)];
                 if let Some(s) = pending_span(th, c.pending.is_some()) {
-                    spans.push(s);
+                    c1.push(s);
                 }
                 let w = Col {
                     width: name
@@ -240,8 +225,8 @@ fn row_line(
                         .saturating_sub(if c.pending.is_some() { 4 } else { 2 }),
                     ..name
                 };
-                spans.push(Span::styled(cell(&c.id, &w), name_style));
-                finish_cell(&mut spans, before, &name);
+                c1.push(Span::styled(cell(&c.id, &w), name_style));
+                push_cell(&mut spans, c1, &name);
             }
             if let Some(c2) = get("state") {
                 let style = if running {
@@ -261,13 +246,8 @@ fn row_line(
                 spans.push(Span::styled(cell(&mem_of_limit(th, c), &c5), num_style));
             }
             if let Some(c6) = get("image") {
-                let before = spans.len();
-                spans.extend(reference_spans(
-                    th,
-                    &c.image,
-                    c6.width.saturating_sub(3) as usize,
-                ));
-                finish_cell(&mut spans, before, &c6);
+                let image = reference_spans(th, &c.image, c6.width.saturating_sub(3) as usize);
+                push_cell(&mut spans, image, &c6);
             }
             if let Some(c7) = get("network") {
                 let nets: Vec<&str> = c.networks.iter().map(|(n, _)| n.as_str()).collect();
@@ -298,15 +278,15 @@ fn row_line(
                 return Line::from(spans);
             };
             if let Some(name) = get("reference") {
-                let before = spans.len();
+                let mut c1: Vec<Span<'static>> = Vec::new();
                 if let Some(s) = pending_span(th, im.pending.is_some()) {
-                    spans.push(s);
+                    c1.push(s);
                 }
                 let w = name
                     .width
                     .saturating_sub(if im.pending.is_some() { 5 } else { 3 });
-                spans.extend(reference_spans(th, &im.reference, w as usize));
-                finish_cell(&mut spans, before, &name);
+                c1.extend(reference_spans(th, &im.reference, w as usize));
+                push_cell(&mut spans, c1, &name);
             }
             if let Some(size) = get("size") {
                 let text = im
@@ -395,7 +375,6 @@ fn row_line(
     Line::from(spans)
 }
 
-/// The header strip, which in this layout is also the pane switcher.
 pub fn header_line(state: &AppState, th: &Theme) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     for (i, pane) in Pane::all().into_iter().enumerate() {
@@ -427,12 +406,10 @@ pub fn header_line(state: &AppState, th: &Theme) -> Vec<Span<'static>> {
     spans
 }
 
-/// The zoomed active panel: the same table, given the whole body.
 pub fn draw_zoomed(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect) {
     draw_table(frame, state, th, area, false);
 }
 
-/// Split a row of columns for callers that need the same geometry (tests).
 #[cfg(test)]
 pub(crate) fn column_heads(pane: Pane, width: u16) -> Vec<&'static str> {
     plan_columns(pane, width).iter().map(|c| c.head).collect()

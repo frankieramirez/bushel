@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 
 use crate::config::LayoutMode;
-use crate::engine::state::{ActionItem, AppState, Pane, UiAction};
+use crate::engine::state::{ActionItem, AppState, Pane};
 
 pub const STACK_BELOW: u16 = 80;
 /// Rail column *including* the rule that separates it from the detail pane.
@@ -10,7 +10,6 @@ pub const TIGHT_RAIL_H: u16 = 16;
 const FLOOR_H: u16 = 22;
 const FLOOR_W: u16 = 60;
 const RAIL_MIN_H: u16 = Pane::all().len() as u16;
-/// A rail shorter than this has no room to spend a row on the prune footer.
 const FOOTER_MIN_RAIL_H: u16 = 8;
 /// Column header plus its rule plus the gap above the detail pane.
 const TABLE_CHROME: u16 = 3;
@@ -47,8 +46,7 @@ pub struct LayoutPlan {
     pub banners: Rect,
     pub body: Rect,
     pub bottom: Rect,
-    /// The whole list column (rail mode) or the table block (table mode).
-    pub rail: Rect,
+    pub list: Rect,
     /// The single rule between list and detail. Zero-sized when there is none.
     pub divider: Rect,
     pub detail: Rect,
@@ -108,7 +106,7 @@ impl LayoutPlan {
             banners,
             body,
             bottom,
-            rail: body,
+            list: body,
             divider: empty_at(body),
             detail: body,
             slots: [empty_at(body); Pane::COUNT],
@@ -145,7 +143,7 @@ impl LayoutPlan {
         let mut slots = [empty_at(body); Pane::COUNT];
         slots[facts.active.index()] = parts[0];
         Self {
-            rail: parts[0],
+            list: parts[0],
             detail: parts[1],
             slots,
             stacked: true,
@@ -197,7 +195,7 @@ impl LayoutPlan {
         };
 
         Self {
-            rail,
+            list: rail,
             divider,
             detail,
             slots: rail_slots(sections, facts, tight),
@@ -224,13 +222,12 @@ fn table_height(body_h: u16, rows: u16, floor: bool) -> u16 {
 }
 
 pub fn sheet_items(mut actions: Vec<ActionItem>, floor: bool) -> Vec<ActionItem> {
-    let is_jump = |a: &ActionItem| matches!(a.action, UiAction::LogsTab | UiAction::InspectTab);
     if floor {
-        actions.retain(|a| !is_jump(a));
+        actions.retain(|a| !a.is_tab_jump());
         return actions;
     }
     while actions.len() as u16 + 2 > SHEET_MAX_H {
-        match actions.iter().rposition(is_jump) {
+        match actions.iter().rposition(ActionItem::is_tab_jump) {
             Some(i) => {
                 actions.remove(i);
             }
@@ -309,8 +306,6 @@ fn rail_slots(rail: Rect, facts: LayoutFacts, tight: bool) -> [Rect; Pane::COUNT
                     Constraint::Length(collapsed_rows)
                 }
             } else if fits {
-                // Every section shrinks to fit and the slack pools once, at the
-                // bottom of the rail, instead of in four separate patches.
                 if i == Pane::COUNT - 1 {
                     Constraint::Min(wants[i])
                 } else {
@@ -358,9 +353,9 @@ mod tests {
 
     fn tiles(p: &LayoutPlan) -> u16 {
         if p.stacked {
-            p.rail.height + p.divider.height + p.detail.height
+            p.list.height + p.divider.height + p.detail.height
         } else {
-            p.rail.width + p.divider.width + p.detail.width
+            p.list.width + p.divider.width + p.detail.width
         }
     }
 
@@ -371,13 +366,13 @@ mod tests {
         assert!(p.tight);
         assert!(p.floor);
         assert_eq!(p.header.height, 1);
-        assert_eq!(p.rail.width, 55);
-        assert_eq!(p.rail.height, 9);
+        assert_eq!(p.list.width, 55);
+        assert_eq!(p.list.height, 9);
         assert_eq!(p.detail.width, 55);
         assert_eq!(p.detail.height, 8);
         assert_eq!(p.divider.height, 1, "a rule separates the stack");
-        assert!(p.rail.y < p.detail.y);
-        assert_eq!(p.rail.x, p.detail.x);
+        assert!(p.list.y < p.detail.y);
+        assert_eq!(p.list.x, p.detail.x);
         assert_eq!(p.slots[Pane::Images.index()].height, 1);
         assert_eq!(p.slots[Pane::Volumes.index()].height, 1);
         assert_eq!(p.slots[Pane::Networks.index()].height, 1);
@@ -391,9 +386,9 @@ mod tests {
         assert!(stacked.stacked, "79-col body must stack");
         let beside = plan(80, 30);
         assert!(!beside.stacked, "80-col body sits beside");
-        assert_eq!(beside.rail.width, 35);
+        assert_eq!(beside.list.width, 35);
         assert_eq!(beside.divider.width, 1);
-        assert_eq!(beside.rail.width + beside.divider.width, RAIL_MAX);
+        assert_eq!(beside.list.width + beside.divider.width, RAIL_MAX);
     }
 
     #[test]
@@ -403,20 +398,19 @@ mod tests {
         assert!(!p.tight);
         assert!(!p.floor);
         assert_eq!(p.header.height, 2);
-        assert_eq!(p.rail.width + p.divider.width, RAIL_MAX);
-        assert_eq!(p.rail.height, 27);
+        assert_eq!(p.list.width + p.divider.width, RAIL_MAX);
+        assert_eq!(p.list.height, 27);
         assert_eq!(p.detail.width, 64);
         assert_eq!(p.detail.height, 27);
-        assert_eq!(p.rail.y, p.detail.y);
-        assert!(p.rail.x < p.detail.x);
+        assert_eq!(p.list.y, p.detail.y);
+        assert!(p.list.x < p.detail.x);
     }
 
     #[test]
     fn a_roomy_rail_shrinks_every_section_and_pools_the_slack_at_the_bottom() {
-        // 8 + 5 + 3 + 2 rows wants 10 + 7 + 5 + 4 = 26 of the 26 section rows.
         let p = plan(100, 30);
         assert_eq!(p.footer.height, 1);
-        assert_eq!(p.footer.bottom(), p.rail.bottom());
+        assert_eq!(p.footer.bottom(), p.list.bottom());
         assert_eq!(p.slots[Pane::Containers.index()].height, 10);
         assert_eq!(p.slots[Pane::Images.index()].height, 7);
         assert_eq!(p.slots[Pane::Volumes.index()].height, 5);
@@ -441,7 +435,7 @@ mod tests {
             ..facts()
         };
         let p = LayoutPlan::compute(Rect::new(0, 0, 100, 40), f);
-        let cap = (p.rail.height - 1) / 4;
+        let cap = (p.list.height - 1) / 4;
         for pane in [Pane::Images, Pane::Volumes, Pane::Networks] {
             assert_eq!(p.slots[pane.index()].height, cap.max(4));
         }
@@ -450,14 +444,14 @@ mod tests {
             "the active section takes what the capped ones leave"
         );
         let total: u16 = p.slots.iter().map(|s| s.height).sum();
-        assert_eq!(total, p.rail.height - p.footer.height);
+        assert_eq!(total, p.list.height - p.footer.height);
     }
 
     #[test]
     fn wide_200x50_keeps_the_rail_cap_spare_goes_to_detail() {
         let p = plan(200, 50);
         assert!(!p.stacked);
-        assert_eq!(p.rail.width + p.divider.width, RAIL_MAX);
+        assert_eq!(p.list.width + p.divider.width, RAIL_MAX);
         assert_eq!(p.detail.width, 164);
         assert_eq!(p.detail.height, 47);
     }
@@ -483,7 +477,7 @@ mod tests {
             };
             let p = LayoutPlan::compute(Rect::new(0, 0, 100, 30), f);
             assert!(p.zoom);
-            assert_eq!(p.rail, p.body);
+            assert_eq!(p.list, p.body);
             assert_eq!(p.detail, p.body);
             assert_eq!(p.slots[0], p.body);
             assert_eq!(p.divider.height, 0);
@@ -502,11 +496,11 @@ mod tests {
         let p = table_plan(120, 40);
         assert_eq!(p.mode, LayoutMode::Table);
         assert!(p.stacked, "table mode is always a top/bottom split");
-        assert_eq!(p.rail.width, 120, "the table gets every column");
+        assert_eq!(p.list.width, 120, "the table gets every column");
         assert_eq!(p.detail.width, 120, "so does the detail");
-        assert_eq!(p.rail.height, 8 + TABLE_CHROME);
-        assert_eq!(p.rail.height + p.detail.height, p.body.height);
-        assert_eq!(p.slots[Pane::Containers.index()], p.rail);
+        assert_eq!(p.list.height, 8 + TABLE_CHROME);
+        assert_eq!(p.list.height + p.detail.height, p.body.height);
+        assert_eq!(p.slots[Pane::Containers.index()], p.list);
         assert_eq!(p.slots[Pane::Images.index()].height, 0);
 
         let many = LayoutPlan::compute(
@@ -518,7 +512,7 @@ mod tests {
             },
         );
         assert_eq!(
-            many.rail.height,
+            many.list.height,
             many.body.height / 2,
             "a long list still leaves the detail half the body"
         );
@@ -534,8 +528,8 @@ mod tests {
                 ..facts()
             },
         );
-        assert_eq!(p.rail.height, 3 + TABLE_CHROME);
-        assert_eq!(p.slots[Pane::Volumes.index()], p.rail);
+        assert_eq!(p.list.height, 3 + TABLE_CHROME);
+        assert_eq!(p.slots[Pane::Volumes.index()], p.list);
     }
 
     #[test]
@@ -554,15 +548,15 @@ mod tests {
                         tiles(&p),
                         span,
                         "{mode:?} {w}x{h}: rail {:?} + divider {:?} + detail {:?} must tile body {:?}",
-                        p.rail,
+                        p.list,
                         p.divider,
                         p.detail,
                         p.body
                     );
                     assert!(
-                        p.rail.y >= p.body.y && p.rail.bottom() <= p.body.bottom(),
+                        p.list.y >= p.body.y && p.list.bottom() <= p.body.bottom(),
                         "{mode:?} {w}x{h}: rail {:?} escapes body {:?}",
-                        p.rail,
+                        p.list,
                         p.body
                     );
                     assert!(
@@ -580,24 +574,24 @@ mod tests {
                     }
                     if p.body.height >= 3 {
                         assert!(
-                            p.rail.height >= 1,
+                            p.list.height >= 1,
                             "{mode:?} {w}x{h}: rail vanished from a {}-row body",
                             p.body.height
                         );
                     }
                     assert!(
-                        p.footer.height <= p.rail.height,
+                        p.footer.height <= p.list.height,
                         "{mode:?} {w}x{h}: footer {:?} escapes rail {:?}",
                         p.footer,
-                        p.rail
+                        p.list
                     );
                     let slots: u16 = p.slots.iter().map(|s| s.height).sum();
                     assert_eq!(
                         slots,
-                        p.rail.height - p.footer.height,
+                        p.list.height - p.footer.height,
                         "{mode:?} {w}x{h}: slots {:?} must tile rail {:?} above footer {:?}",
                         p.slots,
-                        p.rail,
+                        p.list,
                         p.footer
                     );
                 }
@@ -610,7 +604,7 @@ mod tests {
         let p = plan(79, 11);
         assert!(p.stacked);
         assert_eq!(p.body.height, 9);
-        assert!(p.rail.height > 0, "rail vanished: {:?}", p.rail);
+        assert!(p.list.height > 0, "rail vanished: {:?}", p.list);
         assert!(p.detail.height > 0, "detail vanished: {:?}", p.detail);
         assert_eq!(p.detail.bottom(), p.body.bottom());
     }
@@ -619,7 +613,7 @@ mod tests {
     fn a_rail_too_short_for_four_panes_keeps_the_active_one() {
         let p = plan(40, 5);
         assert!(p.stacked);
-        assert_eq!(p.rail.height, 2);
+        assert_eq!(p.list.height, 2);
         assert_eq!(p.slots[Pane::Containers.index()].height, 2);
         assert_eq!(p.slots[Pane::Images.index()].height, 0);
         assert_eq!(p.slots[Pane::Volumes.index()].height, 0);
@@ -632,11 +626,11 @@ mod tests {
         for h in 1..=60u16 {
             let p = plan(40, h);
             assert!(
-                p.rail.height >= prev,
+                p.list.height >= prev,
                 "rail shrank from {prev} to {} at height {h}",
-                p.rail.height
+                p.list.height
             );
-            prev = p.rail.height;
+            prev = p.list.height;
         }
     }
 
@@ -717,9 +711,9 @@ mod tests {
         assert_eq!(sheet.x, p.detail.x);
         assert_eq!(sheet.width, p.detail.width);
         assert!(
-            sheet.y >= p.rail.bottom(),
+            sheet.y >= p.list.bottom(),
             "sheet {sheet:?} must not cover the rail {:?}",
-            p.rail
+            p.list
         );
     }
 
