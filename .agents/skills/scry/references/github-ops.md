@@ -4,11 +4,13 @@
 
 `SKILL_DIR` is the absolute directory of this skill. Set it on the first line of every Bash call.
 
+`frontier` and `view` read the older `wayfinder:*` labels as their `scry:*` equivalents, so a map filed before 0.11.0 still walks. Nothing writes the old names.
+
 | Subcommand | Arguments | What it does |
 |------------|-----------|--------------|
-| `ensure-labels` | none | Creates `wayfinder:map` and `wayfinder:{research,prototype,grilling,task}` if missing |
-| `create-map` | `TITLE`, body on stdin | Opens an issue labelled `wayfinder:map`. Prints `number<TAB>url` |
-| `create-ticket` | `MAP_NUMBER TYPE TITLE`, body on stdin | Opens a child labelled `wayfinder:TYPE`, attaches it as a sub-issue. Prints `number<TAB>url` |
+| `ensure-labels` | none | Creates `scry:map` and `scry:{research,prototype,grilling,task}` if missing |
+| `create-map` | `TITLE`, body on stdin | Opens an issue labelled `scry:map`. Prints `number<TAB>url` |
+| `create-ticket` | `MAP_NUMBER TYPE TITLE`, body on stdin | Opens a child labelled `scry:TYPE`, attaches it as a sub-issue. Prints `number<TAB>url` |
 | `wire` | `CHILD_NUMBER BLOCKER_NUMBER` | CHILD is blocked by BLOCKER (database id under the hood) |
 | `frontier` | `MAP_NUMBER` | Open, unblocked, unclaimed children, map order. TSV: `number<TAB>title<TAB>type<TAB>url` |
 | `claim` | `NUMBER` | Assigns the issue to the current `gh` user. Exits 1 if someone else already holds it |
