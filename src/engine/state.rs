@@ -97,6 +97,7 @@ pub enum UiAction {
     Exec,
     Pull,
     Tag,
+    Create,
     LogsTab,
     InspectTab,
 }
@@ -114,6 +115,7 @@ pub enum ActionKind {
     PruneImages,
     DeleteVolume,
     PruneVolumes,
+    CreateVolume,
 }
 
 impl ActionKind {
@@ -138,6 +140,7 @@ impl ActionKind {
             ActionKind::PruneContainers | ActionKind::PruneImages | ActionKind::PruneVolumes => {
                 "pruned"
             }
+            ActionKind::CreateVolume => "created",
         }
     }
 }
@@ -242,6 +245,9 @@ pub enum Overlay {
         text: String,
     },
     TagInput {
+        text: String,
+    },
+    CreateVolumeInput {
         text: String,
     },
 }
@@ -694,16 +700,27 @@ impl AppState {
         next.sort_by(|a, b| a.name.cmp(&b.name));
         for entry in &mut next {
             if let Some(old) = self.volumes.iter().find(|o| o.name == entry.name) {
-                entry.pending = old.pending;
+                if old.pending.map(|p| p.kind) == Some(ActionKind::CreateVolume) {
+                    self.confirmations
+                        .push((entry.name.clone(), ActionKind::CreateVolume));
+                    entry.pending = None;
+                } else {
+                    entry.pending = old.pending;
+                }
             }
         }
         for old in &self.volumes {
             if let Some(p) = old.pending {
                 if !next.iter().any(|n| n.name == old.name) {
-                    self.confirmations.push((old.name.clone(), p.kind));
+                    if p.kind == ActionKind::CreateVolume {
+                        next.push(old.clone());
+                    } else {
+                        self.confirmations.push((old.name.clone(), p.kind));
+                    }
                 }
             }
         }
+        next.sort_by(|a, b| a.name.cmp(&b.name));
         self.volumes = next;
         self.recompute_in_use();
         self.confirm_pending();
@@ -848,6 +865,34 @@ impl AppState {
         }
     }
 
+    pub fn insert_creating_volume(&mut self, name: &str) {
+        if self.volumes.iter().any(|v| v.name == name) {
+            return;
+        }
+        self.volumes.push(VolumeEntry {
+            name: name.to_string(),
+            in_use_by: Vec::new(),
+            created: None,
+            pending: None,
+        });
+        self.volumes.sort_by(|a, b| a.name.cmp(&b.name));
+        self.selected[Pane::Volumes.index()] = Some(name.to_string());
+    }
+
+    pub fn drop_creating_placeholder(&mut self, name: &str) {
+        let placeholder = self.volumes.iter().any(|v| {
+            v.name == name
+                && v.created.is_none()
+                && v.pending.map(|p| p.kind) == Some(ActionKind::CreateVolume)
+        });
+        if placeholder {
+            self.volumes.retain(|v| v.name != name);
+            self.clamp_selection();
+        } else {
+            self.set_pending(name, None);
+        }
+    }
+
     fn confirm_pending(&mut self) {
         let mut confirmed_now = Vec::new();
         for c in &mut self.containers {
@@ -890,6 +935,9 @@ impl AppState {
                 phase: PendingPhase::Confirming(t),
             }) = v.pending
             {
+                if kind == ActionKind::CreateVolume {
+                    continue;
+                }
                 v.pending = (t > 1).then_some(Pending {
                     kind,
                     phase: PendingPhase::Confirming(t - 1),
@@ -998,7 +1046,7 @@ impl AppState {
                 items
             }
             Pane::Volumes => {
-                let mut items = Vec::new();
+                let mut items = vec![item('c', "create", false, UiAction::Create)];
                 if self.selected_volume().is_some() {
                     items.push(item('d', "delete", true, UiAction::Delete));
                 }
@@ -1158,5 +1206,29 @@ mod tests {
         s.clamp_selection();
         let keys: Vec<char> = s.available_actions().iter().map(|i| i.key).collect();
         assert_eq!(keys, vec!['u', 'P']);
+    }
+
+    #[test]
+    fn volumes_pane_offers_create_even_with_no_selection() {
+        let mut s = AppState::new(true);
+        s.pane = Pane::Volumes;
+        let keys: Vec<char> = s.available_actions().iter().map(|i| i.key).collect();
+        assert_eq!(keys, vec!['c', 'P']);
+        s.volumes.push(VolumeEntry {
+            name: "qvol".into(),
+            in_use_by: vec![],
+            created: None,
+            pending: None,
+        });
+        s.clamp_selection();
+        let keys: Vec<char> = s.available_actions().iter().map(|i| i.key).collect();
+        assert_eq!(keys, vec!['c', 'd', 'P']);
+        assert!(
+            !s.available_actions()
+                .iter()
+                .find(|i| i.key == 'c')
+                .unwrap()
+                .destructive
+        );
     }
 }

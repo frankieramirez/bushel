@@ -88,6 +88,7 @@ the help overlay draws — so it cannot drift from the binary you are running.
 - `s r K d P e` — start/stop · restart · kill · delete · prune · exec
 - `u` — pull image (images pane)
 - `t` — tag image (images pane)
+- `c` — create volume (volumes pane)
 
 **detail**
 
