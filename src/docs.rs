@@ -1,7 +1,6 @@
-use clap::CommandFactory as _;
 use serde::Serialize;
 
-use crate::cli::Args;
+use crate::cli;
 use crate::config::Config;
 use crate::ui::help::HELP;
 
@@ -89,7 +88,7 @@ pub fn config() -> Result<ConfigDocs, DocsError> {
         unreachable!("Config serializes as a JSON object");
     };
 
-    let cmd = Args::command();
+    let cmd = cli::command();
     let mut options = Vec::new();
     for arg in cmd.get_arguments() {
         if matches!(arg.get_id().as_str(), "help" | "version") {

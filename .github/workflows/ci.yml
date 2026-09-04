@@ -33,6 +33,26 @@ jobs:
       - name: It is JSON, and it has the shape the site reads
         run: jq -e '.schema_version and .version and (.keymap | length > 0) and (.config.options | length > 0)' docs.json
 
+  dist-assets:
+    name: completions and man page generate
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo run --example dist-assets -- --out-dir .
+      - name: Scripts and bushel.1 are non-empty clap output
+        run: |
+          test -s bushel.bash
+          test -s bushel.zsh
+          test -s bushel.fish
+          test -s bushel.1
+          grep -q bushel bushel.bash
+          grep -q bushel bushel.zsh
+          grep -q bushel bushel.fish
+          grep -qi bushel bushel.1
+          grep -q completions bushel.1
+
   publish-dry-run:
     name: cargo publish --dry-run
     runs-on: ubuntu-22.04

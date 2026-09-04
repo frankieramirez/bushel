@@ -14,3 +14,7 @@ post-announce-jobs = ["./deploy-site", "./publish-crates"]
 [[dist.extra-artifacts]]
 artifacts = ["docs.json"]
 build = ["cargo", "run", "--example", "docs-json", "--", "--out", "docs.json"]
+
+[[dist.extra-artifacts]]
+artifacts = ["bushel.1", "bushel.bash", "bushel.zsh", "bushel.fish"]
+build = ["cargo", "run", "--example", "dist-assets", "--", "--out-dir", "."]

@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 
 use bushel::cli::{Args, Cmd};
 use bushel::client::Client;
+use bushel::completions;
 use bushel::config::Config;
 use bushel::engine::{Command, Engine};
 use bushel::runner::{CONTAINER_BIN, CliRunner};
@@ -145,8 +146,13 @@ async fn self_update() -> i32 {
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let args = Args::parse();
-    if let Some(Cmd::Update) = args.command {
-        std::process::exit(self_update().await);
+    match args.command {
+        Some(Cmd::Update) => std::process::exit(self_update().await),
+        Some(Cmd::Completions { shell }) => {
+            completions::write_script(shell, &mut std::io::stdout())?;
+            return Ok(());
+        }
+        None => {}
     }
     let cfg = Config::load();
     let no_splash = args.no_splash || cfg.no_splash;

@@ -2,5 +2,9 @@
 prototype-layout/target
 prototype-layout/
 
-# Emitted by `cargo run --example docs-json`, and by dist as a release artifact.
+# Emitted by `cargo run --example docs-json` / `dist-assets`, and by dist as release artifacts.
 /docs.json
+/bushel.1
+/bushel.bash
+/bushel.zsh
+/bushel.fish
