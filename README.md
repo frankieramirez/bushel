@@ -1,80 +1,84 @@
 # bushel
 
 <p align="center">
-  <img src="docs/assets/bushel-orchard-arcade.svg" alt="Bushel — pixel-art wooden lettering beside a basket of red apples" width="840">
+  <img src="docs/assets/bushel-orchard-arcade.svg" alt="Bushel: pixel-art wooden lettering beside a basket of red apples" width="840">
 </p>
 
-A terminal UI for managing [Apple Containers](https://github.com/apple/container) — containers, images, volumes, and networks from the comfort of your terminal. A bushel is a container that holds apples.
+Bushel is a terminal UI for managing [Apple Containers](https://github.com/apple/container)
+on macOS. Browse containers, images, volumes, and networks, inspect logs, and run
+actions from your keyboard.
 
-bushel is a lazydocker-style TUI built in Rust with [Ratatui](https://github.com/ratatui/ratatui). It wraps the `container` CLI as a subprocess and manages what already exists — it is a manager, not a launcher. Containers are born on the command line and managed in bushel.
+Create containers with Apple's `container` CLI, then manage them in Bushel.
+A bushel is a container that holds apples.
+
+[Quick start](#quick-start) · [Controls](#everyday-controls) · [Settings](#settings-and-layouts) · [Docs](https://bushel.sh/docs) · [Help](#getting-help)
 
 ## Requirements
 
-- macOS 26 (Apple silicon)
-- [`container`](https://github.com/apple/container) CLI **1.2.x** is tested. Version 1.3.1 is recommended for Apple's security fixes and currently shows an untested-version warning while compatibility validation finishes.
+- macOS 26 on Apple silicon.
+- Apple's [`container` CLI](https://github.com/apple/container) installed and available on your `PATH`.
 
-## Install
+Bushel tests against `container` **1.2.x**. The current compatibility guidance
+recommends **1.3.1** for Apple's security fixes; Bushel allows it with a dismissible
+untested-version warning while compatibility validation finishes.
 
-Homebrew:
+## Quick start
+
+Install Bushel with Homebrew, then launch it:
 
 ```sh
 brew install frankieramirez/tap/bushel
+bushel
 ```
 
-Shell installer, no Homebrew required:
+If Bushel reports that the container service is down, press `s` to start it.
+The first start can take longer while Apple installs the Linux kernel.
+
+Bushel lists the resources that already exist on your machine. If you haven't
+created any containers yet, follow Apple's
+[container guide](https://github.com/apple/container) to create one from the CLI.
+
+<details>
+<summary>Other installation methods</summary>
+
+**Shell installer**
 
 ```sh
 curl -LsSf https://bushel.sh/install | sh
 ```
 
-From crates.io — a secondary path. Prefer Homebrew or the curl installer;
-`bushel update` still follows GitHub Releases, not crates.io.
+**Cargo**
 
 ```sh
 cargo install bushel
 ```
 
-`https://bushel.sh/install` is a 302 to the checksummed installer attached to the
-latest GitHub release; the domain never hosts a copy. To upgrade, run `bushel
-update` — it works out how bushel was installed and hands the job back to
-whatever did the installing.
+Homebrew and the shell installer are the preferred installation methods.
+Cargo installs are also supported, but `bushel update` follows GitHub Releases.
 
-The rest — `BUSHEL_INSTALL_DIR`, `BUSHEL_NO_MODIFY_PATH`, the hardened-curl
-direct-asset form, pinning a version, and what `bushel update` does per install
-method — is on **[bushel.sh/docs/install](https://bushel.sh/docs/install)**.
+See the [installation guide](https://bushel.sh/docs/install) for custom paths,
+pinned versions, and installer verification.
 
-## Completions
+</details>
 
-```sh
-bushel completions bash   # or zsh, fish
-```
+## Everyday controls
 
-prints a script you can drop on your shell's completion path. That works for
-Homebrew, the curl installer, and `cargo install`. GitHub releases also attach
-the scripts and `bushel.1` so packagers can install them on the usual paths.
-`man bushel` once that page is on your manpath. **[bushel.sh/docs](https://bushel.sh/docs)**
-links those generated files instead of keeping a second copy of the man text.
+| Key | Action |
+| --- | --- |
+| `j` / `k` | Move through a list |
+| `tab` | Switch panes |
+| `enter` | Focus the selected item's details |
+| `space` | Open the actions available for the selection |
+| `/` | Filter the list |
+| `?` | Open the cheatsheet |
+| `m` | Read the message log |
+| `q` | Quit |
 
-## Use
+<details>
+<summary>All keyboard shortcuts</summary>
 
-```sh
-bushel
-```
-
-Press `?` for the cheatsheet, `space` for the actions valid on whatever is
-selected, and `,` for settings. Everything below is generated from bushel's own
-source — the same list the help overlay draws — so it cannot drift from the
-binary you are running.
-
-bushel draws its body one of two ways, and `,` switches between them live:
-
-- **rail** (the default) keeps all four panes in one column beside the detail
-  pane, so you can see what else is running while you read one thing.
-- **table** gives the active pane one full-width table and the detail below it,
-  so logs get every column the terminal has and container rows carry state,
-  uptime, memory ceiling, image, network, and volumes without truncating.
-
-Whichever you pick is written to the config file, so it is there next launch.
+This reference comes from Bushel's source. Use `?` for the cheatsheet that matches
+your installed version.
 
 <!-- keys:start -->
 
@@ -107,7 +111,35 @@ Whichever you pick is written to the config file, so it is there next launch.
 - `esc` — back to list
 <!-- keys:end -->
 
-Flags, and the `~/.config/bushel/config.toml` keys that set the same things:
+</details>
+
+The [keyboard reference](https://bushel.sh/docs/keys) is also available online.
+
+## Settings and layouts
+
+Press `,` to change settings. Bushel saves your preferences in
+`~/.config/bushel/config.toml` for the next launch.
+
+| Layout | What you see |
+| --- | --- |
+| **rail** (default) | All four resource panes in a column beside the detail pane |
+| **table** | The active resource list across the window, with details below |
+
+To try the table layout for one session:
+
+```sh
+bushel --layout table
+```
+
+Command-line flags apply to the current run. `--layout` overrides the saved
+layout; boolean flags enable an option even when the config sets it to `false`.
+To enable one permanently, set its config value to `true`.
+
+<details>
+<summary>Command-line options and config defaults</summary>
+
+Each row lists a flag and its config key with the **default value**. For example,
+`no_splash = false` keeps the splash screen enabled; `--no-splash` skips it.
 
 <!-- options:start -->
 
@@ -117,30 +149,63 @@ Flags, and the `~/.config/bushel/config.toml` keys that set the same things:
 - `--layout` / `layout = "rail"` — Body layout: rail keeps all four panes in view, table gives one full-width table
 <!-- options:end -->
 
-The boolean flags can only switch something on; each is ORed with the file.
-`--layout` replaces the configured layout for that run. Neither is written back
-to the file. Full reference:
-**[bushel.sh/docs/keys](https://bushel.sh/docs/keys)** and
-**[bushel.sh/docs/config](https://bushel.sh/docs/config)**.
+</details>
 
-## Design
+See the [configuration reference](https://bushel.sh/docs/config) for details.
 
-The docs live at **[bushel.sh/docs](https://bushel.sh/docs)** — install, keys,
-config, troubleshooting, and [why bushel is shaped the way it
-is](https://bushel.sh/docs/why). What's still to come is on the
-[roadmap](../../issues/56).
+## Updating
 
-For contributors: the v0.1 scope, architecture, and rationale are in
-[SPEC.md](SPEC.md), the domain vocabulary in [CONTEXT.md](CONTEXT.md), and the
-decisions that outlived their tickets in [docs/adr](docs/adr). The design was
-worked out in the open on the [wayfinder map](../../issues/1).
+```sh
+bushel update
+```
+
+Bushel detects how you installed it and selects the update method. See the
+[installation guide](https://bushel.sh/docs/install) for behavior by install method.
+
+<details>
+<summary>Shell completions and manual page</summary>
+
+Generate completions for your shell:
+
+```sh
+bushel completions bash   # or zsh, fish
+```
+
+Save the output in your shell's completion directory. GitHub releases also
+include completion scripts and `bushel.1`. Once the manual page is on your
+manpath, read it with `man bushel`.
+
+The [documentation index](https://bushel.sh/docs) links to these files.
+
+</details>
+
+## Documentation and contributing
+
+The [user guide](https://bushel.sh/docs) covers everyday use and troubleshooting.
+Read [why Bushel works this way](https://bushel.sh/docs/why) for the design
+rationale, or follow the [roadmap](../../issues/56) for planned work.
+
+Bushel uses Rust and [Ratatui](https://github.com/ratatui/ratatui), and runs Apple's
+`container` CLI as a subprocess. Start with [CONTRIBUTING.md](CONTRIBUTING.md)
+before proposing a change.
+
+| Contributor reference | Contents |
+| --- | --- |
+| [SPEC.md](SPEC.md) | Original scope and architecture |
+| [CONTEXT.md](CONTEXT.md) | Project vocabulary |
+| [Decision records](docs/adr) | Design decisions and their rationale |
+| [Planning map](../../issues/1) | Original design discussion |
 
 ## Getting help
 
-- **Docs**: [bushel.sh/docs](https://bushel.sh/docs), including [troubleshooting](https://bushel.sh/docs/troubleshooting)
-- **Questions**: [GitHub Discussions (Q&A)](https://github.com/frankieramirez/bushel/discussions/new?category=q-a)
-- **Bugs / features**: [open an issue](https://github.com/frankieramirez/bushel/issues/new/choose) — see [CONTRIBUTING.md](CONTRIBUTING.md)
-- **Security**: [SECURITY.md](SECURITY.md)
+If an action fails, press `m` to read the command output in Bushel's message log.
+Include your Bushel version, `container --version`, macOS version, and the
+relevant log output when reporting a bug.
+
+- **Troubleshooting:** [Common problems and fixes](https://bushel.sh/docs/troubleshooting)
+- **Questions:** [GitHub Discussions](https://github.com/frankieramirez/bushel/discussions/new?category=q-a)
+- **Bugs and feature requests:** [Open an issue](https://github.com/frankieramirez/bushel/issues/new/choose)
+- **Security reports:** Follow [SECURITY.md](SECURITY.md)
 
 ## License
 
