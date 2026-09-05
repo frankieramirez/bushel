@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="300" viewBox="0 0 1000 300" role="img" aria-labelledby="title desc">
+<title id="title">Bushel — Terminal Orchard</title><desc id="desc">Cream geometric BUSHEL wordmark with a red apple basket and green terminal frame.</desc>
+<rect x="12" y="20" width="976" height="260" rx="24" fill="#0f1117"/>
+<path d="M44 69H956" stroke="#29352e"/>
+<g fill="#7ee787"><circle cx="45" cy="46" r="4"/><circle cx="61" cy="46" r="4" opacity=".5"/><circle cx="77" cy="46" r="4" opacity=".25"/></g>
+<path d="M930 39l8 7-8 7M945 53h10" fill="none" stroke="#7ee787" stroke-width="3"/>
+<g transform="translate(77 80) scale(.83)">
+<path d="M104 40c-2-7 1-13 8-16 1 8-2 13-8 16z" fill="#7ee787"/>
+<path d="M100 40v14" stroke="#7ee787" stroke-width="5" stroke-linecap="round"/>
+<circle cx="70" cy="82" r="27" fill="#d9534d"/><circle cx="130" cy="82" r="27" fill="#d9534d"/><circle cx="100" cy="62" r="27" fill="#ff7b72"/>
+<rect x="24" y="96" width="152" height="18" rx="3" fill="#f4ead6"/>
+<path d="M32 118h136l-16 62H48z" fill="#f4ead6"/>
+<path d="M62 118l-8 62M100 118v62M138 118l8 62M40 148h120" stroke="#0f1117" stroke-width="4"/>
+</g>
+<g fill="#f4ead6" fill-rule="evenodd"><path transform="translate(320 108)" d="M0 0H42Q64 0 64 23Q64 38 49 42Q68 46 68 65Q68 88 43 88H0ZM17 15V35H39Q47 35 47 25Q47 15 39 15ZM17 50V73H41Q51 73 51 61Q51 50 41 50Z"/><path transform="translate(419 108)" d="M0 0H17V58Q17 74 33 74Q49 74 49 58V0H66V59Q66 90 33 90Q0 90 0 59Z"/><path transform="translate(518 108)" d="M64 5V22Q48 14 33 14Q16 14 16 25Q16 32 35 36Q68 43 68 63Q68 90 33 90Q13 90 0 83V65Q16 75 33 75Q51 75 51 65Q51 57 31 52Q0 45 0 25Q0 -2 33 -2Q52 -2 64 5Z"/><path transform="translate(617 108)" d="M0 0H17V35H49V0H66V88H49V51H17V88H0Z"/><path transform="translate(716 108)" d="M0 0H64V16H17V35H57V51H17V72H64V88H0Z"/><path transform="translate(815 108)" d="M0 0H17V72H64V88H0Z"/></g>
+<path d="M322 231H368" stroke="#7ee787" stroke-width="5"/>
+<path d="M382 231H911" stroke="#29352e" stroke-width="2"/>
+</svg>

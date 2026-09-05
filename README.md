@@ -1,5 +1,9 @@
 # bushel
 
+<p align="center">
+  <img src="docs/assets/bushel-orchard-arcade.svg" alt="Bushel — pixel-art wooden lettering beside a basket of red apples" width="840">
+</p>
+
 A terminal UI for managing [Apple Containers](https://github.com/apple/container) — containers, images, volumes, and networks from the comfort of your terminal. A bushel is a container that holds apples.
 
 bushel is a lazydocker-style TUI built in Rust with [Ratatui](https://github.com/ratatui/ratatui). It wraps the `container` CLI as a subprocess and manages what already exists — it is a manager, not a launcher. Containers are born on the command line and managed in bushel.
