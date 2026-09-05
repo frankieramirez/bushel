@@ -4,7 +4,21 @@ description: "Reply to a message, comment, thread, review, or email as the user,
 argument-hint: "[what to reply to, or blank to use the message in context] [any instruction about the answer] | setup [project] [profile URL] | refresh"
 ---
 
+<!-- BEGIN MANA PERSONA -->
+## Persona at invocation
+
+Before conversational narration, read `Persona:` in the active project's `## Agent skills` block from `CLAUDE.md` or `AGENTS.md`. Prefer the file containing the block, then an existing file; ties use `CLAUDE.md`. A symlink pair is one file. Read the saved value anew on each invocation, including from a subdirectory using the project root. No accessible project or no line means ordinary behavior. Do not search another project or global settings for this preference.
+
+During the `Persona at invocation` stage, `archmage` loads this skill's own [references/archmage.md](references/archmage.md) for the active workflow. `off` or an absent value leaves ordinary behavior active. An unknown value leaves ordinary behavior active and gets a brief explanation when conversational output is allowed; it does not stop the work. Explicit conversation instructions override the saved voice without writing settings. A request to enable Archmage for this workflow also loads the local reference.
+
+Apply the voice only to lead-agent conversation. Deliverables, specialist roles, reply-only responses, and JSON-only output retain their contracts, with no added narration. End the persona with this workflow unless the user requests otherwise.
+<!-- END MANA PERSONA -->
+
 # Mimic
+
+Honor the user's explicit instructions and decisions already made in this conversation over this skill's workflow defaults. A rule this file states with never, or as read-only, is a gate: it holds whatever the conversation says, and an instruction to cross one is declined and reported. Continue authorized work; ask only about unresolved choices that would materially change the result. Preparing or reviewing work does not authorize publishing it.
+
+If a skill rule leaves the reply unwritten, return only the one question the user must answer. Nothing else goes in the output, no quoted rule and no explanation.
 
 Someone sent the user a message. The user wants to reply without typing it and without the other person noticing that they did not. Your output is the reply text, ready to paste. Nothing else.
 
@@ -21,7 +35,7 @@ Note the medium. A Slack reply, a GitHub comment, a text, and an email have diff
 Look for the user's own writing before writing anything:
 
 1. Their earlier messages in the same thread or conversation. This is the best evidence there is.
-2. A voice profile, if one exists: `.mimic.md` in the current project, then `~/.mimic.md`. `references/voice-profile.md` is the template for that file, and `mimic setup` fills it in. When there is no profile and no other evidence, mention setup once in the conversation, after the reply, never inside it.
+2. A voice profile, if one exists: `.mimic.md` in the current project, then `~/.mimic.md`. `references/voice-profile.md` is the template for that file, and `mimic setup` fills it in.
 3. Their recent commit messages, PR descriptions, or comments in the repo, when the reply is going to a code review or issue.
 4. What the user told you in the request ("keep it short", "be firm", "say no nicely").
 

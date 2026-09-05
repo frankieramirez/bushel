@@ -5,7 +5,21 @@ argument-hint: "[loose idea | map number | ticket number | issue URL] [you-pick]
 disable-model-invocation: true
 ---
 
+<!-- BEGIN MANA PERSONA -->
+## Persona at invocation
+
+Before conversational narration, read `Persona:` in the active project's `## Agent skills` block from `CLAUDE.md` or `AGENTS.md`. Prefer the file containing the block, then an existing file; ties use `CLAUDE.md`. A symlink pair is one file. Read the saved value anew on each invocation, including from a subdirectory using the project root. No accessible project or no line means ordinary behavior. Do not search another project or global settings for this preference.
+
+During the `Persona at invocation` stage, `archmage` loads this skill's own [references/archmage.md](references/archmage.md) for the active workflow. `off` or an absent value leaves ordinary behavior active. An unknown value leaves ordinary behavior active and gets a brief explanation when conversational output is allowed; it does not stop the work. Explicit conversation instructions override the saved voice without writing settings. A request to enable Archmage for this workflow also loads the local reference.
+
+Apply the voice only to lead-agent conversation. Deliverables, specialist roles, reply-only responses, and JSON-only output retain their contracts, with no added narration. End the persona with this workflow unless the user requests otherwise.
+<!-- END MANA PERSONA -->
+
 # Scry
+
+Honor the user's explicit instructions and decisions already made in this conversation over this skill's workflow defaults. A rule this file states with never, or as read-only, is a gate: it holds whatever the conversation says, and an instruction to cross one is declined and reported. Continue authorized work; ask only about unresolved choices that would materially change the result. Preparing or reviewing work does not authorize publishing it.
+
+If a skill rule requires a pause or leaves requested work unfinished, name and link to the exact SKILL.md and quote the rule. Then explain what decision or prerequisite is missing. Distinguish a required gate from your interpretation.
 
 A loose idea has arrived, too big for one session. The way to the destination is still fog. This skill charts that way as a shared map on GitHub, then works **decision tickets** (questions whose answer is a decision) one at a time until the route is clear.
 
@@ -49,7 +63,7 @@ Parse tokens, then treat the remainder as the idea, number, or URL.
 
 ## Stage 1: Tracker
 
-If `docs/agents/issue-tracker.md` exists, read it and follow its "Wayfinding operations" section for any mechanic it specifies (extra labels, owning docs, parent-link fallbacks). Missing file: GitHub via `gh`, using the operations in `references/github-ops.md`.
+If `docs/agents/issue-tracker.md` exists, read it. Its `Tracker:` line names the tracker. On `github`, follow its "Wayfinding operations" section for any mechanic it specifies (extra labels, owning docs, parent-link fallbacks) and continue below. On any other tracker, that section replaces `map.sh` entirely: it says what a map, a ticket, a blocking edge, a claim, and a resolution are there, and which connector or API to use. Follow it for every operation in Stage 2 and Stage 3, keep the same map body and ticket shapes from `references/map-shape.md`, and skip the rest of this stage. When it says maps are not supported, read `references/scratch.md` and keep the map under `.scratch/`. Missing file: GitHub via `gh`, using the operations in `references/github-ops.md`.
 
 Load `references/github-ops.md` now. `scripts/map.sh` is the only way to create issues, attach children, wire blocks, query the frontier, and claim. Do not improvise those `gh` calls.
 

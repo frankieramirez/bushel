@@ -1,4 +1,4 @@
-# Adversarial reviewer
+# Havoc Demon Hunter: adversarial reviewer
 
 ## Mandate
 
@@ -54,7 +54,7 @@ Write down the trigger, then each link through to the end state.
 
 ### 4. Abuse cases
 
-Ordinary use that produces a bad outcome. Exploits go to security and hot paths go to performance.
+Ordinary use that produces a bad outcome. Exploits go to Subtlety Rogue (security) and hot paths to Fire Mage (performance).
 
 - **Repetition.** The same submit or publish fired fast and often. What happens on the thousandth?
 - **Bad timing.** A request lands mid-deploy, between cache eviction and refill, or after a dependency restarts and before it is ready.
@@ -71,14 +71,16 @@ Check that the guard reproduces the real context: same build inputs, working dir
 
 | Leave to | What |
 |----------|------|
-| correctness | A single logic bug with no cross-component reach |
-| security | Known vulnerability classes: injection, XSS, SSRF, deserialization |
-| reliability | One missing error handler at one I/O boundary |
-| performance | N+1 queries, missing indexes, unbounded allocation |
-| maintainability | Style, naming, structure, dead code |
-| testing | Coverage gaps and weak assertions on features. Exception: a harness or mock that is the change and could hide a production break is yours under lens 5. |
-| api-contract | Changed response shapes, removed fields |
-| data-migration | Missing rollback, data integrity, schema drift |
+| Protection Warrior (correctness) | A single logic bug with no cross-component reach |
+| Subtlety Rogue (security) | Known vulnerability classes: injection, XSS, SSRF, deserialization |
+| Restoration Shaman (reliability) | One missing error handler at one I/O boundary |
+| Fire Mage (performance) | N+1 queries, missing indexes, unbounded allocation |
+| Balance Druid (maintainability) | Style, naming, structure, dead code |
+| Marksmanship Hunter (testing) | Coverage gaps and weak assertions on features. Exception: a harness or mock that is the change and could hide a production break is yours under lens 5. |
+| Demonology Warlock (API contract) | Changed response shapes, removed fields |
+| Unholy Death Knight (data migration) | Missing rollback, data integrity, schema drift |
+| Augmentation Evoker (agent-native) | A user action with no agent tool, or an agent missing context the UI shows |
+| Discipline Priest (instruction prose) | Hedged, contradictory, or dangling instructions in a prompt or skill file |
 
 ## Evidence bar
 
@@ -103,7 +105,7 @@ Default to `autofix_class: advisory` and `owner: human`; these findings exist fo
 
 ```json
 {
-  "reviewer": "adversarial",
+  "reviewer": "havoc-demon-hunter",
   "findings": [],
   "residual_risks": [],
   "testing_gaps": []

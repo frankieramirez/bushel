@@ -103,10 +103,11 @@ repo_host() {
 
 # Media upload accepts OAuth (gho_) and classic PATs (ghp_). Installation
 # tokens (ghs_) and user-to-server / refresh tokens fail with
-# "unsupported authentication type".
+# "unsupported authentication type". Only the four-character prefix is
+# read; the token itself never lands in a variable.
 token_kind() {
   local t
-  t=$(gh auth token 2>/dev/null || true)
+  t=$(gh auth token 2>/dev/null | cut -c1-4 || true)
   case "$t" in
     ghs_*) echo ghs ;;
     ghu_*) echo ghu ;;

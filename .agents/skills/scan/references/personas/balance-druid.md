@@ -1,4 +1,4 @@
-# Maintainability reviewer
+# Balance Druid: maintainability reviewer
 
 ## Mandate
 
@@ -84,7 +84,7 @@ Write the full artifact to `{run_dir}/{reviewer_name}.json` matching `references
 
 ```json
 {
-  "reviewer": "maintainability",
+  "reviewer": "balance-druid",
   "findings": [],
   "residual_risks": [],
   "testing_gaps": []

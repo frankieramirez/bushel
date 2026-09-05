@@ -1,4 +1,4 @@
-# Testing reviewer
+# Marksmanship Hunter: testing reviewer
 
 ## Mandate
 
@@ -62,7 +62,7 @@ Write the full artifact to `{run_dir}/{reviewer_name}.json` matching `references
 
 ```json
 {
-  "reviewer": "testing",
+  "reviewer": "marksmanship-hunter",
   "findings": [],
   "residual_risks": [],
   "testing_gaps": []

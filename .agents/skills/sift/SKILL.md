@@ -1,11 +1,25 @@
 ---
 name: sift
-description: "Move unlabeled and needs-triage issues through inbox states and write agent-ready briefs. Use when asked to sift the inbox, triage issues, show what needs attention, or /sift."
-argument-hint: "[blank to list what needs attention | issue number | issue URL | move NUMBER to STATE]"
+description: "Move unlabeled and needs-triage issues through inbox states and write agent-ready briefs, on GitHub, Linear, Jira, or local files. Use when asked to sift the inbox, triage issues, show what needs attention, or /sift. Pass you-pick to triage without waiting for answers."
+argument-hint: "[blank to list what needs attention | issue id | issue URL | move ID to STATE] [you-pick]"
 disable-model-invocation: true
 ---
 
+<!-- BEGIN MANA PERSONA -->
+## Persona at invocation
+
+Before conversational narration, read `Persona:` in the active project's `## Agent skills` block from `CLAUDE.md` or `AGENTS.md`. Prefer the file containing the block, then an existing file; ties use `CLAUDE.md`. A symlink pair is one file. Read the saved value anew on each invocation, including from a subdirectory using the project root. No accessible project or no line means ordinary behavior. Do not search another project or global settings for this preference.
+
+During the `Persona at invocation` stage, `archmage` loads this skill's own [references/archmage.md](references/archmage.md) for the active workflow. `off` or an absent value leaves ordinary behavior active. An unknown value leaves ordinary behavior active and gets a brief explanation when conversational output is allowed; it does not stop the work. Explicit conversation instructions override the saved voice without writing settings. A request to enable Archmage for this workflow also loads the local reference.
+
+Apply the voice only to lead-agent conversation. Deliverables, specialist roles, reply-only responses, and JSON-only output retain their contracts, with no added narration. End the persona with this workflow unless the user requests otherwise.
+<!-- END MANA PERSONA -->
+
 # Sift
+
+Honor the user's explicit instructions and decisions already made in this conversation over this skill's workflow defaults. A rule this file states with never, or as read-only, is a gate: it holds whatever the conversation says, and an instruction to cross one is declined and reported. Continue authorized work; ask only about unresolved choices that would materially change the result. Preparing or reviewing work does not authorize publishing it.
+
+If a skill rule requires a pause or leaves requested work unfinished, name and link to the exact SKILL.md and quote the rule. Then explain what decision or prerequisite is missing. Distinguish a required gate from your interpretation.
 
 Move issues on this repo's tracker through a small state machine. Categorise each one and write a brief an agent can build from. The maintainer stays in the loop on every state change.
 
@@ -37,17 +51,36 @@ These are the canonical names. Actual label strings live in `docs/agents/triage-
 
 An unlabeled issue goes to `needs-triage` first. From there it moves to `needs-info`, `ready-for-agent`, `ready-for-human`, or `wontfix`. `needs-info` returns to `needs-triage` once the reporter replies. Flag a transition that looks unusual and ask before applying it.
 
+## Tracker
+
+Read `docs/agents/issue-tracker.md` when it exists. Its `Tracker:` line names the tracker and its `Adapter flags:` line gives the flags for the bundled script. Missing file: GitHub, no flags. Ticket ids are whatever the tracker uses (`42`, `ENG-42`, `PLAT-42`, a file path).
+
+Every read and write on the tracker is one of these operations: `list`, `view`, `label`, `comment`, `close`. When the host exposes a connector for that tracker (a Linear or Jira tool set the session can call), use it for them; it is already authenticated and needs no key. Inside an Orca worktree (`ORCA_WORKTREE_ID` is set and `command -v orca` succeeds), `orca linear` is such a connector for Linear; `orca linear --help` lists its operations. Otherwise run `scripts/tickets.sh` with the adapter flags. GitHub always goes through the script. Never mix the two in one run, and never write a credential anywhere. For `local` or `other`, the tracker file's Conventions replace both; do by hand what it says, and report an operation it does not support instead of inventing one. Exit 3 from the script means the token cannot write; report what it would have done and stop.
+
+`SKILL_DIR` is the absolute directory this SKILL.md lives in. The Bash tool forgets variables between calls, so every block that runs the bundled script sets `SKILL_DIR` again on its first line. On a GitHub Enterprise host, pass `GH_HOST=<host>` inline on every call.
+
+```bash
+SKILL_DIR="<absolute path of the directory containing this SKILL.md>";
+bash "$SKILL_DIR/scripts/tickets.sh" <adapter flags> list --unlabeled
+bash "$SKILL_DIR/scripts/tickets.sh" <adapter flags> view ID
+bash "$SKILL_DIR/scripts/tickets.sh" <adapter flags> label ID --add <state string> --remove <old state>
+```
+
 ## Arguments
 
 Natural language. Interpret and act.
 
 - no argument, or "show me what needs attention": Stage 1
-- a number or URL: Stage 2
+- an id or URL: Stage 2
 - "move #42 to ready-for-agent": Stage 3 (override)
+
+| Token | Effect |
+|-------|--------|
+| `you-pick` | Do not wait for the maintainer. Take your own recommendation at 2b, accept recommended grilling answers at 2d, and apply the result under the guard in 2e. With no id, work every Stage 1 item oldest first, at most 10 per run. Same meaning as the user saying "make the decisions" or "you pick". |
 
 ## Stage 1: What needs attention
 
-Query the tracker and present three buckets, oldest first:
+Query the tracker (`list --unlabeled`, then `list` for each state string) and present three buckets, oldest first:
 
 1. Unlabeled
 2. `needs-triage`
@@ -55,7 +88,7 @@ Query the tracker and present three buckets, oldest first:
 
 When PRs are in scope, include external PRs and tag each line `[PR]` or `[issue]`. Discovery keeps only external authors (the tracker file defines who counts). An explicitly named PR is always sifted, author aside.
 
-Show counts and a one-line summary per item. Let the maintainer pick.
+Show counts and a one-line summary per item. Let the maintainer pick. Under `you-pick`, run Stage 2 on each item in that order instead, and stop after 10.
 
 ## Stage 2: One issue
 
@@ -72,7 +105,7 @@ Two checks against the codebase:
 
 ### 2b. Recommend
 
-Tell the maintainer the category and state you lean toward, with reasoning, plus a short codebase note. Include whether it is already implemented. Wait.
+Tell the maintainer the category and state you lean toward, with reasoning, plus a short codebase note. Include whether it is already implemented. Wait. Under `you-pick`, show the same recommendation and continue with it.
 
 ### 2c. Verify
 
@@ -93,6 +126,8 @@ Load `references/agent-brief.md` before posting a brief.
 - `wontfix`, rejected bug: close with a short explanation.
 - `wontfix`, rejected enhancement: write `.out-of-scope/` (see `references/out-of-scope.md`), link it from the comment, close.
 - `needs-triage`: apply the role. Comment only if there is partial progress worth keeping.
+
+**The `you-pick` guard.** Without a person in the loop, closing someone's issue is off the table. The only `wontfix` allowed is "already implemented" with the code path cited. A bug or enhancement you would reject stays `needs-triage` with triage notes that say why, and the report names it for a person to close. A transition that looks unusual (see Roles) also stays put and is reported. `needs-info`, `ready-for-agent`, and `ready-for-human` apply as usual.
 
 ## Stage 3: Override
 
@@ -121,6 +156,10 @@ Capture everything resolved during grilling under "established so far". Question
 ## Resume
 
 If prior triage notes exist, read them. Check whether the reporter answered. Present an updated picture before continuing.
+
+## Scripts
+
+`scripts/tickets.sh` reads and writes tickets on GitHub (`git` and `gh` only), Linear, or Jira (`python3` and the tracker's environment variables). It lists, views, creates, labels, comments, closes, wires blocking edges, finds the next unclaimed ready ticket, and claims one. Exit 3 means the token cannot write. `tickets.sh -h` prints usage.
 
 ## References
 

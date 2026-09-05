@@ -1,4 +1,4 @@
-# Reliability reviewer
+# Restoration Shaman: reliability reviewer
 
 ## Mandate
 
@@ -47,7 +47,7 @@ Write the full artifact to `{run_dir}/{reviewer_name}.json` matching `references
 
 ```json
 {
-  "reviewer": "reliability",
+  "reviewer": "restoration-shaman",
   "findings": [],
   "residual_risks": [],
   "testing_gaps": []

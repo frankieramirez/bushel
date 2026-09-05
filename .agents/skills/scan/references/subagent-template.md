@@ -120,7 +120,7 @@ Suppress these outright, at any anchor. They never go to a soft bucket.
 | Restating what the code already does | "Extract a helper" for a small helper. "Add a guard" under an existing guard. |
 | "Consider adding ..." with no failure mode | If you cannot say what breaks, there is nothing to act on. Find the break or drop it. |
 | A lint-disable comment for that exact rule | The author already decided. Re-raising it through another lens is noise, unless a project standard forbids that disable. |
-| Quality opinions with no rule behind them | "File is long", "too many params", "hard to read". Subjective unless a standards file sets the limit, in which case it is a `project-standards` finding. |
+| Quality opinions with no rule behind them | "File is long", "too many params", "hard to read". Subjective unless a standards file sets the limit, in which case it is a Retribution Paladin (project standards) finding. |
 | Hypothetical future problems | "Might break under load", "what if requirements change". A finding only when the diff makes it reachable today. |
 
 ## Advisory
@@ -136,11 +136,16 @@ When the honest answer to "what breaks if this is left alone?" is "nothing, thou
 - Propose `suggested_fix` whenever any defensible change is reachable from the diff, the cited code, a parallel pattern in the repo, or a framework convention you verified. Name the specific guard or call; "add validation" is not a fix. When information is missing, propose the most defensible default, state the assumption, and let the user override. "I need X before I can say" is a punt; answer "what would I change if I had to choose now?" instead. Leave it null only when there is no code-level change at all: a pure question, or a purely organizational resolution.
 - Nothing found: return an empty `findings` array, with `residual_risks` and `testing_gaps` still filled in where you have them.
 - Check the code against the intent and the PR title and body. Code that does something the intent does not describe, or omits something it promises, is a high-value finding.
+- When a `<requirements>` block is present, check each `R<n>` against the diff as part of your pass. A finding that shows a requirement unmet sets `requirement` to its id. A requirement you see met needs no finding; a requirement you cannot judge from your lens needs nothing either.
 </output-contract>
 
 <pr-context>
 {pr_metadata}
 </pr-context>
+
+<requirements>
+{requirements}
+</requirements>
 
 <review-context>
 Run ID: {run_id}
@@ -165,17 +170,18 @@ When either of the last two values is a file path rather than content, Read that
 
 | Slot | Filled from | Holds |
 |---|---|---|
-| `{persona_file}` | `references/personas/<name>.md` | The whole persona file |
+| `{persona_file}` | `references/personas/<reviewer_name>.md` | The whole persona file |
 | `{diff_scope_rules}` | `references/diff-scope.md` | Scope tiers and the evidence tool rules |
 | `{schema}` | `references/findings-schema.json` | The artifact contract |
 | `{intent_summary}` | Stage 2 | Two or three lines on what the change is for |
 | `{pr_metadata}` | Stage 1 | PR title, body, URL; empty for a branch or standalone review |
+| `{requirements}` | Stage 2c | The ticket line, title, numbered requirements, and out-of-scope notes; empty when no ticket resolved |
 | `{scope_mode}` | Stage 1 | `local-aligned`, `pr-remote`, `branch-remote`, or `standalone` |
 | `{remote_head_ref}` | Stage 1 | `PR_HEAD_REF` or the branch head ref in a remote mode; empty otherwise |
 | `{file_list}` | Stage 1 | Changed files, inline or a staged path |
 | `{diff}` | Stage 1 | The hunks, inline or a staged path |
 | `{run_id}` / `{run_dir}` | Stage 3d | Run identity and the artifact directory |
-| `{reviewer_name}` | Stage 3 | Persona name; doubles as the artifact filename stem |
+| `{reviewer_name}` | Stage 3 | Reviewer identifier such as `protection-warrior`; doubles as the artifact filename stem |
 
 ## Extra blocks for specific personas
 
@@ -183,6 +189,6 @@ Append to the review context only for the persona that needs it:
 
 | Persona | Block | Contents |
 |---|---|---|
-| `project-standards` | `<standards-paths>` | The non-empty path list from Stage 3b |
-| `data-migration` | `<review-base>` | The resolved base ref, so drift checks never assume `main` |
-| `existing-feedback` | `<harvested-feedback>` | The Stage 2b payload, each item tagged with its surface (`top-level comment`, `review body`, `review thread`) and author login |
+| `retribution-paladin` | `<standards-paths>` | The non-empty path list from Stage 3b |
+| `unholy-death-knight` | `<review-base>` | The resolved base ref, so drift checks never assume `main` |
+| `lore-bard` | `<harvested-feedback>` | The Stage 2b payload, each item tagged with its surface (`top-level comment`, `review body`, `review thread`) and author login |

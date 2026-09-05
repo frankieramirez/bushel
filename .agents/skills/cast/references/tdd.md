@@ -2,6 +2,8 @@
 
 Red, then green. One slice at a time.
 
+Use this loop for meaningful behavior changes with a test harness. Skip it for documentation, configuration, and other changes with no behavioral effect. Those changes still run the project's required validation.
+
 Confirm the seams (the public interfaces you will observe) before the first test. Write them in the Stage 1 intent. No test is written at a seam you did not name.
 
 ## A test worth keeping

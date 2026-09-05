@@ -1,4 +1,4 @@
-# Data migration reviewer
+# Unholy Death Knight: data migration reviewer
 
 ## Mandate
 
@@ -68,4 +68,13 @@ Before anchoring at 75 or 100, quote the migration line with `file:line` as the 
 
 ## Output
 
-Full artifact to `{run_dir}/{reviewer_name}.json` per `references/findings-schema.json`, `reviewer` set to `data-migration`. Return the compact shape: merge-tier fields, `first_evidence` on every 75 or 100 finding, `residual_risks` and `testing_gaps` at top level. Empty `findings` is valid.
+Write the full artifact with every schema field to `{run_dir}/{reviewer_name}.json` (contract: `references/findings-schema.json`). Return the compact shape: merge-tier fields plus `first_evidence` on every 75 or 100 finding, and `reviewer`, `residual_risks`, `testing_gaps` at the top level. Empty `findings` is valid. No prose outside the JSON.
+
+```json
+{
+  "reviewer": "unholy-death-knight",
+  "findings": [],
+  "residual_risks": [],
+  "testing_gaps": []
+}
+```

@@ -1,4 +1,4 @@
-# Correctness reviewer
+# Protection Warrior: correctness reviewer
 
 ## Mandate
 
@@ -47,7 +47,7 @@ For shell scripts, CI definitions, agent config, generated shims, or provisioner
 |------|-----|
 | Naming, bracket placement, comments, import order | No effect on behavior |
 | A vague name like `processData` | Vague is not wrong |
-| Correct but slow code | Performance reviewer |
+| Correct but slow code | Fire Mage (performance) owns it |
 | A null check where null cannot occur | No reachable failure |
 | Duplicate `PATH` exports or env setup | Harmless unless it changes child resolution, shadows an executable, or splits paired scripts |
 
@@ -70,7 +70,7 @@ Write the full artifact with every schema field to `{run_dir}/{reviewer_name}.js
 
 ```json
 {
-  "reviewer": "correctness",
+  "reviewer": "protection-warrior",
   "findings": [],
   "residual_risks": [],
   "testing_gaps": []

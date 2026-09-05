@@ -82,6 +82,20 @@ The hunk moved, so the recorded line may point at the wrong code, and `line` is 
 - Anchor missing and the comment describes concrete in-place code: `not-addressing`, with "searched `<file>` for `<anchor>`, not present" as the evidence.
 - Anchor missing and the comment implies the code moved elsewhere: `needs-human`. Guessing the new home is a judgment call you do not get to make.
 
+## When scouts gathered the evidence
+
+On a large batch the orchestrator sends read-only scouts to collect facts per file cluster (step 3 of the skill). Their return is raw material for this rubric, never a verdict. Each field lands on one row above:
+
+| Scout field | Feeds |
+|-------------|-------|
+| `already_present: true` with its evidence | `not-addressing`, already handled, citing that `file:line` |
+| `outdated_anchor` | The outdated-thread rule: found means judge at that location, `null` means the anchor-missing branches |
+| `deliberate_artifact` | Condition 1 of the deliberate-design divert. Condition 2, whether reasonable engineers could pick either side, is still yours to argue. |
+| `callers`, `asserting_test` | The risk row: a caller the fix breaks or a test that asserts the current behavior is the evidence `needs-human` owes, or the reason the change note tells the fixer to update that test |
+| `sibling_sites` | Class-fix candidates. The three boundary rules under "Fix the pattern" still apply to each one. |
+
+A scout's evidence settles a verdict only when it quotes the line. A field with a claim and no `file:line` is an unread file: open it yourself. The three cross-item passes (group by premise, agreement, fix the pattern) run over scout returns exactly as they would over your own reads, since every return is in front of you at once.
+
 ## Escalate rarely
 
 Beyond the risk and product-question cases: changes that reach into other systems, security-sensitive choices, business logic you cannot pin down, reviewers who contradict each other. These are uncommon. Nearly everything else gets fixed.

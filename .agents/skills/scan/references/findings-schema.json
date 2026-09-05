@@ -6,8 +6,16 @@
   "required": ["reviewer", "findings", "residual_risks", "testing_gaps"],
   "properties": {
     "reviewer": {
-      "description": "Persona name; matches the artifact filename stem.",
+      "description": "Reviewer identifier; matches the artifact filename stem. One of protection-warrior, subtlety-rogue, havoc-demon-hunter, marksmanship-hunter, fire-mage, restoration-shaman, retribution-paladin, unholy-death-knight, balance-druid, demonology-warlock, windwalker-monk, lore-bard, augmentation-evoker, discipline-priest, the orchestrator's fast-pass, or havoc-demon-hunter-peer for the cross-model pass.",
       "type": "string"
+    },
+    "model": {
+      "description": "Set only by the cross-model peer: the model that served the review, as the peer CLI reported it.",
+      "type": "string"
+    },
+    "independence_verified": {
+      "description": "Set only by the cross-model peer: true when the serving model belongs to a different family than the host session. Only a true value lets peer agreement raise another reviewer's confidence.",
+      "type": "boolean"
     },
     "findings": {
       "description": "Each finding this persona will stand behind at confidence 50 or above. Empty when there are none.",
@@ -71,6 +79,10 @@
           "pre_existing": {
             "description": "True only for unchanged code the diff neither touches nor makes newly reachable.",
             "type": "boolean"
+          },
+          "requirement": {
+            "description": "The requirement id from the <requirements> block (R1, R2) this finding shows unmet, or null.",
+            "type": ["string", "null"]
           }
         }
       }

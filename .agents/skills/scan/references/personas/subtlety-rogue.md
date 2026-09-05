@@ -1,4 +1,4 @@
-# Security reviewer
+# Subtlety Rogue: security reviewer
 
 ## Mandate
 
@@ -50,7 +50,7 @@ Write the full artifact with every schema field to `{run_dir}/{reviewer_name}.js
 
 ```json
 {
-  "reviewer": "security",
+  "reviewer": "subtlety-rogue",
   "findings": [],
   "residual_risks": [],
   "testing_gaps": []
