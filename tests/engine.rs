@@ -106,6 +106,21 @@ impl Harness {
     fn state(&self) -> &AppState {
         &self.engine.state
     }
+
+    fn take_event(&mut self, wanted: impl Fn(&AppEvent) -> bool) -> AppEvent {
+        loop {
+            let event = tokio::runtime::Handle::current()
+                .block_on(async {
+                    tokio::time::timeout(Duration::from_secs(2), self.rx.recv()).await
+                })
+                .expect("event arrived")
+                .expect("Engine sender remains alive");
+            if wanted(&event) {
+                return event;
+            }
+            self.engine.apply(event);
+        }
+    }
 }
 
 macro_rules! engine_test {
@@ -116,6 +131,38 @@ macro_rules! engine_test {
         }
     };
 }
+
+engine_test!(
+    volume_creation_does_not_reserve_a_container_with_the_same_name,
+    || {
+        let mut h = Harness::started(happy_mock());
+        h.engine.dispatch(Command::SwitchPane(Pane::Volumes));
+        h.engine.dispatch(Command::Run(UiAction::Create));
+        for c in "qtest".chars() {
+            h.engine.dispatch(Command::OverlayChar(c));
+        }
+        h.engine.dispatch(Command::OverlaySubmit);
+        h.engine.dispatch(Command::ConfirmYes);
+        assert!(
+            h.state()
+                .containers
+                .iter()
+                .find(|c| c.id == "qtest")
+                .unwrap()
+                .pending
+                .is_none()
+        );
+        assert!(
+            h.state()
+                .volumes
+                .iter()
+                .find(|v| v.name == "qtest")
+                .unwrap()
+                .pending
+                .is_some()
+        );
+    }
+);
 
 engine_test!(startup_populates_all_four_panes_from_fixtures, || {
     let h = Harness::started(happy_mock());
@@ -1735,4 +1782,405 @@ engine_test!(the_settings_panel_moves_toggles_and_persists, || {
 
     unsafe { std::env::remove_var(Config::DIR_ENV) };
     let _ = std::fs::remove_dir_all(&dir);
+});
+
+engine_test!(
+    tag_confirmation_keeps_its_previewed_source_after_selection_changes,
+    || {
+        let source = "docker.io/library/alpine:latest";
+        let mock = happy_mock();
+        mock.on(&["image", "tag", source, "captured:v1"], Output::ok(""));
+        let mut h = Harness::started(mock);
+        h.engine.dispatch(Command::SwitchPane(Pane::Images));
+        h.pump();
+        h.engine.dispatch(Command::Top);
+        assert_eq!(h.state().selected_image().unwrap().reference, source);
+        h.engine.dispatch(Command::Run(UiAction::Tag));
+        type_overlay(&mut h, "captured:v1");
+        h.engine.dispatch(Command::OverlaySubmit);
+        h.engine.dispatch(Command::Bottom);
+        assert_ne!(h.state().selected_image().unwrap().reference, source);
+        h.engine.dispatch(Command::ConfirmYes);
+        h.pump();
+        assert!(
+            h.mock
+                .commands()
+                .iter()
+                .any(|c| c == "container image tag docker.io/library/alpine:latest captured:v1")
+        );
+    }
+);
+
+engine_test!(
+    tag_confirmation_rejects_a_source_that_changed_since_the_preview,
+    || {
+        let mut h = Harness::started(happy_mock());
+        h.engine.dispatch(Command::SwitchPane(Pane::Images));
+        h.pump();
+        h.engine.dispatch(Command::Top);
+        h.engine.dispatch(Command::Run(UiAction::Tag));
+        type_overlay(&mut h, "captured:v1");
+        h.engine.dispatch(Command::OverlaySubmit);
+        let mut list: Vec<bushel::client::model::ImageJson> =
+            serde_json::from_slice(&fixture("image_ls.json")).unwrap();
+        list[0].configuration.descriptor.as_mut().unwrap().digest = Some("sha256:changed".into());
+        h.engine.apply(AppEvent::Images(100, Ok(list)));
+        h.engine.dispatch(Command::ConfirmYes);
+        h.pump();
+        assert!(
+            h.state()
+                .toast
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("image changed")
+        );
+        assert!(!h.mock.commands().iter().any(|c| c.contains("image tag")));
+    }
+);
+
+engine_test!(
+    a_poll_started_before_tag_completion_cannot_confirm_it,
+    || {
+        let mock = happy_mock();
+        mock.on(
+            &[
+                "image",
+                "tag",
+                "docker.io/library/alpine:latest",
+                "present:v1",
+            ],
+            Output::ok(""),
+        );
+        let mut h = Harness::started(mock);
+        h.mock.on(
+            &["image", "ls", "--format", "json"],
+            Output::ok(image_ls_with_extra_ref("present:v1")),
+        );
+        h.engine.dispatch(Command::SwitchPane(Pane::Images));
+        let old_poll = h.take_event(|e| matches!(e, AppEvent::Images(..)));
+        h.engine.dispatch(Command::Top);
+        h.engine.dispatch(Command::Run(UiAction::Tag));
+        type_overlay(&mut h, "present:v1");
+        h.engine.dispatch(Command::OverlaySubmit);
+        h.engine.dispatch(Command::ConfirmYes);
+        let done = h.take_event(|e| matches!(e, AppEvent::ActionDone { .. }));
+        h.engine.apply(done);
+        h.engine.apply(old_poll);
+        assert!(
+            h.state()
+                .images
+                .iter()
+                .find(|i| i.reference == "docker.io/library/alpine:latest")
+                .unwrap()
+                .pending
+                .is_some()
+        );
+        assert!(!h.state().messages.iter().any(|m| m == "tagged present:v1"));
+        h.pump();
+        assert_eq!(h.state().toast.as_ref().unwrap().text, "tagged present:v1");
+    }
+);
+
+fn volumes_with(name: &str) -> Vec<bushel::client::model::VolumeJson> {
+    let mut list: Vec<serde_json::Value> =
+        serde_json::from_slice(&fixture("volume_ls.json")).unwrap();
+    let mut extra = list[0].clone();
+    extra["id"] = serde_json::json!(name);
+    extra["configuration"]["name"] = serde_json::json!(name);
+    list.push(extra);
+    serde_json::from_value(serde_json::json!(list)).unwrap()
+}
+
+fn create_volume(h: &mut Harness, name: &str) {
+    h.engine.dispatch(Command::Run(UiAction::Create));
+    type_overlay(h, name);
+    h.engine.dispatch(Command::OverlaySubmit);
+    h.engine.dispatch(Command::ConfirmYes);
+}
+
+engine_test!(
+    volume_appearance_before_command_failure_never_announces_success_or_deletes_the_real_volume,
+    || {
+        let mock = happy_mock();
+        mock.on(
+            &["volume", "create", "early"],
+            Output::fail(1, "create failed"),
+        );
+        let mut h = Harness::started(mock);
+        h.engine.dispatch(Command::SwitchPane(Pane::Volumes));
+        let AppEvent::Volumes(sequence, _) = h.take_event(|e| matches!(e, AppEvent::Volumes(..)))
+        else {
+            unreachable!()
+        };
+        create_volume(&mut h, "early");
+        h.engine
+            .apply(AppEvent::Volumes(sequence, Ok(volumes_with("early"))));
+        assert!(
+            h.state()
+                .volumes
+                .iter()
+                .find(|v| v.name == "early")
+                .unwrap()
+                .pending
+                .is_some()
+        );
+        assert!(
+            !h.state()
+                .messages
+                .iter()
+                .any(|m| m.contains("created early"))
+        );
+        let done = h.take_event(|e| matches!(e, AppEvent::ActionDone { .. }));
+        h.engine.apply(done);
+        let volume = h
+            .state()
+            .volumes
+            .iter()
+            .find(|v| v.name == "early")
+            .expect("real polled volume survives failure");
+        assert!(volume.pending.is_none());
+        assert!(
+            h.state()
+                .toast
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("create failed")
+        );
+        assert!(
+            !h.state()
+                .messages
+                .iter()
+                .any(|m| m.contains("created early"))
+        );
+    }
+);
+
+engine_test!(
+    volume_creation_expires_as_unconfirmed_and_drops_only_its_placeholder,
+    || {
+        let mock = happy_mock();
+        mock.on(&["volume", "create", "unseen"], Output::ok(""));
+        let mut h = Harness::started(mock);
+        let original_names: Vec<_> = h.state().volumes.iter().map(|v| v.name.clone()).collect();
+        h.engine.dispatch(Command::SwitchPane(Pane::Volumes));
+        h.pump();
+        create_volume(&mut h, "unseen");
+        h.pump();
+        assert!(
+            h.state()
+                .volumes
+                .iter()
+                .find(|v| v.name == "unseen")
+                .unwrap()
+                .pending
+                .is_some()
+        );
+        h.engine.dispatch(Command::SwitchPane(Pane::Containers));
+        h.engine.dispatch(Command::SwitchPane(Pane::Volumes));
+        h.pump();
+        assert_eq!(
+            h.state().toast.as_ref().unwrap().text,
+            "unseen: command completed; outcome unconfirmed"
+        );
+        assert!(
+            h.state()
+                .messages
+                .iter()
+                .any(|m| m.contains("outcome unconfirmed"))
+        );
+        assert!(!h.state().volumes.iter().any(|v| v.name == "unseen"));
+        assert_eq!(
+            h.state()
+                .volumes
+                .iter()
+                .map(|v| v.name.clone())
+                .collect::<Vec<_>>(),
+            original_names
+        );
+    }
+);
+
+fn tag_selected(h: &mut Harness, destination: &str) {
+    h.engine.dispatch(Command::Run(UiAction::Tag));
+    type_overlay(h, destination);
+    h.engine.dispatch(Command::OverlaySubmit);
+    h.engine.dispatch(Command::ConfirmYes);
+}
+
+fn pull_reference(h: &mut Harness, reference: &str) {
+    h.engine.dispatch(Command::Run(UiAction::Pull));
+    type_overlay(h, reference);
+    h.engine.dispatch(Command::OverlaySubmit);
+}
+
+engine_test!(
+    pull_and_pending_image_actions_respect_each_others_reservations,
+    || {
+        let source = "docker.io/library/alpine:latest";
+        let mock = happy_mock();
+        mock.on_stream(&["image", "pull", source], vec![]);
+        let mut h = Harness::started(mock);
+        h.engine.dispatch(Command::SwitchPane(Pane::Images));
+        h.pump();
+        h.engine.dispatch(Command::Top);
+        pull_reference(&mut h, source);
+        assert!(h.state().pull.is_some());
+        h.engine.dispatch(Command::Run(UiAction::Delete));
+        assert!(
+            h.state()
+                .toast
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("pull already running")
+        );
+        tag_selected(&mut h, "dest:v1");
+        assert!(
+            h.state()
+                .toast
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("pull already running")
+        );
+        h.engine.dispatch(Command::Run(UiAction::Prune));
+        assert!(
+            h.state()
+                .toast
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("pull is already running")
+        );
+        h.engine.apply(AppEvent::PullDone {
+            reference: source.into(),
+            code: 0,
+        });
+        tag_selected(&mut h, "dest:v1");
+        pull_reference(&mut h, "dest:v1");
+        assert!(h.state().pull.is_none());
+        assert!(
+            h.state()
+                .toast
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("action already pending")
+        );
+        assert!(
+            !h.mock
+                .commands()
+                .iter()
+                .any(|c| c == "container image pull dest:v1")
+        );
+    }
+);
+
+engine_test!(
+    prune_serializes_its_kind_while_other_entity_actions_remain_available,
+    || {
+        let mut h = Harness::started(happy_mock());
+        h.engine.dispatch(Command::Run(UiAction::Prune));
+        h.engine.dispatch(Command::ConfirmYes);
+        assert!(h.state().activity.is_some());
+        h.engine.dispatch(Command::Run(UiAction::Stop));
+        assert!(
+            h.state()
+                .toast
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("prune already running")
+        );
+        assert!(h.state().containers.iter().all(|c| c.pending.is_none()));
+        h.engine.dispatch(Command::SwitchPane(Pane::Volumes));
+        h.engine.dispatch(Command::Run(UiAction::Prune));
+        assert!(
+            h.state()
+                .toast
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("a prune is already running")
+        );
+        create_volume(&mut h, "parallel");
+        assert!(
+            h.state()
+                .volumes
+                .iter()
+                .find(|v| v.name == "parallel")
+                .unwrap()
+                .pending
+                .is_some()
+        );
+        assert_eq!(
+            h.state().activity.as_ref().unwrap().label,
+            "container delete --all"
+        );
+    }
+);
+
+engine_test!(
+    pending_actions_block_prune_only_for_their_entity_kind,
+    || {
+        let mut h = Harness::started(happy_mock());
+        h.engine.dispatch(Command::Run(UiAction::Stop));
+        h.engine.dispatch(Command::Run(UiAction::Prune));
+        assert!(
+            h.state()
+                .toast
+                .as_ref()
+                .unwrap()
+                .text
+                .contains("actions already pending")
+        );
+        assert!(h.state().activity.is_none());
+        h.engine.dispatch(Command::SwitchPane(Pane::Volumes));
+        h.engine.dispatch(Command::Run(UiAction::Prune));
+        h.engine.dispatch(Command::ConfirmYes);
+        assert_eq!(
+            h.state().activity.as_ref().unwrap().label,
+            "container volume prune"
+        );
+    }
+);
+
+engine_test!(concurrent_tags_confirm_their_own_destinations, || {
+    let mut h = Harness::started(happy_mock());
+    h.engine.dispatch(Command::SwitchPane(Pane::Images));
+    h.pump();
+    let first = h.state().images[0].reference.clone();
+    let second = h.state().images[1].reference.clone();
+    h.mock
+        .on(&["image", "tag", &first, "first:v1"], Output::ok(""));
+    h.mock
+        .on(&["image", "tag", &second, "second:v1"], Output::ok(""));
+    h.engine.dispatch(Command::Top);
+    tag_selected(&mut h, "first:v1");
+    h.engine.dispatch(Command::Move(1));
+    tag_selected(&mut h, "second:v1");
+    assert!(h.state().images[0].pending.is_some());
+    assert!(h.state().images[1].pending.is_some());
+    let mut listed: Vec<serde_json::Value> =
+        serde_json::from_slice(&fixture("image_ls.json")).unwrap();
+    for (source, destination) in [(&first, "first:v1"), (&second, "second:v1")] {
+        let mut image = listed
+            .iter()
+            .find(|i| i["configuration"]["name"] == *source)
+            .unwrap()
+            .clone();
+        image["id"] = serde_json::json!(destination);
+        image["configuration"]["name"] = serde_json::json!(destination);
+        listed.push(image);
+    }
+    h.mock.set(
+        &["image", "ls", "--format", "json"],
+        Output::ok(serde_json::to_string(&listed).unwrap()),
+    );
+    h.pump();
+    assert!(h.state().messages.iter().any(|m| m == "tagged first:v1"));
+    assert!(h.state().messages.iter().any(|m| m == "tagged second:v1"));
+    assert!(h.state().images.iter().all(|i| i.pending.is_none()));
 });

@@ -378,6 +378,7 @@ mod tests {
         for pending in [None, pending(ActionKind::DeleteImage)] {
             let mut state = AppState::new(true);
             state.images.push(ImageEntry {
+                digest: None,
                 reference: "ghcr.io/frankieramirez/bushel:0.3.3-arm64".into(),
                 size: Some(1_234_567),
                 created: None,
@@ -396,6 +397,7 @@ mod tests {
         for pending in [None, pending(ActionKind::CreateVolume)] {
             let mut state = AppState::new(true);
             state.volumes.push(VolumeEntry {
+                placeholder: false,
                 name: "a-very-long-volume-name-that-elides".into(),
                 in_use_by: vec!["web".into()],
                 created: None,

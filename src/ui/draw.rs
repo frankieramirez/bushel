@@ -1071,18 +1071,21 @@ mod tests {
             pending: None,
         });
         s.images.push(ImageEntry {
+            digest: None,
             reference: "alpine:latest".into(),
             size: Some(8_300_000),
             created: None,
             pending: None,
         });
         s.images.push(ImageEntry {
+            digest: None,
             reference: "docker.io/library/python:3.12-slim".into(),
             size: Some(48_000_000),
             created: None,
             pending: None,
         });
         s.volumes.push(VolumeEntry {
+            placeholder: false,
             name: "qvol".into(),
             in_use_by: vec!["qtest".into()],
             created: None,

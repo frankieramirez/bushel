@@ -1,4 +1,5 @@
 pub mod event;
+pub mod pending;
 pub mod state;
 
 use std::collections::HashMap;
@@ -10,6 +11,9 @@ use crate::client::{self, CliError, Client};
 use crate::runner::{KillHandle, Runner, StreamEvent};
 
 pub use event::{AppEvent, Command};
+use pending::{
+    ActionId, ActionPlan, Observation, Outcome, OutcomeStatus, PendingActions, TagTarget, Target,
+};
 pub use state::*;
 
 pub const SLOW_POLL_TICKS: u64 = 10;
@@ -26,6 +30,13 @@ pub struct Engine<R: Runner> {
     pull_kill: Option<KillHandle>,
     service_kill: Option<KillHandle>,
 
+    pending: PendingActions,
+    confirmation: Option<ActionPlan>,
+    tag_source: Option<(String, Option<String>)>,
+    prune: Option<(u64, Pane)>,
+    prune_generation: u64,
+    poll_sequence: u64,
+    applied_poll: [u64; Pane::COUNT],
     poll_inflight: bool,
     probe_inflight: bool,
     images_dirty: bool,
@@ -45,6 +56,13 @@ impl<R: Runner> Engine<R> {
             follow_buffer: Vec::new(),
             pull_kill: None,
             service_kill: None,
+            pending: PendingActions::default(),
+            confirmation: None,
+            tag_source: None,
+            prune: None,
+            prune_generation: 0,
+            poll_sequence: 0,
+            applied_poll: [0; Pane::COUNT],
             poll_inflight: false,
             probe_inflight: false,
             images_dirty: false,
@@ -94,12 +112,16 @@ impl<R: Runner> Engine<R> {
             return;
         }
         self.poll_inflight = true;
+        let sequence = self.next_poll();
         self.state.last_poll_at = Some(Instant::now());
         let client = self.client.clone();
         let tx = self.tx.clone();
         tokio::spawn(async move {
             let _ = tx
-                .send(AppEvent::Containers(client.list_containers().await))
+                .send(AppEvent::Containers(
+                    sequence,
+                    client.list_containers().await,
+                ))
                 .await;
         });
     }
@@ -115,19 +137,23 @@ impl<R: Runner> Engine<R> {
     fn refresh_dirty(&mut self) {
         if self.images_dirty {
             self.images_dirty = false;
-            let client = self.client.clone();
-            let tx = self.tx.clone();
-            tokio::spawn(async move {
-                let _ = tx.send(AppEvent::Images(client.list_images().await)).await;
-            });
-        }
-        if self.volumes_dirty {
-            self.volumes_dirty = false;
+            let sequence = self.next_poll();
             let client = self.client.clone();
             let tx = self.tx.clone();
             tokio::spawn(async move {
                 let _ = tx
-                    .send(AppEvent::Volumes(client.list_volumes().await))
+                    .send(AppEvent::Images(sequence, client.list_images().await))
+                    .await;
+            });
+        }
+        if self.volumes_dirty {
+            self.volumes_dirty = false;
+            let sequence = self.next_poll();
+            let client = self.client.clone();
+            let tx = self.tx.clone();
+            tokio::spawn(async move {
+                let _ = tx
+                    .send(AppEvent::Volumes(sequence, client.list_volumes().await))
                     .await;
             });
         }
@@ -167,48 +193,24 @@ impl<R: Runner> Engine<R> {
         });
     }
 
-    fn spawn_action(&mut self, kind: ActionKind, id: String, args: Vec<String>) {
-        let command = format!("container {}", args.join(" "));
-        self.state.log_message(format!("$ {command}"));
-        let client = self.client.clone();
-        let tx = self.tx.clone();
-        tokio::spawn(async move {
-            let result = client.run_action(&args).await.map(|_| ());
-            let _ = tx
-                .send(AppEvent::ActionDone {
-                    id,
-                    kind,
-                    command,
-                    result,
-                })
-                .await;
-        });
+    fn next_poll(&mut self) -> u64 {
+        self.poll_sequence += 1;
+        self.poll_sequence
     }
 
-    fn spawn_restart(&mut self, id: String) {
+    fn spawn_plan(&mut self, action_id: ActionId, plan: ActionPlan) {
+        self.state.log_message(format!("$ {}", plan.command()));
         let client = self.client.clone();
         let tx = self.tx.clone();
-        let stop = Client::<R>::stop_args(&id);
-        let start = Client::<R>::start_args(&id);
-        let command = format!(
-            "container {} && container {}",
-            stop.join(" "),
-            start.join(" ")
-        );
-        self.state.log_message(format!("$ {command}"));
         tokio::spawn(async move {
-            let result = match client.run_action(&stop).await {
-                Ok(_) => client.run_action(&start).await.map(|_| ()),
-                Err(e) => Err(e),
-            };
-            let _ = tx
-                .send(AppEvent::ActionDone {
-                    id,
-                    kind: ActionKind::Restart,
-                    command,
-                    result,
-                })
-                .await;
+            let mut result = Ok(());
+            for args in &plan.commands {
+                if let Err(error) = client.run_action(args).await {
+                    result = Err(error);
+                    break;
+                }
+            }
+            let _ = tx.send(AppEvent::ActionDone { action_id, result }).await;
         });
     }
 
@@ -328,39 +330,88 @@ impl<R: Runner> Engine<R> {
 
     pub fn apply(&mut self, event: AppEvent) {
         match event {
-            AppEvent::Containers(Ok(list)) => {
+            AppEvent::Containers(sequence, result) => {
                 self.poll_inflight = false;
-                self.state.parse_failures = 0;
-                self.state.degraded = false;
-                let (diffs, external) = self.state.update_containers(&list);
-                for d in diffs {
-                    self.state.log_message(d);
+                if sequence <= self.applied_poll[Pane::Containers.index()] {
+                    return;
                 }
-                for id in external {
-                    self.state.toast(format!("{id} stopped externally"), false);
+                match result {
+                    Ok(list) => {
+                        self.applied_poll[Pane::Containers.index()] = sequence;
+                        self.state.parse_failures = 0;
+                        self.state.degraded = false;
+                        let rows: Vec<_> = list
+                            .iter()
+                            .map(|c| Observation {
+                                name: c.id.clone(),
+                                state: Some(c.status.state.clone()),
+                                digest: None,
+                            })
+                            .collect();
+                        let (diffs, external) = self.state.update_containers(&list);
+                        for d in diffs {
+                            self.state.log_message(d);
+                        }
+                        for id in external {
+                            self.state.toast(format!("{id} stopped externally"), false);
+                        }
+                        self.observe_pending(Pane::Containers, sequence, &rows);
+                        self.state.recompute_in_use();
+                        self.maybe_dissolve_splash();
+                        self.sync_follower();
+                        self.ensure_inspect();
+                    }
+                    Err(e) => self.on_poll_error(e, true),
                 }
-                self.announce_confirmations();
-                self.state.recompute_in_use();
-                self.maybe_dissolve_splash();
-                self.sync_follower();
-                self.ensure_inspect();
             }
-            AppEvent::Containers(Err(e)) => {
-                self.poll_inflight = false;
-                self.on_poll_error(e, true);
+            AppEvent::Images(sequence, result) => {
+                if sequence <= self.applied_poll[Pane::Images.index()] {
+                    return;
+                }
+                match result {
+                    Ok(list) => {
+                        self.applied_poll[Pane::Images.index()] = sequence;
+                        let rows: Vec<_> = list
+                            .iter()
+                            .map(|i| Observation {
+                                name: i.reference().to_string(),
+                                state: None,
+                                digest: i
+                                    .configuration
+                                    .descriptor
+                                    .as_ref()
+                                    .and_then(|d| d.digest.clone()),
+                            })
+                            .collect();
+                        self.state.update_images(&list);
+                        self.observe_pending(Pane::Images, sequence, &rows);
+                        self.ensure_inspect();
+                    }
+                    Err(e) => self.on_poll_error(e, false),
+                }
             }
-            AppEvent::Images(Ok(list)) => {
-                self.state.update_images(&list);
-                self.announce_confirmations();
-                self.ensure_inspect();
+            AppEvent::Volumes(sequence, result) => {
+                if sequence <= self.applied_poll[Pane::Volumes.index()] {
+                    return;
+                }
+                match result {
+                    Ok(list) => {
+                        self.applied_poll[Pane::Volumes.index()] = sequence;
+                        let rows: Vec<_> = list
+                            .iter()
+                            .map(|v| Observation {
+                                name: v.name().to_string(),
+                                state: None,
+                                digest: None,
+                            })
+                            .collect();
+                        self.state.update_volumes(&list);
+                        self.observe_pending(Pane::Volumes, sequence, &rows);
+                        self.ensure_inspect();
+                    }
+                    Err(e) => self.on_poll_error(e, false),
+                }
             }
-            AppEvent::Images(Err(e)) => self.on_poll_error(e, false),
-            AppEvent::Volumes(Ok(list)) => {
-                self.state.update_volumes(&list);
-                self.announce_confirmations();
-                self.ensure_inspect();
-            }
-            AppEvent::Volumes(Err(e)) => self.on_poll_error(e, false),
             AppEvent::Networks(Ok(list)) => {
                 self.state.update_networks(&list);
                 self.ensure_inspect();
@@ -413,13 +464,29 @@ impl<R: Runner> Engine<R> {
                 self.state
                     .log_message(format!("version check failed: {}", e.raw()));
             }
-            AppEvent::ActionDone {
-                id,
-                kind,
+            AppEvent::ActionDone { action_id, result } => self.on_action_done(action_id, result),
+            AppEvent::PruneDone {
+                generation,
                 command,
                 result,
             } => {
-                self.on_action_done(id, kind, command, result);
+                if let Some((active, pane)) = self.prune {
+                    if active != generation {
+                        return;
+                    }
+                    self.prune = None;
+                    self.state.activity = None;
+                    match result {
+                        Ok(()) => {
+                            self.state.toast(format!("done: {command}"), false);
+                            self.refresh_pane(pane);
+                        }
+                        Err(e) => {
+                            self.state.log_message(format!("$ {command}\n{}", e.raw()));
+                            self.state.toast(e.gist(), true);
+                        }
+                    }
+                }
             }
             AppEvent::LogBacklog { id, lines, error } => {
                 if self.state.log_owner.as_deref() == Some(&id) {
@@ -544,11 +611,65 @@ impl<R: Runner> Engine<R> {
         }
     }
 
-    fn announce_confirmations(&mut self) {
-        for (id, kind) in self.state.take_confirmations() {
-            self.state
-                .toast(format!("{} {id}", kind.past_tense()), false);
+    fn observe_pending(&mut self, pane: Pane, sequence: u64, rows: &[Observation]) {
+        for outcome in self.pending.observe(pane, sequence, rows) {
+            self.finish_pending(outcome);
         }
+        self.sync_pending();
+    }
+
+    fn sync_pending(&mut self) {
+        for c in &mut self.state.containers {
+            c.pending = self
+                .pending
+                .pending_for(&Target::new(Pane::Containers, &c.id));
+        }
+        for i in &mut self.state.images {
+            i.pending = self
+                .pending
+                .pending_for(&Target::new(Pane::Images, &i.reference));
+        }
+        for v in &mut self.state.volumes {
+            v.pending = self
+                .pending
+                .pending_for(&Target::new(Pane::Volumes, &v.name));
+        }
+    }
+
+    fn finish_pending(&mut self, outcome: Outcome) {
+        let plan = outcome.plan;
+        if plan.kind == ActionKind::CreateVolume {
+            self.state.remove_creating_placeholder(&plan.target.name);
+        }
+        match outcome.status {
+            OutcomeStatus::Confirmed => {
+                let name = plan
+                    .tag
+                    .as_ref()
+                    .map(|t| t.reference.as_str())
+                    .unwrap_or(&plan.target.name);
+                self.state
+                    .toast(format!("{} {name}", plan.kind.past_tense()), false);
+            }
+            OutcomeStatus::Unconfirmed => self.state.toast(
+                format!(
+                    "{}: command completed; outcome unconfirmed",
+                    plan.target.name
+                ),
+                false,
+            ),
+            OutcomeStatus::Failed => {}
+        }
+    }
+
+    fn refresh_pane(&mut self, pane: Pane) {
+        match pane {
+            Pane::Containers => self.spawn_containers_poll(),
+            Pane::Images => self.images_dirty = true,
+            Pane::Volumes => self.volumes_dirty = true,
+            Pane::Networks => self.networks_dirty = true,
+        }
+        self.refresh_dirty();
     }
 
     fn enter_service_down(&mut self) {
@@ -562,65 +683,33 @@ impl<R: Runner> Engine<R> {
         self.sync_follower();
     }
 
-    fn on_action_done(
-        &mut self,
-        id: String,
-        kind: ActionKind,
-        command: String,
-        result: Result<(), CliError>,
-    ) {
-        let prune = matches!(
-            kind,
-            ActionKind::PruneContainers | ActionKind::PruneImages | ActionKind::PruneVolumes
-        );
+    fn on_action_done(&mut self, action_id: ActionId, result: Result<(), CliError>) {
+        let Some(completion) = self
+            .pending
+            .complete(action_id, result.is_ok(), self.poll_sequence)
+        else {
+            return;
+        };
+        let plan = completion.plan;
+        let command = plan.command();
+        if let Some(outcome) = completion.outcome {
+            self.finish_pending(outcome);
+        }
+        self.sync_pending();
         match result {
             Ok(()) => {
-                if prune {
-                    self.state.activity = None;
-                    self.state.toast(format!("done: {command}"), false);
-                } else if kind == ActionKind::CreateVolume && self.state.pending_of(&id).is_none() {
-                    self.state
-                        .log_message(format!("$ {command} → ok, awaiting poll confirmation"));
-                } else {
-                    self.state.set_pending(
-                        &id,
-                        Some(Pending {
-                            kind,
-                            phase: PendingPhase::Confirming(CONFIRM_TICKS),
-                        }),
-                    );
-                    self.state
-                        .log_message(format!("$ {command} → ok, awaiting poll confirmation"));
-                }
-                match kind {
-                    ActionKind::DeleteImage | ActionKind::TagImage | ActionKind::PruneImages => {
-                        self.images_dirty = true
-                    }
-                    ActionKind::DeleteVolume
-                    | ActionKind::PruneVolumes
-                    | ActionKind::CreateVolume => self.volumes_dirty = true,
-                    _ => {}
-                }
-                self.spawn_containers_poll();
-                self.refresh_dirty();
-                self.state.inspect_cache.remove(&id);
+                self.state
+                    .log_message(format!("$ {command} → ok, awaiting poll confirmation"));
+                self.refresh_pane(plan.target.pane);
+                self.state.inspect_cache.remove(&plan.target.name);
             }
             Err(e) => {
-                if prune {
-                    self.state.activity = None;
-                } else if kind == ActionKind::CreateVolume {
-                    self.state.drop_creating_placeholder(&id);
-                } else {
-                    self.state.set_pending(&id, None);
-                    if kind == ActionKind::TagImage {
-                        self.state.tag_dest = None;
-                    }
-                }
                 self.state.log_message(format!("$ {command}\n{}", e.raw()));
                 match e {
                     CliError::NotFound { .. } => {
-                        self.state.toast(format!("{id}: already gone"), false);
-                        self.spawn_containers_poll();
+                        self.state
+                            .toast(format!("{}: already gone", plan.target.name), false);
+                        self.refresh_pane(plan.target.pane);
                     }
                     other => self.state.toast(other.gist(), true),
                 }
@@ -713,24 +802,18 @@ impl<R: Runner> Engine<R> {
             }
             Command::OpenMessageLog => self.state.overlay = Overlay::MessageLog,
             Command::CloseOverlay => {
-                if matches!(
-                    self.state.overlay,
-                    Overlay::TagInput { .. }
-                        | Overlay::Confirm {
-                            action: ActionKind::TagImage,
-                            ..
-                        }
-                ) {
-                    self.state.tag_dest = None;
-                }
+                self.confirmation = None;
+                self.tag_source = None;
                 self.state.overlay = Overlay::None;
             }
             Command::DismissBanner => self.state.version_banner = None,
             Command::Run(action) => self.run_ui_action(action),
             Command::ConfirmYes => {
-                if let Overlay::Confirm { action, target, .. } = self.state.overlay.clone() {
+                if matches!(self.state.overlay, Overlay::Confirm { .. }) {
                     self.state.overlay = Overlay::None;
-                    self.run_confirmed(action, target);
+                    if let Some(plan) = self.confirmation.take() {
+                        self.run_confirmed(plan);
+                    }
                 }
             }
             Command::OverlayChar(c) => match &mut self.state.overlay {
@@ -856,20 +939,19 @@ impl<R: Runner> Engine<R> {
                     _ if running => ActionKind::Stop,
                     _ => ActionKind::Start,
                 };
-                self.state.set_pending(
-                    &id,
-                    Some(Pending {
-                        kind,
-                        phase: PendingPhase::InFlight,
-                    }),
-                );
-                match kind {
-                    ActionKind::Restart => self.spawn_restart(id),
-                    ActionKind::Stop => {
-                        self.spawn_action(kind, id.clone(), Client::<R>::stop_args(&id))
+                let commands = match kind {
+                    ActionKind::Restart => {
+                        vec![Client::<R>::stop_args(&id), Client::<R>::start_args(&id)]
                     }
-                    _ => self.spawn_action(kind, id.clone(), Client::<R>::start_args(&id)),
-                }
+                    ActionKind::Stop => vec![Client::<R>::stop_args(&id)],
+                    _ => vec![Client::<R>::start_args(&id)],
+                };
+                self.run_confirmed(ActionPlan {
+                    kind,
+                    target: Target::new(Pane::Containers, id),
+                    commands,
+                    tag: None,
+                });
             }
             (Pane::Containers, UiAction::Kill) => {
                 let Some(c) = self.state.selected_container() else {
@@ -915,9 +997,10 @@ impl<R: Runner> Engine<R> {
                 };
             }
             (Pane::Images, UiAction::Tag) => {
-                if self.state.selected_image().is_none() {
+                let Some(image) = self.state.selected_image() else {
                     return;
-                }
+                };
+                self.tag_source = Some((image.reference.clone(), image.digest.clone()));
                 self.state.overlay = Overlay::TagInput {
                     text: String::new(),
                 };
@@ -976,69 +1059,173 @@ impl<R: Runner> Engine<R> {
     }
 
     fn submit_tag(&mut self, dest: String) {
-        let Some(source) = self.state.selected_image().map(|i| i.reference.clone()) else {
+        let Some((source, digest)) = self.tag_source.clone() else {
             self.state.overlay = Overlay::None;
             return;
         };
-        self.state.tag_dest = Some(dest.clone());
-        self.open_confirm(
-            ActionKind::TagImage,
-            source.clone(),
-            Client::<R>::tag_image_args(&source, &dest),
-        );
+        self.present_confirmation(ActionPlan {
+            kind: ActionKind::TagImage,
+            target: Target::new(Pane::Images, &source),
+            commands: vec![Client::<R>::tag_image_args(&source, &dest)],
+            tag: Some(TagTarget {
+                reference: dest,
+                digest,
+            }),
+        });
     }
 
     fn open_confirm(&mut self, action: ActionKind, target: String, args: Vec<String>) {
-        if !target.is_empty() && self.state.pending_of(&target).is_some() {
-            self.state
-                .toast(format!("{target}: action already pending"), true);
-            return;
-        }
-        let command = format!("container {}", args.join(" "));
-        self.state.overlay = Overlay::Confirm {
-            command,
-            action,
-            target,
+        let pane = match action {
+            ActionKind::DeleteImage | ActionKind::TagImage | ActionKind::PruneImages => {
+                Pane::Images
+            }
+            ActionKind::DeleteVolume | ActionKind::CreateVolume | ActionKind::PruneVolumes => {
+                Pane::Volumes
+            }
+            _ => Pane::Containers,
         };
+        self.present_confirmation(ActionPlan {
+            kind: action,
+            target: Target::new(pane, target),
+            commands: vec![args],
+            tag: None,
+        });
     }
 
-    fn run_confirmed(&mut self, action: ActionKind, target: String) {
-        let args = match action {
-            ActionKind::Kill => Client::<R>::kill_args(&target),
-            ActionKind::DeleteContainer => Client::<R>::delete_container_args(&target),
-            ActionKind::PruneContainers => Client::<R>::prune_containers_args(),
-            ActionKind::DeleteImage => Client::<R>::delete_image_args(&target),
-            ActionKind::TagImage => {
-                let dest = self.state.tag_dest.clone().unwrap_or_default();
-                if dest.is_empty() {
-                    return;
-                }
-                Client::<R>::tag_image_args(&target, &dest)
-            }
-            ActionKind::PruneImages => Client::<R>::prune_images_args(),
-            ActionKind::DeleteVolume => Client::<R>::delete_volume_args(&target),
-            ActionKind::PruneVolumes => Client::<R>::prune_volumes_args(),
-            ActionKind::CreateVolume => {
-                self.state.insert_creating_volume(&target);
-                Client::<R>::create_volume_args(&target)
-            }
-            _ => return,
+    fn present_confirmation(&mut self, plan: ActionPlan) {
+        if let Err(reason) = self.check_action(&plan) {
+            self.state.toast(reason, true);
+            return;
+        }
+        self.state.overlay = Overlay::Confirm {
+            command: plan.command(),
+            action: plan.kind,
+            target: plan.target.name.clone(),
         };
-        if target.is_empty() {
+        self.confirmation = Some(plan);
+    }
+
+    fn is_prune(kind: ActionKind) -> bool {
+        matches!(
+            kind,
+            ActionKind::PruneContainers | ActionKind::PruneImages | ActionKind::PruneVolumes
+        )
+    }
+
+    fn check_action(&self, plan: &ActionPlan) -> Result<(), String> {
+        let pane = plan.target.pane;
+        let name = &plan.target.name;
+        if Self::is_prune(plan.kind) {
+            if self.prune.is_some() {
+                return Err("a prune is already running".into());
+            }
+            if self.pending.has_kind(pane) {
+                return Err(format!("{}: actions already pending", pane.title()));
+            }
+            if pane == Pane::Images && self.state.pull.is_some() {
+                return Err("a pull is already running".into());
+            }
+            return Ok(());
+        }
+        if self.prune.is_some_and(|(_, active)| active == pane) {
+            return Err(format!("{}: prune already running", pane.title()));
+        }
+        self.pending
+            .can_begin(plan)
+            .map_err(|target| format!("{}: action already pending", target.name))?;
+        if let Some(pull) = &self.state.pull {
+            if plan
+                .targets()
+                .iter()
+                .any(|target| target.pane == Pane::Images && target.name == pull.reference)
+            {
+                return Err(format!("{}: pull already running", pull.reference));
+            }
+        }
+        match pane {
+            Pane::Containers => {
+                let c = self
+                    .state
+                    .containers
+                    .iter()
+                    .find(|c| c.id == *name)
+                    .ok_or_else(|| format!("{name}: already gone"))?;
+                if matches!(plan.kind, ActionKind::Stop | ActionKind::Kill) && !c.is_running() {
+                    return Err(format!("{name}: no longer running"));
+                }
+                if plan.kind == ActionKind::Start && c.is_running() {
+                    return Err(format!("{name}: already running"));
+                }
+            }
+            Pane::Images => {
+                let image = self
+                    .state
+                    .images
+                    .iter()
+                    .find(|i| i.reference == *name)
+                    .ok_or_else(|| format!("{name}: already gone"))?;
+                if let Some(tag) = &plan.tag {
+                    if image.digest != tag.digest {
+                        return Err(format!("{name}: image changed; preview the action again"));
+                    }
+                }
+            }
+            Pane::Volumes if plan.kind != ActionKind::CreateVolume => {
+                let volume = self
+                    .state
+                    .volumes
+                    .iter()
+                    .find(|v| v.name == *name)
+                    .ok_or_else(|| format!("{name}: already gone"))?;
+                if volume.in_use() {
+                    return Err(format!(
+                        "cannot delete {name}: in use by {}",
+                        volume.in_use_by.join(", ")
+                    ));
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn run_confirmed(&mut self, plan: ActionPlan) {
+        if let Err(reason) = self.check_action(&plan) {
+            self.state.toast(reason, true);
+            return;
+        }
+        if Self::is_prune(plan.kind) {
+            self.prune_generation += 1;
+            let generation = self.prune_generation;
+            self.prune = Some((generation, plan.target.pane));
+            let command = plan.command();
             self.state.activity = Some(Activity {
-                label: format!("container {}", args.join(" ")),
+                label: command.clone(),
                 started: Instant::now(),
             });
-        } else {
-            self.state.set_pending(
-                &target,
-                Some(Pending {
-                    kind: action,
-                    phase: PendingPhase::InFlight,
-                }),
-            );
+            self.state.log_message(format!("$ {command}"));
+            let client = self.client.clone();
+            let tx = self.tx.clone();
+            tokio::spawn(async move {
+                let result = client.run_action(&plan.commands[0]).await.map(|_| ());
+                let _ = tx
+                    .send(AppEvent::PruneDone {
+                        generation,
+                        command,
+                        result,
+                    })
+                    .await;
+            });
+            return;
         }
-        self.spawn_action(action, target, args);
+        let Ok(id) = self.pending.begin(plan.clone()) else {
+            return;
+        };
+        if plan.kind == ActionKind::CreateVolume {
+            self.state.insert_creating_volume(&plan.target.name);
+        }
+        self.sync_pending();
+        self.spawn_plan(id, plan);
     }
 
     fn start_pull(&mut self, reference: String) {
@@ -1048,6 +1235,19 @@ impl<R: Runner> Engine<R> {
         } else {
             format!("{reference}:latest")
         };
+        if self.prune.is_some_and(|(_, pane)| pane == Pane::Images) {
+            self.state.toast("images: prune already running", true);
+            return;
+        }
+        if self
+            .pending
+            .pending_for(&Target::new(Pane::Images, &reference))
+            .is_some()
+        {
+            self.state
+                .toast(format!("{reference}: action already pending"), true);
+            return;
+        }
         if self.state.pull.is_some() {
             self.state.toast("a pull is already running", true);
             return;
