@@ -478,6 +478,7 @@ mod tests {
         let mut images = main_state();
         images.pane = Pane::Images;
         images.images.push(crate::engine::state::ImageEntry {
+            digest: None,
             reference: "alpine:latest".into(),
             size: None,
             created: None,
@@ -621,6 +622,7 @@ mod tests {
         let mut s = main_state();
         s.pane = Pane::Images;
         s.images.push(crate::engine::state::ImageEntry {
+            digest: None,
             reference: "alpine:latest".into(),
             size: None,
             created: None,

@@ -105,7 +105,7 @@ An action that requires confirmation before running: delete, prune, and kill.
 _Avoid_: dangerous action
 
 **Command preview**:
-The exact `container …` command shown in a destructive action's confirmation step before it runs.
+The exact `container …` command shown before confirming an action. Approval applies only to the displayed target and arguments, even if the selection changes before confirmation.
 
 **Restart**:
 The synthetic stop-then-start action. The `container` CLI has no restart subcommand; bushel composes it.
@@ -126,12 +126,15 @@ _Avoid_: attach, shell into
 The CLI's own bulk-cleanup action per entity (stopped containers, unused images, unreferenced volumes). bushel's only bulk operation.
 
 **Tag**:
-The images-pane action that assigns a new local reference to an existing image.
+The images-pane action that assigns a local reference to an existing image.
 _Avoid_: push
 
 **Pending**:
-The state of an entity whose action is in flight. An entity can have at most one pending action; pending clears when a poll tick confirms the outcome.
+The state of an entity reserved by an action while it runs or awaits confirmation; Tag reserves both its source and destination image references, and names belong to their entity kind. Each entity can belong to at most one pending action, whose success requires a successful command followed by a fresh poll showing its expected outcome.
 _Avoid_: busy, locked
+
+**Unconfirmed**:
+The outcome of a successful command whose expected change was not verified within its confirmation allowance. The action is no longer pending, and bushel has not established whether the change took effect.
 
 **External stop**:
 A container leaving the running state without a bushel action. The only external change bushel announces; all others update the lists silently.

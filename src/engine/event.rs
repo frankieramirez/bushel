@@ -2,23 +2,26 @@ use crate::client::CliError;
 use crate::client::model::{
     ContainerJson, ImageJson, NetworkJson, StatsJson, SystemStatusJson, VolumeJson,
 };
-use crate::engine::state::{ActionKind, DetailTab, Pane, UiAction};
+use crate::engine::state::{DetailTab, Pane, UiAction};
 
 type CliResult<T> = Result<T, CliError>;
 
 #[derive(Debug)]
 pub enum AppEvent {
-    Containers(CliResult<Vec<ContainerJson>>),
-    Images(CliResult<Vec<ImageJson>>),
-    Volumes(CliResult<Vec<VolumeJson>>),
+    Containers(u64, CliResult<Vec<ContainerJson>>),
+    Images(u64, CliResult<Vec<ImageJson>>),
+    Volumes(u64, CliResult<Vec<VolumeJson>>),
     Networks(CliResult<Vec<NetworkJson>>),
     Stats(CliResult<Vec<StatsJson>>),
     ServiceProbe(CliResult<SystemStatusJson>),
     VersionChecked(CliResult<String>),
 
     ActionDone {
-        id: String,
-        kind: ActionKind,
+        action_id: super::pending::ActionId,
+        result: CliResult<()>,
+    },
+    PruneDone {
+        generation: u64,
         command: String,
         result: CliResult<()>,
     },

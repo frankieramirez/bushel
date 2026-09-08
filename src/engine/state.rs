@@ -18,7 +18,7 @@ pub enum Screen {
     ServiceDown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Pane {
     Containers,
     Images,
@@ -120,14 +120,6 @@ pub enum ActionKind {
 }
 
 impl ActionKind {
-    pub fn expected_state(self) -> Option<&'static str> {
-        match self {
-            ActionKind::Start | ActionKind::Restart => Some("running"),
-            ActionKind::Stop | ActionKind::Kill => Some("stopped"),
-            _ => None,
-        }
-    }
-
     pub fn past_tense(self) -> &'static str {
         match self {
             ActionKind::Start => "started",
@@ -204,6 +196,7 @@ impl ContainerEntry {
 #[derive(Debug, Clone)]
 pub struct ImageEntry {
     pub reference: String,
+    pub digest: Option<String>,
     pub size: Option<u64>,
     pub created: Option<String>,
     pub pending: Option<Pending>,
@@ -214,6 +207,7 @@ pub struct VolumeEntry {
     pub name: String,
     pub in_use_by: Vec<String>,
     pub created: Option<String>,
+    pub placeholder: bool,
     pub pending: Option<Pending>,
 }
 
@@ -421,8 +415,6 @@ pub struct AppState {
     pub tick: u64,
     pub last_poll_at: Option<Instant>,
     pub exec_request: Option<String>,
-    pub tag_dest: Option<String>,
-    confirmations: Vec<(String, ActionKind)>,
 }
 
 impl AppState {
@@ -474,8 +466,6 @@ impl AppState {
             tick: 0,
             last_poll_at: None,
             exec_request: None,
-            tag_dest: None,
-            confirmations: Vec::new(),
         }
     }
 
@@ -735,14 +725,10 @@ impl AppState {
             if !next.iter().any(|n| n.id == old.id) {
                 diffs.push(format!("{}: removed", old.id));
                 self.inspect_cache.remove(&old.id);
-                if let Some(p) = old.pending {
-                    self.confirmations.push((old.id.clone(), p.kind));
-                }
             }
         }
 
         self.containers = next;
-        self.confirm_pending();
         self.clamp_selection();
         self.first_data = true;
         (diffs, external_stops)
@@ -753,6 +739,11 @@ impl AppState {
             .iter()
             .map(|i| ImageEntry {
                 reference: i.reference().to_string(),
+                digest: i
+                    .configuration
+                    .descriptor
+                    .as_ref()
+                    .and_then(|d| d.digest.clone()),
                 size: i.display_size(),
                 created: i.configuration.creation_date.clone(),
                 pending: None,
@@ -764,16 +755,7 @@ impl AppState {
                 entry.pending = old.pending;
             }
         }
-        for old in &self.images {
-            if let Some(p) = old.pending {
-                if !next.iter().any(|n| n.reference == old.reference) {
-                    self.confirmations.push((old.reference.clone(), p.kind));
-                }
-            }
-        }
         self.images = next;
-        self.confirm_pending();
-        self.confirm_tag();
         self.clamp_selection();
     }
 
@@ -784,36 +766,25 @@ impl AppState {
                 name: v.name().to_string(),
                 in_use_by: Vec::new(),
                 created: v.configuration.creation_date.clone(),
+                placeholder: false,
                 pending: None,
             })
             .collect();
         next.sort_by(|a, b| a.name.cmp(&b.name));
         for entry in &mut next {
             if let Some(old) = self.volumes.iter().find(|o| o.name == entry.name) {
-                if old.pending.map(|p| p.kind) == Some(ActionKind::CreateVolume) {
-                    self.confirmations
-                        .push((entry.name.clone(), ActionKind::CreateVolume));
-                    entry.pending = None;
-                } else {
-                    entry.pending = old.pending;
-                }
+                entry.pending = old.pending;
             }
         }
         for old in &self.volumes {
-            if let Some(p) = old.pending {
-                if !next.iter().any(|n| n.name == old.name) {
-                    if p.kind == ActionKind::CreateVolume {
-                        next.push(old.clone());
-                    } else {
-                        self.confirmations.push((old.name.clone(), p.kind));
-                    }
-                }
+            if old.placeholder && old.pending.is_some() && !next.iter().any(|n| n.name == old.name)
+            {
+                next.push(old.clone());
             }
         }
         next.sort_by(|a, b| a.name.cmp(&b.name));
         self.volumes = next;
         self.recompute_in_use();
-        self.confirm_pending();
         self.clamp_selection();
     }
 
@@ -926,35 +897,6 @@ impl AppState {
         next
     }
 
-    pub fn pending_of(&self, id: &str) -> Option<Pending> {
-        self.containers
-            .iter()
-            .find(|c| c.id == id)
-            .and_then(|c| c.pending)
-            .or_else(|| {
-                self.images
-                    .iter()
-                    .find(|i| i.reference == id)
-                    .and_then(|i| i.pending)
-            })
-            .or_else(|| {
-                self.volumes
-                    .iter()
-                    .find(|v| v.name == id)
-                    .and_then(|v| v.pending)
-            })
-    }
-
-    pub fn set_pending(&mut self, id: &str, pending: Option<Pending>) {
-        if let Some(c) = self.containers.iter_mut().find(|c| c.id == id) {
-            c.pending = pending;
-        } else if let Some(i) = self.images.iter_mut().find(|i| i.reference == id) {
-            i.pending = pending;
-        } else if let Some(v) = self.volumes.iter_mut().find(|v| v.name == id) {
-            v.pending = pending;
-        }
-    }
-
     pub fn insert_creating_volume(&mut self, name: &str) {
         if self.volumes.iter().any(|v| v.name == name) {
             return;
@@ -963,133 +905,19 @@ impl AppState {
             name: name.to_string(),
             in_use_by: Vec::new(),
             created: None,
+            placeholder: true,
             pending: None,
         });
         self.volumes.sort_by(|a, b| a.name.cmp(&b.name));
         self.selected[Pane::Volumes.index()] = Some(name.to_string());
     }
 
-    pub fn drop_creating_placeholder(&mut self, name: &str) {
-        let placeholder = self.volumes.iter().any(|v| {
-            v.name == name
-                && v.created.is_none()
-                && v.pending.map(|p| p.kind) == Some(ActionKind::CreateVolume)
-        });
+    pub fn remove_creating_placeholder(&mut self, name: &str) {
+        let placeholder = self.volumes.iter().any(|v| v.name == name && v.placeholder);
         if placeholder {
             self.volumes.retain(|v| v.name != name);
             self.clamp_selection();
-        } else {
-            self.set_pending(name, None);
         }
-    }
-
-    fn confirm_pending(&mut self) {
-        let mut confirmed_now = Vec::new();
-        for c in &mut self.containers {
-            let Some(p) = c.pending else { continue };
-            let PendingPhase::Confirming(ticks) = p.phase else {
-                continue;
-            };
-            let confirmed = p.kind.expected_state().is_some_and(|s| c.state == s);
-            if confirmed {
-                confirmed_now.push((c.id.clone(), p.kind));
-            }
-            if confirmed || ticks <= 1 {
-                c.pending = None;
-            } else {
-                c.pending = Some(Pending {
-                    kind: p.kind,
-                    phase: PendingPhase::Confirming(ticks - 1),
-                });
-            }
-        }
-        self.confirmations.extend(confirmed_now);
-        for i in &mut self.images {
-            if let Some(Pending {
-                kind,
-                phase: PendingPhase::Confirming(t),
-            }) = i.pending
-            {
-                if kind == ActionKind::TagImage {
-                    continue;
-                }
-                i.pending = (t > 1).then_some(Pending {
-                    kind,
-                    phase: PendingPhase::Confirming(t - 1),
-                });
-            }
-        }
-        for v in &mut self.volumes {
-            if let Some(Pending {
-                kind,
-                phase: PendingPhase::Confirming(t),
-            }) = v.pending
-            {
-                if kind == ActionKind::CreateVolume {
-                    continue;
-                }
-                v.pending = (t > 1).then_some(Pending {
-                    kind,
-                    phase: PendingPhase::Confirming(t - 1),
-                });
-            }
-        }
-    }
-
-    fn confirm_tag(&mut self) {
-        let Some(dest) = self.tag_dest.clone() else {
-            return;
-        };
-        let confirming = self.images.iter().any(|i| {
-            matches!(
-                i.pending,
-                Some(Pending {
-                    kind: ActionKind::TagImage,
-                    phase: PendingPhase::Confirming(_),
-                })
-            )
-        });
-        if confirming && self.images.iter().any(|i| i.reference == dest) {
-            for i in &mut self.images {
-                if i.pending.is_some_and(|p| p.kind == ActionKind::TagImage) {
-                    i.pending = None;
-                }
-            }
-            self.confirmations.push((dest, ActionKind::TagImage));
-            self.tag_dest = None;
-            return;
-        }
-        for i in &mut self.images {
-            if let Some(Pending {
-                kind: ActionKind::TagImage,
-                phase: PendingPhase::Confirming(t),
-            }) = i.pending
-            {
-                i.pending = (t > 1).then_some(Pending {
-                    kind: ActionKind::TagImage,
-                    phase: PendingPhase::Confirming(t - 1),
-                });
-            }
-        }
-        let still_pending = self
-            .images
-            .iter()
-            .any(|i| i.pending.is_some_and(|p| p.kind == ActionKind::TagImage));
-        if !still_pending
-            && !matches!(
-                self.overlay,
-                Overlay::Confirm {
-                    action: ActionKind::TagImage,
-                    ..
-                } | Overlay::TagInput { .. }
-            )
-        {
-            self.tag_dest = None;
-        }
-    }
-
-    pub fn take_confirmations(&mut self) -> Vec<(String, ActionKind)> {
-        std::mem::take(&mut self.confirmations)
     }
 
     pub fn push_log_line(&mut self, line: String) {
@@ -1217,12 +1045,14 @@ mod tests {
         s.images.extend([
             ImageEntry {
                 reference: "alpine:latest".into(),
+                digest: None,
                 size: Some(8),
                 created: None,
                 pending: None,
             },
             ImageEntry {
                 reference: "postgres:16".into(),
+                digest: None,
                 size: Some(16),
                 created: None,
                 pending: None,
@@ -1233,12 +1063,14 @@ mod tests {
                 name: "qvol".into(),
                 in_use_by: vec![],
                 created: None,
+                placeholder: false,
                 pending: None,
             },
             VolumeEntry {
                 name: "scratch".into(),
                 in_use_by: vec![],
                 created: None,
+                placeholder: false,
                 pending: None,
             },
         ]);
@@ -1340,6 +1172,7 @@ mod tests {
             name: "qvol".into(),
             in_use_by: vec![],
             created: None,
+            placeholder: false,
             pending: None,
         });
         s.clamp_selection();
