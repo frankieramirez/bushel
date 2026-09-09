@@ -1,5 +1,3 @@
-# bushel
-
 <p align="center">
   <img src="docs/assets/bushel-orchard-arcade.svg" alt="Bushel: pixel-art wooden lettering beside a basket of red apples" width="840">
 </p>
