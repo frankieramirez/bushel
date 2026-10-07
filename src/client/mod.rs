@@ -221,6 +221,10 @@ impl<R: Runner> Client<R> {
         to_args(&["system", "start", "--enable-kernel-install"])
     }
 
+    pub fn exec_shell(&self, id: &str) -> std::io::Result<i32> {
+        self.runner.run_interactive(&Self::exec_shell_args(id))
+    }
+
     pub fn exec_shell_args(id: &str) -> Vec<String> {
         to_args(&["exec", "-it", id, "/bin/sh"])
     }

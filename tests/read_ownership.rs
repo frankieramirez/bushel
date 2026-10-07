@@ -342,7 +342,7 @@ async fn exec_and_shutdown_cancel_backlog_and_inspect_reads() {
         settle(&mut engine, &mut rx).await;
         assert_eq!(runner.active.load(Ordering::SeqCst), 1);
         engine.dispatch(Command::Run(UiAction::Exec));
-        engine.prepare_exec();
+        engine.run_exec();
         settle(&mut engine, &mut rx).await;
         assert_eq!(runner.cancelled.load(Ordering::SeqCst), 1);
         assert_eq!(runner.active.load(Ordering::SeqCst), 0);

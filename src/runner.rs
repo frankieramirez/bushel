@@ -86,6 +86,15 @@ pub trait Runner: Send + Sync + 'static {
     async fn run(&self, args: &[String]) -> std::io::Result<Output>;
 
     fn spawn_stream(&self, args: &[String]) -> std::io::Result<(LineStream, KillHandle)>;
+
+    /// Run synchronously with inherited stdio while the TUI is suspended.
+    /// Existing runners may opt out without breaking their implementation.
+    fn run_interactive(&self, _args: &[String]) -> std::io::Result<i32> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "interactive commands are not supported by this runner",
+        ))
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -93,6 +102,16 @@ pub struct CliRunner;
 
 #[async_trait]
 impl Runner for CliRunner {
+    fn run_interactive(&self, args: &[String]) -> std::io::Result<i32> {
+        std::process::Command::new(CONTAINER_BIN)
+            .args(args)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .map(|status| status.code().unwrap_or(-1))
+    }
+
     async fn run(&self, args: &[String]) -> std::io::Result<Output> {
         let out = Command::new(CONTAINER_BIN)
             .args(args)
@@ -216,7 +235,14 @@ pub struct MockRunner {
     last: Mutex<HashMap<Vec<String>, Output>>,
     default: Mutex<Option<Output>>,
     stream_lines: Mutex<HashMap<Vec<String>, Vec<StreamEvent>>>,
+    interactive: Mutex<HashMap<Vec<String>, InteractiveResponse>>,
     calls: Arc<Mutex<Vec<Vec<String>>>>,
+}
+
+#[derive(Clone)]
+enum InteractiveResponse {
+    Exit(i32),
+    Error(std::io::ErrorKind, String),
 }
 
 impl MockRunner {
@@ -253,6 +279,16 @@ impl MockRunner {
         self
     }
 
+    pub fn on_interactive(&self, args: &[&str], result: std::io::Result<i32>) -> &Self {
+        let key = args.iter().map(|s| s.to_string()).collect();
+        let response = match result {
+            Ok(code) => InteractiveResponse::Exit(code),
+            Err(error) => InteractiveResponse::Error(error.kind(), error.to_string()),
+        };
+        self.interactive.lock().unwrap().insert(key, response);
+        self
+    }
+
     pub fn calls(&self) -> Vec<Vec<String>> {
         self.calls.lock().unwrap().clone()
     }
@@ -267,6 +303,23 @@ impl MockRunner {
 
 #[async_trait]
 impl Runner for MockRunner {
+    fn run_interactive(&self, args: &[String]) -> std::io::Result<i32> {
+        self.calls.lock().unwrap().push(args.to_vec());
+        match self.interactive.lock().unwrap().get(args).cloned() {
+            Some(InteractiveResponse::Exit(code)) => Ok(code),
+            Some(InteractiveResponse::Error(kind, message)) => {
+                Err(std::io::Error::new(kind, message))
+            }
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "MockRunner: no interactive response for `container {}`",
+                    args.join(" ")
+                ),
+            )),
+        }
+    }
+
     async fn run(&self, args: &[String]) -> std::io::Result<Output> {
         self.calls.lock().unwrap().push(args.to_vec());
         let mut responses = self.responses.lock().unwrap();
@@ -317,6 +370,24 @@ mod tests {
 
     fn args(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn runners_without_interactive_support_keep_the_default_unsupported_result() {
+        struct ReadOnlyRunner;
+        #[async_trait]
+        impl Runner for ReadOnlyRunner {
+            async fn run(&self, _args: &[String]) -> std::io::Result<Output> {
+                Ok(Output::ok("[]"))
+            }
+            fn spawn_stream(&self, _args: &[String]) -> std::io::Result<(LineStream, KillHandle)> {
+                Err(std::io::ErrorKind::Unsupported.into())
+            }
+        }
+        let error = ReadOnlyRunner
+            .run_interactive(&args(&["exec", "-it", "web", "/bin/sh"]))
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
     }
 
     #[tokio::test]
