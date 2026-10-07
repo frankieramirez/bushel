@@ -185,19 +185,24 @@ pub fn collapse_reference(reference: &str) -> (String, String) {
 
 /// Middle-elide a cell so both ends survive: `blakeblackshear/frig…:stable`.
 pub fn elide(text: &str, width: usize) -> String {
+    elide_ascii(text, width, false)
+}
+
+pub fn elide_ascii(text: &str, width: usize, ascii: bool) -> String {
+    let marker = if ascii { '~' } else { '…' };
     let n = text.chars().count();
     if n <= width {
         return text.to_string();
     }
     if width <= 1 {
-        return "…".chars().take(width).collect();
+        return std::iter::once(marker).take(width).collect();
     }
     let keep = width - 1;
     let head = keep.div_ceil(2);
     let tail = keep - head;
     let chars: Vec<char> = text.chars().collect();
     let mut out: String = chars[..head].iter().collect();
-    out.push('…');
+    out.push(marker);
     out.extend(&chars[n - tail..]);
     out
 }

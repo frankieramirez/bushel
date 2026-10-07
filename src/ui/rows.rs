@@ -2,7 +2,7 @@ use ratatui::style::Style;
 use ratatui::text::Span;
 
 use crate::engine::state::ContainerEntry;
-use crate::ui::humanize::{age_now, collapse_reference, elide, uptime_now};
+use crate::ui::humanize::{age_now, collapse_reference, elide_ascii, uptime_now};
 use crate::ui::theme::Theme;
 
 pub const SELECT_BAR: &str = "▎";
@@ -100,7 +100,7 @@ pub fn age_cell(th: &Theme, created: Option<&str>) -> String {
 /// reserve a fixed token column and keep every name starting at one character.
 pub fn reference_spans(th: &Theme, reference: &str, width: usize) -> Vec<Span<'static>> {
     let (token, rest) = collapse_reference(reference);
-    let rest = elide(&rest, width);
+    let rest = elide_ascii(&rest, width, th.ascii);
     let (name, tag) = split_tag(&rest);
     let mut spans = vec![Span::styled(
         format!("{token:<3}"),
@@ -133,6 +133,7 @@ mod tests {
         Theme {
             truecolor: false,
             ascii: false,
+            reduced_motion: false,
         }
     }
 
@@ -210,6 +211,7 @@ mod tests {
         let th = Theme {
             truecolor: false,
             ascii: true,
+            reduced_motion: false,
         };
         assert_eq!(absent(&th), "-");
         assert_eq!(select_bar(&th), "|");

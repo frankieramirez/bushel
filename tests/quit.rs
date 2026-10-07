@@ -277,6 +277,7 @@ fn quit_overlay_shows_commands_and_choices_on_main_and_service_screens() {
         let theme = Theme {
             truecolor: false,
             ascii: true,
+            reduced_motion: false,
         };
         terminal
             .draw(|frame| {
@@ -312,6 +313,7 @@ fn quit_command_scroll_is_bounded_and_can_reach_every_command() {
     let theme = Theme {
         truecolor: false,
         ascii: true,
+        reduced_motion: false,
     };
     let mut info = draw::DrawInfo::default();
     terminal

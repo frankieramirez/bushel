@@ -8,6 +8,7 @@ use std::time::Instant;
 use std::sync::Arc;
 use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinHandle;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::client::{self, CliError, Client};
 use crate::runner::{KillHandle, Runner, StreamEvent};
@@ -708,10 +709,11 @@ impl<R: Runner> Engine<R> {
                 {
                     self.backlog_task = None;
                     self.state.log_lines.clear();
-                    self.state.log_lines.extend(lines);
-                    for l in std::mem::take(&mut self.follow_buffer) {
-                        self.state.push_log_line(l);
-                    }
+                    self.state.extend_log_lines(
+                        lines
+                            .into_iter()
+                            .chain(std::mem::take(&mut self.follow_buffer)),
+                    );
                     self.state.logs_loading = false;
                     if let Some(e) = error {
                         self.state
@@ -972,6 +974,14 @@ impl<R: Runner> Engine<R> {
                 .log_message("service down: entity polling stopped, probing every 2s");
         }
         self.state.screen = Screen::ServiceDown;
+        if !matches!(
+            self.state.overlay,
+            Overlay::MessageLog | Overlay::QuitConfirm { .. }
+        ) {
+            self.confirmation = None;
+            self.tag_source = None;
+            self.state.overlay = Overlay::None;
+        }
         self.sync_follower();
     }
 
@@ -1011,7 +1021,7 @@ impl<R: Runner> Engine<R> {
         match result {
             Ok(()) => {
                 self.state
-                    .log_message(format!("$ {command} → ok, awaiting poll confirmation"));
+                    .log_message(format!("$ {command} -> ok, awaiting poll confirmation"));
                 self.refresh_pane(plan.target.pane);
                 self.state.invalidate_inspect(&plan.target);
             }
@@ -1039,7 +1049,7 @@ impl<R: Runner> Engine<R> {
                     .map(|args| format!("container {}", args.join(" ")))
                     .unwrap_or(command);
                 self.state.log_message(format!(
-                    "$ {failed_command} → failed (step {}/{})\n{}",
+                    "$ {failed_command} -> failed (step {}/{})\n{}",
                     completed_steps + 1,
                     plan.commands.len(),
                     e.raw()
@@ -1125,6 +1135,8 @@ impl<R: Runner> Engine<R> {
                 } else if !self.state.filter.is_empty() || self.state.filter_input {
                     self.state.filter.clear();
                     self.state.filter_input = false;
+                    self.state.clamp_filtered_selection();
+                    self.on_selection_change();
                 } else if self.state.zoom {
                     self.state.zoom = false;
                 }
@@ -1155,10 +1167,13 @@ impl<R: Runner> Engine<R> {
             }
             Command::FilterChar(c) => {
                 self.state.filter.push(c);
-                self.state.clamp_selection();
+                self.state.clamp_filtered_selection();
+                self.on_selection_change();
             }
             Command::FilterBackspace => {
-                self.state.filter.pop();
+                backspace_grapheme(&mut self.state.filter);
+                self.state.clamp_filtered_selection();
+                self.on_selection_change();
             }
             Command::FilterCommit => self.state.filter_input = false,
             Command::OpenActionMenu => self.state.overlay = Overlay::ActionMenu,
@@ -1190,7 +1205,10 @@ impl<R: Runner> Engine<R> {
                     }
                 }
             }
-            Command::OpenMessageLog => self.state.overlay = Overlay::MessageLog,
+            Command::OpenMessageLog => {
+                self.state.overlay = Overlay::MessageLog;
+                self.state.message_scroll = 0;
+            }
             Command::CloseOverlay => {
                 self.state.quitting = false;
                 self.confirmation = None;
@@ -1226,7 +1244,7 @@ impl<R: Runner> Engine<R> {
                 Overlay::PullInput { text }
                 | Overlay::TagInput { text }
                 | Overlay::CreateVolumeInput { text } => {
-                    text.pop();
+                    backspace_grapheme(text);
                 }
                 _ => {}
             },
@@ -1278,6 +1296,8 @@ impl<R: Runner> Engine<R> {
                 self.state.follow = false;
             }
             Command::SetHelpScroll(v) => self.state.help_scroll = v,
+            Command::SetMessageScroll(v) => self.state.message_scroll = v,
+            Command::SetConfirmScroll(v) => self.state.confirm_scroll = v,
             Command::ScrollTop => self.state.detail_scroll = 0,
             Command::ScrollBottom => self.state.detail_scroll = u16::MAX,
             Command::ToggleFollow => self.state.follow = !self.state.follow,
@@ -1488,6 +1508,7 @@ impl<R: Runner> Engine<R> {
             self.state.toast(reason, true);
             return;
         }
+        self.state.confirm_scroll = 0;
         self.state.overlay = Overlay::Confirm {
             command: plan.command(),
             action: plan.kind,
@@ -1809,5 +1830,11 @@ impl<R: Runner> Engine<R> {
 
     pub fn follower_id(&self) -> Option<&str> {
         self.follower.as_ref().map(|(id, _)| id.as_str())
+    }
+}
+
+fn backspace_grapheme(text: &mut String) {
+    if let Some((idx, _)) = text.grapheme_indices(true).next_back() {
+        text.truncate(idx);
     }
 }

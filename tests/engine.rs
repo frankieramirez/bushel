@@ -717,7 +717,7 @@ engine_test!(external_stop_is_announced_but_bushel_stops_are_not, || {
         h.state()
             .messages
             .iter()
-            .any(|m| m.contains("running → stopped"))
+            .any(|m| m.contains("running -> stopped"))
     );
 });
 
@@ -757,7 +757,7 @@ engine_test!(
         );
         assert!(toast.text.contains("start blew up"), "{}", toast.text);
         assert!(h.state().messages.iter().any(|m| {
-            m.contains("$ container start qtest → failed") && m.contains("start blew up")
+            m.contains("$ container start qtest -> failed") && m.contains("start blew up")
         }));
         let row = h
             .state()
@@ -836,7 +836,7 @@ engine_test!(
                 .any(|c| c == "container start qtest")
         );
         assert!(h.state().messages.iter().any(|m| {
-            m.contains("$ container stop qtest → failed (step 1/2)") && m.contains("stop blew up")
+            m.contains("$ container stop qtest -> failed (step 1/2)") && m.contains("stop blew up")
         }));
     }
 );
@@ -2864,6 +2864,7 @@ fn render_state(state: &AppState) -> String {
     let theme = bushel::ui::theme::Theme {
         truecolor: false,
         ascii: true,
+        reduced_motion: false,
     };
     terminal
         .draw(|frame| {
@@ -2922,7 +2923,7 @@ engine_test!(
         h.engine.dispatch(Command::SwitchPane(Pane::Containers));
         h.engine.dispatch(Command::SwitchPane(Pane::Volumes));
         h.pump();
-        assert!(render_state(h.state()).contains("no volumes · [c] create one"));
+        assert!(render_state(h.state()).contains("no volumes . [c] create one"));
     }
 );
 
