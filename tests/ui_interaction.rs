@@ -36,6 +36,74 @@ fn render(state: &AppState, width: u16, height: u16) -> (String, draw::DrawInfo)
     (text, info)
 }
 
+fn assert_health_banner(pane: Pane, gist: &str) {
+    for layout in [
+        bushel::config::LayoutMode::Rail,
+        bushel::config::LayoutMode::Table,
+    ] {
+        let mut state = AppState::new(true);
+        state.screen = Screen::Main;
+        state.config.layout = layout;
+        state.pane = pane;
+        if pane == Pane::Containers {
+            let containers: Vec<ContainerJson> =
+                serde_json::from_str(include_str!("../fixtures/1.2.0/ls.json")).unwrap();
+            state.update_containers(&containers);
+            for _ in 0..bushel::engine::state::DEGRADED_THRESHOLD {
+                state.stats_health.fail(gist.into());
+            }
+        } else {
+            state.reads[pane.index()] =
+                bushel::engine::state::ReadStatus::Failed { gist: gist.into() };
+        }
+        for (width, height) in [(55, 20), (120, 40)] {
+            let text = render(&state, width, height).0;
+            let banner = if pane == Pane::Containers {
+                format!("stats unavailable: {gist}")
+            } else {
+                format!("{} list failed: {gist}", pane.title())
+            };
+            assert!(text.contains(&banner), "{pane:?} {width}x{height}: {text}");
+            if gist.is_ascii() {
+                assert!(text.is_ascii(), "{pane:?} {width}x{height}: {text}");
+            }
+            if width == 120 {
+                assert!(text.contains(". [m] log"), "{text}");
+                if pane != Pane::Containers {
+                    assert!(text.contains("- showing last good state"), "{text}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn stats_failure_banner_uses_ascii_chrome() {
+    assert_health_banner(Pane::Containers, "CLI timeout");
+}
+
+#[test]
+fn images_failure_banner_uses_ascii_chrome() {
+    assert_health_banner(Pane::Images, "CLI timeout");
+}
+
+#[test]
+fn volumes_failure_banner_uses_ascii_chrome() {
+    assert_health_banner(Pane::Volumes, "CLI timeout");
+}
+
+#[test]
+fn networks_failure_banner_uses_ascii_chrome() {
+    assert_health_banner(Pane::Networks, "CLI timeout");
+}
+
+#[test]
+fn health_banners_preserve_external_unicode_errors() {
+    for pane in Pane::all() {
+        assert_health_banner(pane, "external → é — ·");
+    }
+}
+
 #[test]
 fn bounded_log_ring_keeps_the_paused_line_when_old_entries_are_evicted() {
     let mut state = AppState::new(true);
