@@ -12,7 +12,7 @@ use bushel::cli::{Args, Cmd};
 use bushel::client::Client;
 use bushel::completions;
 use bushel::config::Config;
-use bushel::engine::{Command, Engine};
+use bushel::engine::Engine;
 use bushel::runner::{CONTAINER_BIN, CliRunner};
 use bushel::ui::theme::Theme;
 use bushel::ui::{Ui, keymap};
@@ -265,9 +265,14 @@ async fn main() -> std::io::Result<()> {
         }
     };
 
-    engine.dispatch(Command::Quit);
-    engine.shutdown();
+    let interrupted = engine.shutdown();
     ratatui::restore();
+    if !interrupted.is_empty() {
+        eprintln!("bushel interrupted running work; check each command's outcome:");
+        for command in interrupted {
+            eprintln!("  {command}");
+        }
+    }
     result
 }
 

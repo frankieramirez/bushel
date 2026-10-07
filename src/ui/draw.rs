@@ -26,6 +26,7 @@ pub struct DrawInfo {
     pub bottom: Rect,
     pub log_scroll: u16,
     pub help_max_scroll: u16,
+    pub quit_max_scroll: u16,
 }
 
 pub(crate) fn spinner_frame() -> usize {
@@ -45,6 +46,9 @@ pub fn draw(frame: &mut Frame, state: &AppState, th: &Theme) -> DrawInfo {
         Screen::ServiceDown => draw_service_down(frame, state, th),
         Screen::CliMissing => draw_cli_missing(frame, state, th),
         Screen::Main => draw_main(frame, state, th, &mut info),
+    }
+    if let Overlay::QuitConfirm { commands, scroll } = &state.overlay {
+        info.quit_max_scroll = draw_quit_confirm(frame, state, th, commands, *scroll);
     }
     info
 }
@@ -244,7 +248,7 @@ fn draw_main(frame: &mut Frame, state: &AppState, th: &Theme, info: &mut DrawInf
         Overlay::TagInput { text } => draw_tag_input(frame, th, text),
         Overlay::CreateVolumeInput { text } => draw_create_volume_input(frame, th, text),
         Overlay::Settings { cursor } => draw_settings(frame, state, th, *cursor),
-        Overlay::None => {}
+        Overlay::QuitConfirm { .. } | Overlay::None => {}
     }
 }
 
@@ -876,6 +880,66 @@ fn draw_action_menu(frame: &mut Frame, state: &AppState, th: &Theme, detail: Rec
         })
         .collect();
     frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn draw_quit_confirm(
+    frame: &mut Frame,
+    state: &AppState,
+    th: &Theme,
+    commands: &[String],
+    scroll: u16,
+) -> u16 {
+    let area = centered(
+        frame.area(),
+        76,
+        frame.area().height.saturating_sub(2).min(20),
+    );
+    frame.render_widget(Clear, area);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(th.yellow()))
+        .title(if state.quitting {
+            " waiting to quit "
+        } else {
+            " still running "
+        })
+        .style(Style::new().bg(th.panel()).fg(th.text()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height == 0 {
+        return 0;
+    }
+    let body = Rect {
+        height: inner.height.saturating_sub(2),
+        ..inner
+    };
+    let keys = Rect {
+        y: body.bottom(),
+        height: inner.height.min(2),
+        ..inner
+    };
+    let rows: Vec<_> = commands
+        .iter()
+        .flat_map(|command| log_view::split_line(command, true, body.width))
+        .map(Line::raw)
+        .collect();
+    let max_scroll = rows
+        .len()
+        .saturating_sub(body.height as usize)
+        .min(u16::MAX as usize) as u16;
+    frame.render_widget(
+        Paragraph::new(rows).scroll((scroll.min(max_scroll), 0)),
+        body,
+    );
+    frame.render_widget(
+        Paragraph::new(if state.quitting {
+            "[q] quit now   [esc] cancel wait\n[j/k, pgup/pgdn] scroll commands"
+        } else {
+            "[w] wait and quit   [q] quit now   [esc] cancel\n[j/k, pgup/pgdn] scroll commands"
+        }),
+        keys,
+    );
+    max_scroll
 }
 
 fn draw_confirm(frame: &mut Frame, th: &Theme, command: &str) {

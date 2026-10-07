@@ -52,6 +52,7 @@ pub struct Engine<R: Runner> {
     tag_source: Option<(String, Option<String>)>,
     prune: Option<(u64, Pane)>,
     prune_generation: u64,
+    prune_command: Option<String>,
     poll_sequence: u64,
     applied_poll: [u64; Pane::COUNT],
     poll_inflight: bool,
@@ -88,6 +89,7 @@ impl<R: Runner> Engine<R> {
             tag_source: None,
             prune: None,
             prune_generation: 0,
+            prune_command: None,
             poll_sequence: 0,
             applied_poll: [0; Pane::COUNT],
             poll_inflight: false,
@@ -661,6 +663,7 @@ impl<R: Runner> Engine<R> {
                         return;
                     }
                     self.prune = None;
+                    self.prune_command = None;
                     self.state.activity = None;
                     match result {
                         Ok(()) => {
@@ -816,6 +819,7 @@ impl<R: Runner> Engine<R> {
                 self.spawn_probe();
             }
         }
+        self.refresh_quit();
     }
 
     fn on_poll_error(&mut self, e: CliError, pane: Pane) {
@@ -1035,8 +1039,43 @@ impl<R: Runner> Engine<R> {
     }
 
     pub fn dispatch(&mut self, cmd: Command) {
+        if self.state.quitting
+            && !matches!(
+                cmd,
+                Command::Quit
+                    | Command::ForceQuit
+                    | Command::CloseOverlay
+                    | Command::SetQuitScroll(_)
+            )
+        {
+            return;
+        }
         match cmd {
-            Command::Quit => self.state.quit = true,
+            Command::Quit => {
+                let commands = self.quit_blocked_by();
+                if commands.is_empty() {
+                    self.state.quit = true;
+                } else {
+                    self.confirmation = None;
+                    self.tag_source = None;
+                    self.state.overlay = Overlay::QuitConfirm {
+                        commands,
+                        scroll: 0,
+                    };
+                }
+            }
+            Command::ForceQuit => self.state.quit = true,
+            Command::WaitAndQuit => {
+                if matches!(self.state.overlay, Overlay::QuitConfirm { .. }) {
+                    self.state.quitting = true;
+                    self.refresh_quit();
+                }
+            }
+            Command::SetQuitScroll(to) => {
+                if let Overlay::QuitConfirm { scroll, .. } = &mut self.state.overlay {
+                    *scroll = to;
+                }
+            }
             Command::SkipSplash => {
                 if self.state.screen == Screen::Splash {
                     self.state.screen = Screen::Main;
@@ -1118,6 +1157,7 @@ impl<R: Runner> Engine<R> {
             }
             Command::OpenMessageLog => self.state.overlay = Overlay::MessageLog,
             Command::CloseOverlay => {
+                self.state.quitting = false;
                 self.confirmation = None;
                 self.tag_source = None;
                 self.state.overlay = Overlay::None;
@@ -1515,6 +1555,7 @@ impl<R: Runner> Engine<R> {
             let generation = self.prune_generation;
             self.prune = Some((generation, plan.target.pane));
             let command = plan.command();
+            self.prune_command = Some(command.clone());
             self.state.activity = Some(Activity {
                 label: command.clone(),
                 started: Instant::now(),
@@ -1657,7 +1698,53 @@ impl<R: Runner> Engine<R> {
         self.ensure_inspect();
     }
 
-    pub fn shutdown(&mut self) {
+    /// Exact commands whose completion has not yet reached the Engine.
+    pub fn quit_blocked_by(&self) -> Vec<String> {
+        let mut commands: Vec<_> = self
+            .pending
+            .in_flight()
+            .iter()
+            .map(|plan| plan.command())
+            .collect();
+        if let Some(command) = &self.prune_command {
+            commands.push(command.clone());
+        }
+        if let Some(pull) = &self.state.pull {
+            commands.push(format!(
+                "container {}",
+                Client::<R>::pull_args(&pull.reference).join(" ")
+            ));
+        }
+        if self.state.service_starting {
+            commands.push(format!(
+                "container {}",
+                Client::<R>::system_start_args().join(" ")
+            ));
+        }
+        commands
+    }
+
+    fn refresh_quit(&mut self) {
+        if !self.state.quitting && !matches!(self.state.overlay, Overlay::QuitConfirm { .. }) {
+            return;
+        }
+        let commands = self.quit_blocked_by();
+        if commands.is_empty() {
+            self.state.overlay = Overlay::None;
+            if self.state.quitting {
+                self.state.quit = true;
+            }
+        } else if let Overlay::QuitConfirm {
+            commands: displayed,
+            ..
+        } = &mut self.state.overlay
+        {
+            *displayed = commands;
+        }
+    }
+
+    pub fn shutdown(&mut self) -> Vec<String> {
+        let interrupted = self.quit_blocked_by();
         self.stop_follower();
         self.cancel_backlog();
         self.cancel_inspect();
@@ -1668,6 +1755,7 @@ impl<R: Runner> Engine<R> {
         if let Some(kill) = self.service_kill.take() {
             kill.kill();
         }
+        interrupted
     }
 
     pub fn follower_id(&self) -> Option<&str> {

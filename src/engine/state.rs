@@ -275,6 +275,10 @@ pub enum Overlay {
         action: ActionKind,
         target: String,
     },
+    QuitConfirm {
+        commands: Vec<String>,
+        scroll: u16,
+    },
     Help,
     MessageLog,
     PullInput {
@@ -412,6 +416,8 @@ pub struct AppState {
     pub detail_tab: DetailTab,
     pub overlay: Overlay,
     pub quit: bool,
+    /// Exit after all running mutations have reported command completion.
+    pub quitting: bool,
 
     pub containers: Vec<ContainerEntry>,
     pub images: Vec<ImageEntry>,
@@ -484,6 +490,7 @@ impl AppState {
             overlay: Overlay::None,
             help_scroll: 0,
             quit: false,
+            quitting: false,
             containers: Vec::new(),
             images: Vec::new(),
             volumes: Vec::new(),
