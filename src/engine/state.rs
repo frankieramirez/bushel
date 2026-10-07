@@ -2,7 +2,7 @@ use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use crate::client::model::{ContainerJson, ImageJson, NetworkJson, StatsJson, VolumeJson};
-use crate::config::{Config, LayoutMode};
+use crate::config::{Config, LayoutMode, PersistedConfig};
 
 pub const LOG_RING_CAP: usize = 10_000;
 pub const MESSAGE_LOG_CAP: usize = 1_000;
@@ -305,13 +305,13 @@ impl Setting {
         }
     }
 
-    /// Copies only this row's field, leaving every other field of `to` alone.
-    pub fn apply(self, from: &Config, to: &mut Config) {
+    /// The on-disk key for this row; CLI overrides never copy other fields.
+    pub fn config_key(self) -> &'static str {
         match self {
-            Setting::Layout => to.layout = from.layout,
-            Setting::Ascii => to.ascii = from.ascii,
-            Setting::ReducedMotion => to.reduced_motion = from.reduced_motion,
-            Setting::Splash => to.no_splash = from.no_splash,
+            Setting::Layout => "layout",
+            Setting::Ascii => "ascii",
+            Setting::ReducedMotion => "reduced_motion",
+            Setting::Splash => "no_splash",
         }
     }
 }
@@ -365,7 +365,7 @@ pub struct AppState {
     pub config: Config,
     /// What the config file said, with no command-line flags folded in. Only
     /// this is ever written back, so a flag-only override never reaches disk.
-    pub persisted: Config,
+    pub persisted: PersistedConfig,
     pub screen: Screen,
     pub pane: Pane,
     pub focus: Focus,
@@ -423,7 +423,7 @@ impl AppState {
     pub fn new(no_splash: bool) -> Self {
         Self {
             config: Config::default(),
-            persisted: Config::default(),
+            persisted: PersistedConfig::default(),
             screen: if no_splash {
                 Screen::Main
             } else {
