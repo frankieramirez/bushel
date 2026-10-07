@@ -49,6 +49,12 @@ pub enum StreamEvent {
     Exit(i32),
 }
 
+/// Output lines followed by exactly one terminal Exit event.
+/// After child exit, each pipe has a two-second cumulative read-wait budget,
+/// so descendants retaining a pipe cannot stall completion indefinitely.
+/// Sending buffered lines into the bounded channel is outside that budget:
+/// consumer backpressure pauses delivery without discarding output. Exit waits
+/// for reader completion and every pending send, so it remains terminal.
 pub type LineStream = mpsc::Receiver<StreamEvent>;
 
 pub struct KillHandle {
@@ -102,60 +108,106 @@ impl Runner for CliRunner {
     }
 
     fn spawn_stream(&self, args: &[String]) -> std::io::Result<(LineStream, KillHandle)> {
-        let mut child = Command::new(CONTAINER_BIN)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()?;
-
-        let (tx, rx) = mpsc::channel(256);
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-
-        if let Some(stdout) = stdout {
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(stdout).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    if tx.send(StreamEvent::Stdout(line)).await.is_err() {
-                        break;
-                    }
-                }
-            });
-        }
-        if let Some(stderr) = stderr {
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    if tx.send(StreamEvent::Stderr(line)).await.is_err() {
-                        break;
-                    }
-                }
-            });
-        }
-
-        let (kill_tx, mut kill_rx) = mpsc::channel::<()>(1);
-        tokio::spawn(async move {
-            let code = tokio::select! {
-                status = child.wait() => status.ok().and_then(|s| s.code()).unwrap_or(-1),
-                _ = kill_rx.recv() => {
-                    let _ = child.kill().await;
-                    -1
-                }
-            };
-            let _ = tx.send(StreamEvent::Exit(code)).await;
-        });
-
-        Ok((
-            rx,
-            KillHandle::new(move || {
-                let _ = kill_tx.try_send(());
-            }),
-        ))
+        let mut command = Command::new(CONTAINER_BIN);
+        command.args(args);
+        spawn_command_stream(command)
     }
+}
+
+const STREAM_DRAIN_READ_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+
+async fn forward_stream_lines<P: tokio::io::AsyncRead + Unpin>(
+    pipe: P,
+    tx: mpsc::Sender<StreamEvent>,
+    event: fn(String) -> StreamEvent,
+    mut exited: tokio::sync::watch::Receiver<bool>,
+) {
+    let mut lines = BufReader::new(pipe).lines();
+    let mut read_budget = STREAM_DRAIN_READ_BUDGET;
+    loop {
+        let child_exited = *exited.borrow();
+        let next = if child_exited {
+            if read_budget.is_zero() {
+                break;
+            }
+            let started = tokio::time::Instant::now();
+            let result = tokio::time::timeout(read_budget, lines.next_line()).await;
+            read_budget = read_budget.saturating_sub(started.elapsed());
+            match result {
+                Ok(line) => line,
+                Err(_) => break,
+            }
+        } else {
+            tokio::select! {
+                line = lines.next_line() => line,
+                changed = exited.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    continue;
+                }
+            }
+        };
+        let Ok(Some(line)) = next else { break };
+        // Keep bounded buffering without charging a suspended/slow consumer
+        // against the pipe-read budget. Exit must wait for this send.
+        if tx.send(event(line)).await.is_err() {
+            break;
+        }
+    }
+}
+
+fn spawn_command_stream(mut command: Command) -> std::io::Result<(LineStream, KillHandle)> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+
+    let (tx, rx) = mpsc::channel(256);
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let mut readers = tokio::task::JoinSet::new();
+    let (exit_tx, exit_rx) = tokio::sync::watch::channel(false);
+
+    if let Some(stdout) = stdout {
+        readers.spawn(forward_stream_lines(
+            stdout,
+            tx.clone(),
+            StreamEvent::Stdout,
+            exit_rx.clone(),
+        ));
+    }
+    if let Some(stderr) = stderr {
+        readers.spawn(forward_stream_lines(
+            stderr,
+            tx.clone(),
+            StreamEvent::Stderr,
+            exit_rx,
+        ));
+    }
+
+    let (kill_tx, mut kill_rx) = mpsc::channel::<()>(1);
+    tokio::spawn(async move {
+        let code = tokio::select! {
+            status = child.wait() => status.ok().and_then(|s| s.code()).unwrap_or(-1),
+            _ = kill_rx.recv() => {
+                let _ = child.kill().await;
+                -1
+            }
+        };
+        let _ = exit_tx.send(true);
+        while readers.join_next().await.is_some() {}
+        let _ = tx.send(StreamEvent::Exit(code)).await;
+    });
+
+    Ok((
+        rx,
+        KillHandle::new(move || {
+            let _ = kill_tx.try_send(());
+        }),
+    ))
 }
 
 #[derive(Default)]
@@ -328,6 +380,190 @@ mod tests {
         assert_eq!(rx.recv().await, Some(StreamEvent::Stdout("hello".into())));
         assert_eq!(rx.recv().await, Some(StreamEvent::Exit(0)));
         kill.kill();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stream_exit_follows_all_final_stderr_lines() {
+        for attempt in 0..200 {
+            let mut command = Command::new("sh");
+            command.args([
+                "-c",
+                "i=0; while [ $i -lt 300 ]; do echo line$i >&2; i=$((i+1)); done; exit 3",
+            ]);
+            let (mut stream, _kill) = spawn_command_stream(command).unwrap();
+            let mut events = Vec::new();
+            while let Some(event) = stream.recv().await {
+                events.push(event);
+            }
+            assert_eq!(events.len(), 301, "attempt {attempt}");
+            assert_eq!(
+                events.last(),
+                Some(&StreamEvent::Exit(3)),
+                "attempt {attempt}"
+            );
+            for (i, event) in events[..300].iter().enumerate() {
+                assert_eq!(
+                    event,
+                    &StreamEvent::Stderr(format!("line{i}")),
+                    "attempt {attempt}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn descendant_lines_do_not_reset_the_cumulative_pipe_read_budget() {
+        use tokio::io::AsyncWriteExt as _;
+        let (pipe, mut writer) = tokio::io::duplex(128);
+        let (tx, mut stream) = mpsc::channel(16);
+        let (_exit_tx, exit_rx) = tokio::sync::watch::channel(true);
+        let started = tokio::time::Instant::now();
+        let reader = tokio::spawn(forward_stream_lines(pipe, tx, StreamEvent::Stderr, exit_rx));
+        let descendant = tokio::spawn(async move {
+            for i in 0..4 {
+                if i > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+                }
+                if writer
+                    .write_all(format!("line{i}\n").as_bytes())
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+        let mut events = Vec::new();
+        while let Some(event) = stream.recv().await {
+            events.push(event);
+        }
+        assert_eq!(
+            events,
+            [
+                StreamEvent::Stderr("line0".into()),
+                StreamEvent::Stderr("line1".into()),
+                StreamEvent::Stderr("line2".into())
+            ]
+        );
+        assert_eq!(started.elapsed(), STREAM_DRAIN_READ_BUDGET);
+        reader.await.unwrap();
+        descendant.abort();
+        let _ = descendant.await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn delayed_consumer_keeps_all_final_output_before_exit() {
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "i=0; while [ $i -lt 300 ]; do echo line$i >&2; i=$((i+1)); done; exit 3",
+        ]);
+        let (mut stream, _kill) = spawn_command_stream(command).unwrap();
+        // Model the application loop being suspended for interactive exec.
+        tokio::time::sleep(std::time::Duration::from_millis(2400)).await;
+        let mut events = Vec::new();
+        while let Some(event) = stream.recv().await {
+            events.push(event);
+        }
+        assert_eq!(events.len(), 301);
+        for (i, event) in events[..300].iter().enumerate() {
+            assert_eq!(event, &StreamEvent::Stderr(format!("line{i}")));
+        }
+        assert_eq!(events.last(), Some(&StreamEvent::Exit(3)));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stream_exit_follows_large_final_output_on_both_pipes() {
+        let mut command = Command::new("sh");
+        // Over two MiB total: larger than both pipe buffers and the 256-event
+        // channel, exercising delivery under backpressure on both readers.
+        command.args(["-c", r#"i=0; while [ $i -lt 4096 ]; do printf 'out%04d:%0256d\n' "$i" 0; printf 'err%04d:%0256d\n' "$i" 0 >&2; i=$((i+1)); done; exit 5"#]);
+        let (mut stream, _kill) = spawn_command_stream(command).unwrap();
+        let mut stdout = 0;
+        let mut stderr = 0;
+        let mut exited = false;
+        while let Some(event) = stream.recv().await {
+            assert!(!exited, "no event may follow Exit");
+            match event {
+                StreamEvent::Stdout(line) => {
+                    assert_eq!(line, format!("out{stdout:04}:{:0256}", 0));
+                    stdout += 1;
+                }
+                StreamEvent::Stderr(line) => {
+                    assert_eq!(line, format!("err{stderr:04}:{:0256}", 0));
+                    stderr += 1;
+                }
+                StreamEvent::Exit(code) => {
+                    assert_eq!((stdout, stderr, code), (4096, 4096, 5));
+                    exited = true;
+                }
+            }
+            if (stdout + stderr) % 128 == 0 {
+                tokio::task::yield_now().await;
+            }
+        }
+        assert!(exited);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stream_exit_drains_stdout_stderr_and_unterminated_lines() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "printf 'out1\nout2'; printf 'err1\nerr2' >&2; exit 4"]);
+        let (mut stream, _kill) = spawn_command_stream(command).unwrap();
+        let mut events = Vec::new();
+        while let Some(event) = stream.recv().await {
+            events.push(event);
+        }
+        assert_eq!(events.pop(), Some(StreamEvent::Exit(4)));
+        assert_eq!(
+            events
+                .iter()
+                .filter_map(|e| match e {
+                    StreamEvent::Stdout(s) => Some(s.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            ["out1", "out2"]
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter_map(|e| match e {
+                    StreamEvent::Stderr(s) => Some(s.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            ["err1", "err2"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stream_exit_is_terminal_when_a_descendant_holds_a_pipe() {
+        let mut command = Command::new("sh");
+        // stdout closes promptly; stderr is retained by an isolated fixture.
+        command.args([
+            "-c",
+            "(sleep 3; echo late >&2) >/dev/null & echo ready; exit 7",
+        ]);
+        let (mut stream, _kill) = spawn_command_stream(command).unwrap();
+        let events = tokio::time::timeout(std::time::Duration::from_millis(2800), async {
+            let mut events = Vec::new();
+            while let Some(event) = stream.recv().await {
+                events.push(event);
+            }
+            events
+        })
+        .await
+        .expect("inherited pipes must not stall Exit indefinitely");
+        assert_eq!(
+            events,
+            [StreamEvent::Stdout("ready".into()), StreamEvent::Exit(7)]
+        );
     }
 
     #[tokio::test]

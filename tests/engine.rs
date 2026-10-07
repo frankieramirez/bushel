@@ -1684,12 +1684,12 @@ engine_test!(tag_is_images_pane_only, || {
 });
 
 engine_test!(the_settings_panel_moves_toggles_and_persists, || {
-    let dir = std::env::temp_dir().join(format!("bushel-settings-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    // SAFETY: this is the only test that touches the config directory.
-    unsafe { std::env::set_var(Config::DIR_ENV, &dir) };
+    let temporary = tempfile::tempdir().unwrap();
+    let dir = temporary.path();
 
     let mut h = Harness::started(MockRunner::new());
+    h.engine
+        .configure(Config::load_from(dir.join("config.toml")));
     assert_eq!(
         h.state().layout(),
         LayoutMode::Rail,
@@ -1736,16 +1736,13 @@ engine_test!(the_settings_panel_moves_toggles_and_persists, || {
     h.engine.dispatch(Command::CloseOverlay);
     assert_eq!(h.state().overlay, Overlay::None);
 
-    h.engine.state.persisted = Config::default();
+    std::fs::write(dir.join("config.toml"), "ascii = false\n").unwrap();
+    h.engine
+        .configure(Config::load_from(dir.join("config.toml")));
     h.engine.state.config = Config {
         ascii: true,
         ..Config::default()
     };
-    h.engine
-        .state
-        .persisted
-        .save()
-        .expect("the file starts from the flagless config");
     h.engine.dispatch(Command::OpenSettings);
 
     for _ in 0..10 {
@@ -1780,8 +1777,116 @@ engine_test!(the_settings_panel_moves_toggles_and_persists, || {
         "a deliberate toggle in the panel is written: {saved}"
     );
 
-    unsafe { std::env::remove_var(Config::DIR_ENV) };
-    let _ = std::fs::remove_dir_all(&dir);
+    let invalid = "ascii = true\nlayout = \"Table\"\n# keep me\n";
+    std::fs::write(dir.join("config.toml"), invalid).unwrap();
+    h.engine
+        .configure(Config::load_from(dir.join("config.toml")));
+    assert!(
+        h.state()
+            .messages
+            .iter()
+            .any(|m| m.contains("invalid config")),
+        "load diagnostics must be visible before any settings toggle"
+    );
+    h.engine.dispatch(Command::OpenSettings);
+    h.engine.dispatch(Command::SettingsMove(2));
+    h.engine.dispatch(Command::SettingsToggle);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("config.toml")).unwrap(),
+        invalid
+    );
+    assert!(
+        h.state()
+            .toast
+            .as_ref()
+            .is_some_and(|t| t.error && t.text.contains("invalid config"))
+    );
+
+    assert!(
+        h.state()
+            .messages
+            .iter()
+            .any(|m| m.contains("invalid config"))
+    );
+
+    let valid = "# keep me\nascii = true\nlayout = \"rail\" # inline\nfuture = 1\n\n[future_settings]\noption = 'keep this'\n";
+    std::fs::write(dir.join("config.toml"), valid).unwrap();
+    h.engine
+        .configure(Config::load_from(dir.join("config.toml")));
+    h.engine.state.toast = None;
+    h.engine.dispatch(Command::OpenSettings);
+    h.engine.dispatch(Command::SettingsToggle);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("config.toml")).unwrap(),
+        valid.replace("layout = \"rail\"", "layout = \"table\"")
+    );
+    assert!(h.state().toast.is_none());
+
+    let editor_limited = include_str!("../fixtures/config/uint64.toml");
+    std::fs::write(dir.join("config.toml"), editor_limited).unwrap();
+    h.engine
+        .configure(Config::load_from(dir.join("config.toml")));
+    assert!(
+        h.state().config.ascii,
+        "valid effective settings survive lossless editor limits"
+    );
+    assert!(
+        h.state()
+            .messages
+            .iter()
+            .any(|message| message.contains("cannot edit config losslessly"))
+    );
+    h.engine.dispatch(Command::OpenSettings);
+    h.engine.dispatch(Command::SettingsToggle);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("config.toml")).unwrap(),
+        editor_limited
+    );
+    assert!(
+        h.state()
+            .toast
+            .as_ref()
+            .is_some_and(|toast| toast.error && toast.text.contains("settings writes disabled"))
+    );
+
+    #[cfg(unix)]
+    {
+        let target = dir.join("target.toml");
+        let link = dir.join("linked.toml");
+        let original = "ascii = false\nlayout = \"table\"\nreduced_motion = true\n# keep me\n";
+        std::fs::write(&target, original).unwrap();
+        std::os::unix::fs::symlink("target.toml", &link).unwrap();
+        h.engine.configure(Config::load_from(link.clone()));
+        h.engine.state.toast = None;
+        h.engine.dispatch(Command::OpenSettings);
+        h.engine.dispatch(Command::SettingsMove(1));
+        h.engine.dispatch(Command::SettingsToggle);
+        assert!(
+            h.state().config.ascii,
+            "the requested session toggle still takes effect"
+        );
+        assert_eq!(h.state().layout(), LayoutMode::Table);
+        assert!(
+            h.state().config.reduced_motion,
+            "other session settings are retained"
+        );
+        assert!(
+            !h.state().persisted.effective().ascii,
+            "persisted settings stay unchanged"
+        );
+        assert!(
+            h.state()
+                .toast
+                .as_ref()
+                .is_some_and(|t| t.error && t.text.contains("symbolic link"))
+        );
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            std::path::Path::new("target.toml")
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), original);
+        assert_eq!(std::fs::read_to_string(&link).unwrap(), original);
+    }
 });
 
 engine_test!(
