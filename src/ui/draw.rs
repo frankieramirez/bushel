@@ -540,7 +540,11 @@ fn draw_detail(
                     Span::styled("── no selection ──", Style::new().fg(th.dim()))
                 } else if state.selected_container().is_some_and(|c| !c.is_running()) {
                     Span::styled(
-                        "── container stopped · follow ended ──",
+                        if th.ascii {
+                            "-- container stopped | follow ended --"
+                        } else {
+                            "── container stopped · follow ended ──"
+                        },
                         Style::new().fg(th.dim()),
                     )
                 } else if state.log_owner.is_none() {
