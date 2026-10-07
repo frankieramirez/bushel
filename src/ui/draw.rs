@@ -8,7 +8,9 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 
 use crate::config::LayoutMode;
 use crate::engine::pending::Target;
-use crate::engine::state::{AppState, DetailTab, Focus, Overlay, Pane, Screen, Setting};
+use crate::engine::state::{
+    AppState, DetailTab, Focus, Overlay, Pane, ReadStatus, Screen, Setting,
+};
 use crate::ui::help::{HELP, HELP_KEY_COL};
 use crate::ui::layout::{self, LayoutFacts, LayoutPlan, centered};
 use crate::ui::rows::{absent, age_cell, state_dot, uptime_cell};
@@ -41,6 +43,7 @@ pub fn draw(frame: &mut Frame, state: &AppState, th: &Theme) -> DrawInfo {
     match state.screen {
         Screen::Splash => draw_splash(frame, state, th),
         Screen::ServiceDown => draw_service_down(frame, state, th),
+        Screen::CliMissing => draw_cli_missing(frame, state, th),
         Screen::Main => draw_main(frame, state, th, &mut info),
     }
     info
@@ -156,10 +159,44 @@ fn draw_main(frame: &mut Frame, state: &AppState, th: &Theme, info: &mut DrawInf
         ]));
     }
     if state.degraded {
+        let gist = state
+            .poll_health
+            .last_error
+            .as_deref()
+            .unwrap_or("poll has not completed");
+        let availability = if state.first_data {
+            "showing last good state"
+        } else {
+            "list unavailable"
+        };
         banners.push(Line::from(Span::styled(
-            " ⚠ polls failing to parse — showing last good state (see message log [m]) ",
+            format!(" polls degraded: {gist} — {availability} · [m] log "),
             Style::new().fg(th.bg()).bg(th.red()),
         )));
+    }
+
+    if state.stats_health.degraded(state.tick) && state.containers.iter().any(|c| c.is_running()) {
+        let gist = state
+            .stats_health
+            .last_error
+            .as_deref()
+            .unwrap_or("poll has not completed");
+        banners.push(Line::from(Span::styled(
+            format!(" stats unavailable: {gist} · [m] log "),
+            Style::new().fg(th.bg()).bg(th.red()),
+        )));
+    }
+
+    if state.pane != Pane::Containers {
+        if let ReadStatus::Failed { gist } = &state.reads[state.pane.index()] {
+            banners.push(Line::from(Span::styled(
+                format!(
+                    " {} list failed: {gist} — showing last good state · [m] log ",
+                    state.pane.title()
+                ),
+                Style::new().fg(th.bg()).bg(th.red()),
+            )));
+        }
     }
 
     let mut facts = LayoutFacts::from_state(state);
@@ -211,6 +248,37 @@ fn draw_main(frame: &mut Frame, state: &AppState, th: &Theme, info: &mut DrawInf
     }
 }
 
+fn draw_cli_missing(frame: &mut Frame, state: &AppState, th: &Theme) {
+    let area = centered(frame.area(), 68, 12);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(th.red()))
+        .title(" bushel ");
+    let lines = vec![
+        Line::raw(""),
+        Line::from(Span::styled(
+            " container CLI not found — lists unavailable",
+            Style::new().fg(th.red()).bold(),
+        )),
+        Line::raw(""),
+        Line::raw(" Install Apple's container CLI using its instructions:"),
+        Line::raw(" github.com/apple/container"),
+        Line::raw(""),
+        Line::raw(" Restart bushel once container is available on PATH."),
+        Line::raw(""),
+        Line::raw(" [m] message log    [q] quit"),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+    if state.overlay == Overlay::MessageLog {
+        draw_message_log(frame, state, th);
+    }
+}
+
 fn draw_header(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, floor: bool) {
     let mut spans = th.gradient_spans(" bushel ", true);
     spans.push(Span::raw("  "));
@@ -243,10 +311,23 @@ fn draw_header(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, floo
 }
 
 fn append_status_cluster(spans: &mut Vec<Span<'static>>, state: &AppState, th: &Theme, width: u16) {
-    let service_up = state.screen != Screen::ServiceDown;
+    let service_up = state.screen != Screen::ServiceDown
+        && state.reads[Pane::Containers.index()] == ReadStatus::Ready
+        && state.poll_health.consecutive_failures == 0
+        && !state.degraded
+        && (!state.containers.iter().any(|c| c.is_running())
+            || (state.stats_health.consecutive_failures == 0
+                && !state.stats_health.degraded(state.tick)));
     let version = state.cli_version.clone().unwrap_or_else(|| "?".into());
+    let status = if service_up {
+        "service"
+    } else if state.reads[Pane::Containers.index()] == ReadStatus::Loading && !state.degraded {
+        "loading"
+    } else {
+        "degraded"
+    };
     let sp = th.spinner(spinner_frame());
-    let cluster = format!("● service   container {version}  {sp} ");
+    let cluster = format!("● {status}   container {version}  {sp} ");
     let cluster_len = cluster.chars().count();
     let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
     if (width as usize) <= used + cluster_len {
@@ -257,7 +338,10 @@ fn append_status_cluster(spans: &mut Vec<Span<'static>>, state: &AppState, th: &
         if th.ascii { "* " } else { "● " },
         Style::new().fg(if service_up { th.accent() } else { th.red() }),
     ));
-    spans.push(Span::styled("service   ", Style::new().fg(th.dim())));
+    spans.push(Span::styled(
+        format!("{status}   "),
+        Style::new().fg(th.dim()),
+    ));
     spans.push(Span::styled(
         format!("container {version}  "),
         Style::new().fg(th.dim()),
@@ -1072,6 +1156,7 @@ mod tests {
 
     pub(crate) fn sample() -> AppState {
         let mut s = AppState::new(true);
+        s.reads = std::array::from_fn(|_| ReadStatus::Ready);
         s.cli_version = Some("1.2.0".into());
         s.containers.push(ContainerEntry {
             id: "qtest".into(),

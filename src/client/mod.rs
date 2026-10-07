@@ -60,9 +60,7 @@ impl<R: Runner> Client<R> {
         let out = tokio::time::timeout(READ_TIMEOUT, fut)
             .await
             .map_err(|_| CliError::Timeout)?
-            .map_err(|e| CliError::Other {
-                raw: format!("{}: {e}", preview(args)),
-            })?;
+            .map_err(|e| CliError::from_io(e, &preview(args)))?;
         if out.code != 0 {
             return Err(CliError::classify(out.code, &out.stderr_str()));
         }
@@ -112,9 +110,7 @@ impl<R: Runner> Client<R> {
         let out = tokio::time::timeout(READ_TIMEOUT, fut)
             .await
             .map_err(|_| CliError::Timeout)?
-            .map_err(|e| CliError::Other {
-                raw: format!("{}: {e}", preview(&args)),
-            })?;
+            .map_err(|e| CliError::from_io(e, &preview(&args)))?;
         if out.code != 0 {
             if let Ok(s) = serde_json::from_slice::<SystemStatusJson>(&out.stdout) {
                 if !s.is_running() {

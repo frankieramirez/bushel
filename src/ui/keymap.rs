@@ -22,6 +22,17 @@ pub fn map_key(state: &AppState, key: KeyEvent, drawn: &DrawInfo) -> Vec<Command
         };
     }
 
+    if state.screen == Screen::CliMissing {
+        return match (key.code, &state.overlay) {
+            (KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('m'), Overlay::MessageLog) => {
+                vec![Command::CloseOverlay]
+            }
+            (KeyCode::Char('q'), _) => vec![Command::Quit],
+            (KeyCode::Char('m'), _) => vec![Command::OpenMessageLog],
+            _ => vec![],
+        };
+    }
+
     match &state.overlay {
         Overlay::Confirm { .. } => {
             return match key.code {

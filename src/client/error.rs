@@ -1,5 +1,6 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliError {
+    CliMissing { raw: String },
     ServiceDown { raw: String },
     NotFound { raw: String },
     InUse { raw: String },
@@ -10,6 +11,15 @@ pub enum CliError {
 }
 
 impl CliError {
+    pub fn from_io(error: std::io::Error, command: &str) -> Self {
+        let raw = format!("{command}: {error}");
+        if error.kind() == std::io::ErrorKind::NotFound {
+            Self::CliMissing { raw }
+        } else {
+            Self::Other { raw }
+        }
+    }
+
     pub fn classify(code: i32, stderr: &str) -> Self {
         let raw = stderr.trim().to_string();
         if code == 64 {
@@ -35,7 +45,8 @@ impl CliError {
 
     pub fn raw(&self) -> &str {
         match self {
-            CliError::ServiceDown { raw }
+            CliError::CliMissing { raw }
+            | CliError::ServiceDown { raw }
             | CliError::NotFound { raw }
             | CliError::InUse { raw }
             | CliError::Usage { raw }
@@ -47,6 +58,7 @@ impl CliError {
 
     pub fn gist(&self) -> String {
         match self {
+            CliError::CliMissing { .. } => "container CLI not found".into(),
             CliError::ServiceDown { .. } => "container system service is not running".into(),
             CliError::NotFound { .. } => "not found (already gone?)".into(),
             CliError::Usage { .. } => "bushel bug: invalid command line (see message log)".into(),

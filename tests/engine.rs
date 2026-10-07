@@ -2633,3 +2633,360 @@ engine_test!(
         assert!(text.contains("container stopped"));
     }
 );
+
+fn stats_event(
+    result: Result<Vec<bushel::client::model::StatsJson>, bushel::client::CliError>,
+) -> AppEvent {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1_000_000);
+    AppEvent::Stats {
+        sequence: SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        taken_at: Instant::now(),
+        result,
+    }
+}
+
+fn render_state(state: &AppState) -> String {
+    use ratatui::{Terminal, backend::TestBackend};
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    let theme = bushel::ui::theme::Theme {
+        truecolor: false,
+        ascii: true,
+    };
+    terminal
+        .draw(|frame| {
+            bushel::ui::draw::draw(frame, state, &theme);
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    (0..40)
+        .map(|y| {
+            (0..120)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn unloaded_panes_render_loading_without_empty_resource_claims() {
+    for layout in [LayoutMode::Rail, LayoutMode::Table] {
+        for pane in Pane::all() {
+            let mut state = AppState::new(true);
+            state.config.layout = layout;
+            state.pane = pane;
+            let rendered = render_state(&state);
+            assert!(
+                rendered.contains("loading"),
+                "{layout:?} {pane:?}: {rendered}"
+            );
+            assert!(!rendered.contains("no containers"));
+            assert!(!rendered.contains("create one"));
+            assert!(!rendered.contains("none"));
+        }
+    }
+}
+
+engine_test!(
+    failed_volume_read_has_no_empty_create_hint_in_either_layout,
+    || {
+        let mock = happy_mock();
+        mock.set(
+            &["volume", "ls", "--format", "json"],
+            Output::fail(1, "Error: boom"),
+        );
+        let mut h = Harness::started(mock);
+        h.engine.dispatch(Command::SwitchPane(Pane::Volumes));
+        h.pump();
+        for layout in [LayoutMode::Rail, LayoutMode::Table] {
+            h.engine.state.config.layout = layout;
+            let rendered = render_state(h.state());
+            assert!(rendered.contains("failed: boom"), "{layout:?}: {rendered}");
+            assert!(!rendered.contains("[c] create"), "{rendered}");
+        }
+        h.mock
+            .set(&["volume", "ls", "--format", "json"], Output::ok("[]"));
+        h.engine.dispatch(Command::SwitchPane(Pane::Containers));
+        h.engine.dispatch(Command::SwitchPane(Pane::Volumes));
+        h.pump();
+        assert!(render_state(h.state()).contains("no volumes · [c] create one"));
+    }
+);
+
+engine_test!(
+    all_container_poll_failures_degrade_preserve_rows_and_recover,
+    || {
+        use bushel::client::CliError;
+        for error in [
+            CliError::Timeout,
+            CliError::Other {
+                raw: "Error: boom".into(),
+            },
+            CliError::NotFound {
+                raw: "not found".into(),
+            },
+            CliError::InUse {
+                raw: "in use".into(),
+            },
+            CliError::Usage {
+                raw: "invalid argument".into(),
+            },
+        ] {
+            let mut h = Harness::started(happy_mock());
+            for sequence in 100..103 {
+                h.engine
+                    .apply(AppEvent::Containers(sequence, Err(error.clone())));
+            }
+            assert!(h.state().degraded, "{error:?} must degrade polling");
+            let rendered = render_state(h.state());
+            assert!(rendered.contains(&error.gist()), "{rendered}");
+            assert!(rendered.contains("last good"));
+            assert!(rendered.contains("qtest"));
+            assert!(
+                h.state()
+                    .messages
+                    .iter()
+                    .any(|message| message.contains(error.raw()))
+            );
+            h.engine.apply(AppEvent::Containers(
+                104,
+                Ok(serde_json::from_slice(&fixture("ls.json")).unwrap()),
+            ));
+            assert!(!h.state().degraded);
+            assert!(!render_state(h.state()).contains("last good"));
+        }
+    }
+);
+
+engine_test!(
+    missing_cli_shows_unavailable_guidance_and_keeps_message_log_accessible,
+    || {
+        use bushel::ui::{draw::DrawInfo, keymap::map_key};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut h = Harness::started(MockRunner::new());
+        for _ in 0..3 {
+            h.engine.on_tick();
+            h.pump();
+        }
+        assert_eq!(
+            h.state().poll_health.last_error.as_deref(),
+            Some("container CLI not found")
+        );
+        assert!(h.state().degraded);
+        let rendered = render_state(h.state());
+        assert!(rendered.contains("container CLI not found"), "{rendered}");
+        assert!(rendered.contains("unavailable"), "{rendered}");
+        assert!(
+            rendered.contains("github.com/apple/container"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("none"));
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        assert!(map_key(h.state(), key(KeyCode::Char('s')), &DrawInfo::default()).is_empty());
+        h.engine.dispatch(Command::OpenMessageLog);
+        assert_eq!(
+            map_key(h.state(), key(KeyCode::Esc), &DrawInfo::default()),
+            vec![Command::CloseOverlay]
+        );
+        h.engine.dispatch(Command::CloseOverlay);
+        h.mock.on_default(Output::ok("[]"));
+        h.engine.on_tick();
+        h.pump();
+        assert_eq!(h.state().screen, Screen::Main);
+        assert!(!h.state().degraded);
+    }
+);
+
+engine_test!(
+    stats_failures_are_visible_clear_frozen_values_and_recover_independently,
+    || {
+        use bushel::client::CliError;
+        let mut h = Harness::started(happy_mock());
+        let sample = || serde_json::from_slice(&fixture("stats.json")).unwrap();
+        h.engine.apply(stats_event(Ok(sample())));
+        h.engine.apply(stats_event(Ok(sample())));
+        assert!(h.state().containers[0].mem_bytes.is_some());
+        h.engine.apply(stats_event(Err(CliError::Timeout)));
+        h.engine.apply(stats_event(Ok(sample())));
+        assert!(
+            h.state().containers[0].cpu_percent.is_none(),
+            "recovery cannot reuse a pre-failure CPU derivative"
+        );
+        assert!(
+            h.state().containers[0].telemetry.is_empty(),
+            "recovery cannot label pre-failure rates as current"
+        );
+        h.engine.apply(stats_event(Ok(sample())));
+        for sequence in 100..103 {
+            h.engine.apply(stats_event(Err(CliError::Timeout)));
+            h.engine.apply(AppEvent::Containers(
+                sequence,
+                Ok(serde_json::from_slice(&fixture("ls.json")).unwrap()),
+            ));
+        }
+        let rendered = render_state(h.state());
+        assert!(
+            rendered.contains("stats unavailable: timed out"),
+            "{rendered}"
+        );
+        let container = &h.state().containers[0];
+        assert!(container.mem_bytes.is_none());
+        assert!(container.cpu_percent.is_none());
+        assert!(container.telemetry.is_empty());
+        assert!(
+            h.state()
+                .messages
+                .iter()
+                .any(|message| message.contains("stats failed: timed out"))
+        );
+        h.engine.apply(stats_event(Ok(sample())));
+        assert!(!render_state(h.state()).contains("stats unavailable"));
+        assert!(h.state().containers[0].mem_bytes.is_some());
+        assert!(
+            h.state().containers[0].cpu_percent.is_none(),
+            "first recovery sample has no cumulative baseline"
+        );
+    }
+);
+
+struct DelayedContainers {
+    mock: MockRunner,
+    delayed: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl bushel::runner::Runner for DelayedContainers {
+    async fn run(&self, args: &[String]) -> std::io::Result<Output> {
+        if args.first().is_some_and(|arg| arg == "ls")
+            && self.delayed.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            tokio::time::sleep(bushel::client::READ_TIMEOUT + Duration::from_secs(1)).await;
+        }
+        bushel::runner::Runner::run(&self.mock, args).await
+    }
+
+    fn spawn_stream(
+        &self,
+        args: &[String],
+    ) -> std::io::Result<(bushel::runner::LineStream, bushel::runner::KillHandle)> {
+        bushel::runner::Runner::spawn_stream(&self.mock, args)
+    }
+}
+
+async fn drain_ready<R: bushel::runner::Runner>(
+    engine: &mut Engine<R>,
+    rx: &mut mpsc::Receiver<AppEvent>,
+) {
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+        while let Ok(event) = rx.try_recv() {
+            engine.apply(event);
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn hung_container_reads_show_staleness_before_timeout_and_recover_after_real_timeouts() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let runner = Arc::new(DelayedContainers {
+        mock: happy_mock(),
+        delayed: AtomicBool::new(false),
+    });
+    let (tx, mut rx) = mpsc::channel(1024);
+    let mut engine = Engine::new(Client::new(Arc::clone(&runner)), tx, true);
+    engine.start();
+    drain_ready(&mut engine, &mut rx).await;
+    assert_eq!(engine.state.containers.len(), 2);
+    runner.delayed.store(true, Ordering::Relaxed);
+    for _ in 0..3 {
+        engine.on_tick();
+        drain_ready(&mut engine, &mut rx).await;
+    }
+    assert!(
+        engine.state.degraded,
+        "three ticks without a completed containers poll must look stale"
+    );
+    assert!(render_state(&engine.state).contains("last good"));
+    for failures in 1..=3 {
+        tokio::time::advance(bushel::client::READ_TIMEOUT).await;
+        drain_ready(&mut engine, &mut rx).await;
+        assert_eq!(engine.state.poll_health.consecutive_failures, failures);
+        assert_eq!(
+            engine.state.poll_health.last_error.as_deref(),
+            Some("timed out")
+        );
+        assert_eq!(engine.state.containers.len(), 2);
+        assert!(render_state(&engine.state).contains("timed out"));
+        if failures < 3 {
+            engine.on_tick();
+            drain_ready(&mut engine, &mut rx).await;
+        }
+    }
+    runner.delayed.store(false, Ordering::Relaxed);
+    engine.on_tick();
+    drain_ready(&mut engine, &mut rx).await;
+    assert!(!engine.state.degraded);
+    assert_eq!(engine.state.poll_health.consecutive_failures, 0);
+    assert!(engine.state.poll_health.last_success.is_some());
+}
+
+#[tokio::test]
+async fn missing_executable_is_distinct_from_a_missing_resource_on_reads_and_probe() {
+    use bushel::client::CliError;
+    let client = Client::new(Arc::new(MockRunner::new()));
+    for error in [
+        client.list_containers().await.unwrap_err(),
+        client.system_status().await.unwrap_err(),
+        client.version().await.unwrap_err(),
+    ] {
+        assert!(matches!(error, CliError::CliMissing { .. }), "{error:?}");
+        assert_eq!(error.gist(), "container CLI not found");
+        assert!(error.raw().contains("MockRunner: no response"));
+    }
+    let mock = MockRunner::new();
+    mock.on(
+        &["ls", "-a", "--format", "json"],
+        Output::fail(1, "resource not found"),
+    );
+    let error = Client::new(Arc::new(mock))
+        .list_containers()
+        .await
+        .unwrap_err();
+    assert!(matches!(error, CliError::NotFound { .. }));
+}
+
+engine_test!(
+    status_cluster_reflects_stale_stats_only_while_running_containers_need_them,
+    || {
+        use bushel::client::CliError;
+        let mut h = Harness::started(happy_mock());
+        h.engine
+            .apply(stats_event(Ok(serde_json::from_slice(&fixture(
+                "stats.json",
+            ))
+            .unwrap())));
+        for _ in 0..3 {
+            h.engine.on_tick();
+        }
+        h.engine.apply(AppEvent::Containers(
+            100,
+            Ok(serde_json::from_slice(&fixture("ls.json")).unwrap()),
+        ));
+        let rendered = render_state(h.state());
+        assert!(rendered.contains("stats unavailable"));
+        assert!(
+            rendered.lines().next().unwrap().contains("degraded"),
+            "{rendered}"
+        );
+        for _ in 0..3 {
+            h.engine.apply(stats_event(Err(CliError::Timeout)));
+        }
+        h.engine.apply(AppEvent::Containers(101, Ok(vec![])));
+        let rendered = render_state(h.state());
+        assert!(!rendered.contains("stats unavailable"));
+        assert!(
+            rendered.lines().next().unwrap().contains("service"),
+            "{rendered}"
+        );
+    }
+);
