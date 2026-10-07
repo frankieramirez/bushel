@@ -111,7 +111,7 @@ The exact `container …` command shown before confirming an action. Approval ap
 The synthetic stop-then-start action. The `container` CLI has no restart subcommand; bushel composes it.
 
 **Follow**:
-The live-tailing mode of the logs view, backed by a `logs -f` subprocess that bushel owns and kills.
+The live-tailing mode of the logs view, backed by a `logs -f` subprocess that bushel owns and kills. When the selected container stops, bushel retains its fetched log tail with a stopped marker. Selecting another entity or detail tab clears it. Fresh backlog reads for already-stopped containers await native CLI compatibility validation.
 _Avoid_: stream, watch
 
 **Wrap**:

@@ -5,7 +5,9 @@ pub mod state;
 use std::collections::HashMap;
 use std::time::Instant;
 
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::{Semaphore, mpsc};
+use tokio::task::JoinHandle;
 
 use crate::client::{self, CliError, Client};
 use crate::runner::{KillHandle, Runner, StreamEvent};
@@ -27,6 +29,15 @@ pub struct Engine<R: Runner> {
     stats_prev: HashMap<String, StatsSnapshot>,
     follower: Option<(String, KillHandle)>,
     follow_buffer: Vec<String>,
+    follow_generation: u64,
+    backlog_task: Option<JoinHandle<()>>,
+    inspect_task: Option<JoinHandle<()>>,
+    inspect_current: Option<(Target, u64)>,
+    inspect_sequence: u64,
+    inspect_semaphore: Arc<Semaphore>,
+    stats_inflight: Option<u64>,
+    stats_applied: u64,
+    stats_taken_at: Option<Instant>,
     pull_kill: Option<KillHandle>,
     service_kill: Option<KillHandle>,
 
@@ -54,6 +65,15 @@ impl<R: Runner> Engine<R> {
             stats_prev: HashMap::new(),
             follower: None,
             follow_buffer: Vec::new(),
+            follow_generation: 0,
+            backlog_task: None,
+            inspect_task: None,
+            inspect_current: None,
+            inspect_sequence: 0,
+            inspect_semaphore: Arc::new(Semaphore::new(1)),
+            stats_inflight: None,
+            stats_applied: 0,
+            stats_taken_at: None,
             pull_kill: None,
             service_kill: None,
             pending: PendingActions::default(),
@@ -126,11 +146,24 @@ impl<R: Runner> Engine<R> {
         });
     }
 
-    fn spawn_stats_poll(&self) {
+    fn spawn_stats_poll(&mut self) {
+        if self.stats_inflight.is_some() {
+            return;
+        }
+        let sequence = self.next_poll();
+        self.stats_inflight = Some(sequence);
         let client = self.client.clone();
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let _ = tx.send(AppEvent::Stats(client.stats().await)).await;
+            let result = client.stats().await;
+            let taken_at = Instant::now();
+            let _ = tx
+                .send(AppEvent::Stats {
+                    sequence,
+                    taken_at,
+                    result,
+                })
+                .await;
         });
     }
 
@@ -159,11 +192,12 @@ impl<R: Runner> Engine<R> {
         }
         if self.networks_dirty {
             self.networks_dirty = false;
+            let sequence = self.next_poll();
             let client = self.client.clone();
             let tx = self.tx.clone();
             tokio::spawn(async move {
                 let _ = tx
-                    .send(AppEvent::Networks(client.list_networks().await))
+                    .send(AppEvent::Networks(sequence, client.list_networks().await))
                     .await;
             });
         }
@@ -214,50 +248,82 @@ impl<R: Runner> Engine<R> {
         });
     }
 
+    fn cancel_backlog(&mut self) {
+        if let Some(task) = self.backlog_task.take() {
+            task.abort();
+        }
+    }
+
+    fn stop_follower(&mut self) {
+        if let Some((_, kill)) = self.follower.take() {
+            kill.kill();
+        }
+    }
+
     fn sync_follower(&mut self) {
-        let desired: Option<String> = if self.state.screen == Screen::Main
+        let selected = if self.state.screen == Screen::Main
             && self.state.pane == Pane::Containers
             && self.state.detail_tab == DetailTab::Logs
         {
             self.state
                 .selected_container()
-                .filter(|c| c.is_running())
-                .map(|c| c.id.clone())
+                .map(|c| (c.id.clone(), c.is_running()))
         } else {
             None
         };
-
-        let current = self.follower.as_ref().map(|(id, _)| id.clone());
-        if current == desired {
+        let owner = selected.as_ref().map(|(id, _)| id.clone());
+        if self.state.log_owner != owner {
+            self.stop_follower();
+            self.cancel_backlog();
+            self.follow_generation += 1;
+            self.follow_buffer.clear();
+            self.state.log_lines.clear();
+            self.state.log_owner = owner;
+            self.state.logs_loading = false;
+            self.state.follow_ended = false;
+        }
+        let Some((id, running)) = selected else {
+            return;
+        };
+        if !running {
+            // Stop live following, retaining the tail and any already-started backlog.
+            // Fresh stopped-container reads await native CLI compatibility evidence.
+            self.stop_follower();
+            self.state.follow_ended = true;
             return;
         }
-        if let Some((_, kill)) = self.follower.take() {
-            kill.kill();
+        if self
+            .follower
+            .as_ref()
+            .is_some_and(|(current, _)| current == &id)
+        {
+            return;
         }
+        self.cancel_backlog();
+        self.follow_generation += 1;
+        let generation = self.follow_generation;
         self.follow_buffer.clear();
         self.state.log_lines.clear();
-        self.state.log_owner = desired.clone();
         self.state.follow_ended = false;
-        self.state.logs_loading = desired.is_some();
-
-        let Some(id) = desired else { return };
+        self.state.logs_loading = true;
 
         let client = self.client.clone();
         let tx = self.tx.clone();
         let backlog_id = id.clone();
-        tokio::spawn(async move {
+        self.backlog_task = Some(tokio::spawn(async move {
             let (lines, error) = match client.logs_backlog(&backlog_id).await {
                 Ok(lines) => (lines, None),
                 Err(e) => (Vec::new(), Some(e)),
             };
             let _ = tx
                 .send(AppEvent::LogBacklog {
+                    generation,
                     id: backlog_id,
                     lines,
                     error,
                 })
                 .await;
-        });
+        }));
 
         match self.client.spawn_follow(&id) {
             Ok((mut rx, kill)) => {
@@ -268,11 +334,15 @@ impl<R: Runner> Engine<R> {
                         let msg = match ev {
                             StreamEvent::Stdout(line) | StreamEvent::Stderr(line) => {
                                 AppEvent::LogLine {
+                                    generation,
                                     id: id.clone(),
                                     line,
                                 }
                             }
-                            StreamEvent::Exit(_) => AppEvent::FollowExited { id: id.clone() },
+                            StreamEvent::Exit(_) => AppEvent::FollowExited {
+                                generation,
+                                id: id.clone(),
+                            },
                         };
                         if tx.send(msg).await.is_err() {
                             break;
@@ -283,9 +353,18 @@ impl<R: Runner> Engine<R> {
             Err(e) => {
                 self.state
                     .toast(format!("logs -f failed to spawn: {e}"), true);
-                self.state.logs_loading = false;
+                self.state.follow_ended = true;
             }
         }
+    }
+
+    fn cancel_inspect(&mut self) {
+        if let Some(task) = self.inspect_task.take() {
+            task.abort();
+        }
+        self.inspect_sequence += 1;
+        self.inspect_current = None;
+        self.state.inspect_loading = None;
     }
 
     fn ensure_inspect(&mut self) {
@@ -308,24 +387,59 @@ impl<R: Runner> Engine<R> {
                 .map(|n| (Pane::Networks, n.name.clone())),
             _ => None,
         };
-        let Some((pane, id)) = target else { return };
-        if self.state.inspect_cache.contains_key(&id)
-            || self.state.inspect_loading.as_deref() == Some(&id)
+        let target = target.map(|(pane, id)| Target::new(pane, id));
+        let revision = target.as_ref().map(|t| self.state.inspect_revision(t));
+        if self
+            .inspect_current
+            .as_ref()
+            .is_some_and(|(active, current_revision)| {
+                Some(active) == target.as_ref() && Some(*current_revision) == revision
+            })
         {
             return;
         }
-        self.state.inspect_loading = Some(id.clone());
+        self.cancel_inspect();
+        let Some(target) = target else {
+            return;
+        };
+        let identity = self.state.inspect_identity(&target);
+        if self
+            .state
+            .inspect_cache
+            .get(&target)
+            .is_some_and(|cached| cached.identity == identity)
+        {
+            return;
+        }
+        let revision = self.state.inspect_revision(&target);
+        let generation = self.inspect_sequence;
+        self.inspect_current = Some((target.clone(), revision));
+        self.state.inspect_loading = Some(target.clone());
+        self.state.inspect_errors.remove(&target);
         let client = self.client.clone();
         let tx = self.tx.clone();
-        tokio::spawn(async move {
-            let result = match pane {
-                Pane::Containers => client.inspect_container(&id).await,
-                Pane::Images => client.inspect_image(&id).await,
-                Pane::Volumes => client.inspect_volume(&id).await,
-                Pane::Networks => client.inspect_network(&id).await,
+        let semaphore = self.inspect_semaphore.clone();
+        self.inspect_task = Some(tokio::spawn(async move {
+            // Aborted tasks drop their permit before another inspect reaches Runner.
+            let Ok(_permit) = semaphore.acquire_owned().await else {
+                return;
             };
-            let _ = tx.send(AppEvent::InspectLoaded { id, result }).await;
-        });
+            let result = match target.pane {
+                Pane::Containers => client.inspect_container(&target.name).await,
+                Pane::Images => client.inspect_image(&target.name).await,
+                Pane::Volumes => client.inspect_volume(&target.name).await,
+                Pane::Networks => client.inspect_network(&target.name).await,
+            };
+            let _ = tx
+                .send(AppEvent::InspectLoaded {
+                    target,
+                    generation,
+                    revision,
+                    identity,
+                    result,
+                })
+                .await;
+        }));
     }
 
     pub fn apply(&mut self, event: AppEvent) {
@@ -412,17 +526,38 @@ impl<R: Runner> Engine<R> {
                     Err(e) => self.on_poll_error(e, false),
                 }
             }
-            AppEvent::Networks(Ok(list)) => {
-                self.state.update_networks(&list);
-                self.ensure_inspect();
+            AppEvent::Networks(sequence, result) => {
+                if sequence <= self.applied_poll[Pane::Networks.index()] {
+                    return;
+                }
+                self.applied_poll[Pane::Networks.index()] = sequence;
+                match result {
+                    Ok(list) => {
+                        self.state.update_networks(&list);
+                        self.ensure_inspect();
+                    }
+                    Err(e) => self.on_poll_error(e, false),
+                }
             }
-            AppEvent::Networks(Err(e)) => self.on_poll_error(e, false),
-            AppEvent::Stats(Ok(stats)) => {
-                self.stats_prev = self
-                    .state
-                    .apply_stats(&stats, &self.stats_prev, Instant::now());
+            AppEvent::Stats {
+                sequence,
+                taken_at,
+                result,
+            } => {
+                if self.stats_inflight == Some(sequence) {
+                    self.stats_inflight = None;
+                }
+                if sequence <= self.stats_applied
+                    || self.stats_taken_at.is_some_and(|last| taken_at <= last)
+                {
+                    return;
+                }
+                self.stats_applied = sequence;
+                if let Ok(stats) = result {
+                    self.stats_taken_at = Some(taken_at);
+                    self.stats_prev = self.state.apply_stats(&stats, &self.stats_prev, taken_at);
+                }
             }
-            AppEvent::Stats(Err(_)) => {}
             AppEvent::ServiceProbe(result) => {
                 self.probe_inflight = false;
                 match result {
@@ -488,9 +623,18 @@ impl<R: Runner> Engine<R> {
                     }
                 }
             }
-            AppEvent::LogBacklog { id, lines, error } => {
-                if self.state.log_owner.as_deref() == Some(&id) {
-                    self.state.log_lines = lines;
+            AppEvent::LogBacklog {
+                generation,
+                id,
+                lines,
+                error,
+            } => {
+                if generation == self.follow_generation
+                    && self.state.log_owner.as_deref() == Some(&id)
+                {
+                    self.backlog_task = None;
+                    self.state.log_lines.clear();
+                    self.state.log_lines.extend(lines);
                     for l in std::mem::take(&mut self.follow_buffer) {
                         self.state.push_log_line(l);
                     }
@@ -501,8 +645,14 @@ impl<R: Runner> Engine<R> {
                     }
                 }
             }
-            AppEvent::LogLine { id, line } => {
-                if self.state.log_owner.as_deref() == Some(&id) {
+            AppEvent::LogLine {
+                generation,
+                id,
+                line,
+            } => {
+                if generation == self.follow_generation
+                    && self.state.log_owner.as_deref() == Some(&id)
+                {
                     if self.state.logs_loading {
                         self.follow_buffer.push(line);
                     } else {
@@ -510,25 +660,46 @@ impl<R: Runner> Engine<R> {
                     }
                 }
             }
-            AppEvent::FollowExited { id } => {
-                if self.state.log_owner.as_deref() == Some(&id) {
+            AppEvent::FollowExited { generation, id } => {
+                if generation == self.follow_generation
+                    && self.state.log_owner.as_deref() == Some(&id)
+                {
                     self.state.follow_ended = true;
                 }
             }
-            AppEvent::InspectLoaded { id, result } => {
-                if self.state.inspect_loading.as_deref() == Some(&id) {
-                    self.state.inspect_loading = None;
+            AppEvent::InspectLoaded {
+                target,
+                generation,
+                revision,
+                identity,
+                result,
+            } => {
+                if generation != self.inspect_sequence
+                    || self.state.inspect_loading.as_ref() != Some(&target)
+                    || revision != self.state.inspect_revision(&target)
+                    || identity != self.state.inspect_identity(&target)
+                {
+                    self.ensure_inspect();
+                    return;
                 }
+                self.inspect_task = None;
+                self.inspect_current = None;
+                self.state.inspect_loading = None;
                 match result {
                     Ok(json) => {
-                        self.state.inspect_cache.insert(id, json);
-                    }
-                    Err(e) => {
-                        self.state
-                            .log_message(format!("inspect {id} failed: {}", e.raw()));
                         self.state
                             .inspect_cache
-                            .insert(id, format!("inspect failed: {}", e.gist()));
+                            .insert(target, CachedInspect { identity, json });
+                    }
+                    Err(e) => {
+                        self.state.log_message(format!(
+                            "inspect {} failed: {}",
+                            target.name,
+                            e.raw()
+                        ));
+                        self.state
+                            .inspect_errors
+                            .insert(target, format!("inspect failed: {}", e.gist()));
                     }
                 }
             }
@@ -554,6 +725,19 @@ impl<R: Runner> Engine<R> {
                     self.pull_kill = None;
                     if code == 0 {
                         self.state.toast(format!("pulled {reference}"), false);
+                        // A pull can be typed as a short alias for a listed reference.
+                        // Conservatively expire image inspections without rewriting argv.
+                        let targets: Vec<_> = self
+                            .state
+                            .inspect_cache
+                            .keys()
+                            .chain(self.state.inspect_loading.iter())
+                            .filter(|target| target.pane == Pane::Images)
+                            .cloned()
+                            .collect();
+                        for target in targets {
+                            self.state.invalidate_inspect(&target);
+                        }
                         self.images_dirty = true;
                         self.refresh_dirty();
                     } else {
@@ -701,7 +885,7 @@ impl<R: Runner> Engine<R> {
                 self.state
                     .log_message(format!("$ {command} → ok, awaiting poll confirmation"));
                 self.refresh_pane(plan.target.pane);
-                self.state.inspect_cache.remove(&plan.target.name);
+                self.state.invalidate_inspect(&plan.target);
             }
             Err(e) => {
                 self.state.log_message(format!("$ {command}\n{}", e.raw()));
@@ -1327,9 +1511,10 @@ impl<R: Runner> Engine<R> {
 
     pub fn prepare_exec(&mut self) -> Vec<String> {
         let id = self.state.exec_request.take().unwrap_or_default();
-        if let Some((_, kill)) = self.follower.take() {
-            kill.kill();
-        }
+        self.stop_follower();
+        self.cancel_backlog();
+        self.cancel_inspect();
+        self.follow_generation += 1;
         self.state.log_owner = None;
         Client::<R>::exec_shell_args(&id)
     }
@@ -1341,9 +1526,10 @@ impl<R: Runner> Engine<R> {
     }
 
     pub fn shutdown(&mut self) {
-        if let Some((_, kill)) = self.follower.take() {
-            kill.kill();
-        }
+        self.stop_follower();
+        self.cancel_backlog();
+        self.cancel_inspect();
+        self.follow_generation += 1;
         if let Some(kill) = self.pull_kill.take() {
             kill.kill();
         }
