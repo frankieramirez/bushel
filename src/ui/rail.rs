@@ -4,7 +4,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::engine::state::{AppState, Focus, Pane};
+use crate::engine::state::{AppState, Focus, Pane, ReadStatus};
 use crate::ui::humanize::elide;
 use crate::ui::layout::LayoutPlan;
 use crate::ui::rows::{
@@ -123,16 +123,25 @@ fn label_line(state: &AppState, th: &Theme, pane: Pane, width: usize) -> Line<'s
         used += text.chars().count();
         left.push(Span::styled(text, Style::new().fg(th.accent())));
     }
-    let count = format!("{n} ");
+    let count = if state.reads[pane.index()] == ReadStatus::Ready {
+        format!("{n} ")
+    } else {
+        format!("{} ", absent(th))
+    };
     let gap = width.saturating_sub(used + count.chars().count());
     left.push(Span::raw(" ".repeat(gap)));
     left.push(Span::styled(count, count_style));
     Line::from(left)
 }
 
-fn empty_hint(state: &AppState, pane: Pane) -> &'static str {
+fn empty_hint(state: &AppState, pane: Pane, th: &Theme) -> String {
+    match &state.reads[pane.index()] {
+        ReadStatus::Loading => return format!("{} loading …", th.spinner(0)),
+        ReadStatus::Failed { gist } => return format!("list failed: {gist} · m log"),
+        ReadStatus::Ready => {}
+    }
     if state.pane_len(pane) > 0 {
-        return "no match";
+        return "no match".into();
     }
     match pane {
         Pane::Containers => "none",
@@ -140,6 +149,7 @@ fn empty_hint(state: &AppState, pane: Pane) -> &'static str {
         Pane::Volumes => "none · [c] create",
         Pane::Networks => "none",
     }
+    .into()
 }
 
 fn draw_section(
@@ -157,7 +167,11 @@ fn draw_section(
     let width = area.width as usize;
 
     if tight && !active {
-        let n = state.pane_len(pane);
+        let n = if state.reads[pane.index()] == ReadStatus::Ready {
+            state.pane_len(pane).to_string()
+        } else {
+            absent(th).into()
+        };
         let line = Line::from(vec![
             Span::styled(format!(" {} ", pane.key()), Style::new().fg(th.dim())),
             Span::styled(pane.title().to_string(), Style::new().fg(th.dim())),
@@ -174,7 +188,7 @@ fn draw_section(
 
     if rows_idx.is_empty() {
         lines.push(Line::from(Span::styled(
-            format!(" {}", empty_hint(state, pane)),
+            format!(" {}", empty_hint(state, pane, th)),
             Style::new().fg(th.dim()),
         )));
     } else {

@@ -84,6 +84,7 @@ impl<R: Runner> Engine<R> {
 
     pub fn on_tick(&mut self) {
         self.state.tick += 1;
+        self.state.degraded = self.state.poll_health.degraded(self.state.tick);
         if let Some(t) = &self.state.toast {
             if t.at.elapsed().as_secs() >= 4 {
                 self.state.toast = None;
@@ -340,6 +341,10 @@ impl<R: Runner> Engine<R> {
                         self.applied_poll[Pane::Containers.index()] = sequence;
                         self.state.parse_failures = 0;
                         self.state.degraded = false;
+                        self.state.poll_health.succeed(self.state.tick);
+                        if self.state.screen == Screen::CliMissing {
+                            self.state.screen = Screen::Main;
+                        }
                         let rows: Vec<_> = list
                             .iter()
                             .map(|c| Observation {
@@ -361,7 +366,7 @@ impl<R: Runner> Engine<R> {
                         self.sync_follower();
                         self.ensure_inspect();
                     }
-                    Err(e) => self.on_poll_error(e, true),
+                    Err(e) => self.on_poll_error(e, Pane::Containers),
                 }
             }
             AppEvent::Images(sequence, result) => {
@@ -387,7 +392,7 @@ impl<R: Runner> Engine<R> {
                         self.observe_pending(Pane::Images, sequence, &rows);
                         self.ensure_inspect();
                     }
-                    Err(e) => self.on_poll_error(e, false),
+                    Err(e) => self.on_poll_error(e, Pane::Images),
                 }
             }
             AppEvent::Volumes(sequence, result) => {
@@ -409,20 +414,29 @@ impl<R: Runner> Engine<R> {
                         self.observe_pending(Pane::Volumes, sequence, &rows);
                         self.ensure_inspect();
                     }
-                    Err(e) => self.on_poll_error(e, false),
+                    Err(e) => self.on_poll_error(e, Pane::Volumes),
                 }
             }
             AppEvent::Networks(Ok(list)) => {
                 self.state.update_networks(&list);
                 self.ensure_inspect();
             }
-            AppEvent::Networks(Err(e)) => self.on_poll_error(e, false),
+            AppEvent::Networks(Err(e)) => self.on_poll_error(e, Pane::Networks),
             AppEvent::Stats(Ok(stats)) => {
+                if self.state.stats_health.consecutive_failures > 0 {
+                    // This sample reestablishes the cumulative baseline; old
+                    // derivatives must not appear current after health clears.
+                    for container in &mut self.state.containers {
+                        container.cpu_percent = None;
+                        container.telemetry.clear();
+                    }
+                }
+                self.state.stats_health.succeed(self.state.tick);
                 self.stats_prev = self
                     .state
                     .apply_stats(&stats, &self.stats_prev, Instant::now());
             }
-            AppEvent::Stats(Err(_)) => {}
+            AppEvent::Stats(Err(e)) => self.on_stats_error(e),
             AppEvent::ServiceProbe(result) => {
                 self.probe_inflight = false;
                 match result {
@@ -444,6 +458,9 @@ impl<R: Runner> Engine<R> {
                     Err(e) => {
                         self.state
                             .log_message(format!("system status probe failed: {}", e.raw()));
+                        if matches!(e, CliError::CliMissing { .. }) {
+                            self.enter_cli_missing();
+                        }
                     }
                 }
             }
@@ -463,6 +480,9 @@ impl<R: Runner> Engine<R> {
             AppEvent::VersionChecked(Err(e)) => {
                 self.state
                     .log_message(format!("version check failed: {}", e.raw()));
+                if matches!(e, CliError::CliMissing { .. }) {
+                    self.enter_cli_missing();
+                }
             }
             AppEvent::ActionDone { action_id, result } => self.on_action_done(action_id, result),
             AppEvent::PruneDone {
@@ -583,12 +603,21 @@ impl<R: Runner> Engine<R> {
         }
     }
 
-    fn on_poll_error(&mut self, e: CliError, counts_toward_degraded: bool) {
+    fn on_poll_error(&mut self, e: CliError, pane: Pane) {
+        self.state.reads[pane.index()] = ReadStatus::Failed { gist: e.gist() };
+        if pane == Pane::Containers && !matches!(e, CliError::ServiceDown { .. }) {
+            self.state.poll_health.fail(e.gist());
+            self.state.degraded = self.state.poll_health.degraded(self.state.tick);
+        }
         match e {
             CliError::ServiceDown { .. } => self.enter_service_down(),
+            CliError::CliMissing { raw } => {
+                self.state.log_message(format!("poll failed: {raw}"));
+                self.enter_cli_missing();
+            }
             CliError::ParseFailure { raw } => {
                 self.state.log_message(format!("poll parse failure: {raw}"));
-                if counts_toward_degraded {
+                if pane == Pane::Containers {
                     self.state.parse_failures += 1;
                     if self.state.parse_failures >= DEGRADED_THRESHOLD {
                         self.state.degraded = true;
@@ -602,6 +631,26 @@ impl<R: Runner> Engine<R> {
         }
         if self.state.screen == Screen::Splash {
             self.state.screen = Screen::Main;
+        }
+    }
+
+    fn on_stats_error(&mut self, error: CliError) {
+        self.state.stats_health.fail(error.gist());
+        self.state
+            .log_message(format!("stats failed: {}", error.raw()));
+        // Rates cannot bridge a failed sample. Recovery starts a new baseline.
+        self.stats_prev.clear();
+        if self.state.stats_health.consecutive_failures >= DEGRADED_THRESHOLD {
+            for container in &mut self.state.containers {
+                container.cpu_percent = None;
+                container.mem_bytes = None;
+                container.telemetry.clear();
+            }
+        }
+        match error {
+            CliError::ServiceDown { .. } => self.enter_service_down(),
+            CliError::CliMissing { .. } => self.enter_cli_missing(),
+            _ => {}
         }
     }
 
@@ -680,6 +729,11 @@ impl<R: Runner> Engine<R> {
                 .log_message("service down: entity polling stopped, probing every 2s");
         }
         self.state.screen = Screen::ServiceDown;
+        self.sync_follower();
+    }
+
+    fn enter_cli_missing(&mut self) {
+        self.state.screen = Screen::CliMissing;
         self.sync_follower();
     }
 

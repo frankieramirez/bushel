@@ -4,7 +4,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::engine::state::{AppState, Focus, Pane};
+use crate::engine::state::{AppState, Focus, Pane, ReadStatus};
 use crate::ui::humanize::elide;
 use crate::ui::layout::LayoutPlan;
 use crate::ui::rail::pending_span;
@@ -158,7 +158,7 @@ fn draw_table(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, floor
 
     if rows_idx.is_empty() {
         lines.push(Line::from(Span::styled(
-            format!("  {}", empty_hint(state)),
+            format!("  {}", empty_hint(state, th)),
             Style::new().fg(th.dim()),
         )));
     } else {
@@ -170,9 +170,14 @@ fn draw_table(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, floor
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn empty_hint(state: &AppState) -> &'static str {
+fn empty_hint(state: &AppState, th: &Theme) -> String {
+    match &state.reads[state.pane.index()] {
+        ReadStatus::Loading => return format!("{} loading …", th.spinner(0)),
+        ReadStatus::Failed { gist } => return format!("list failed: {gist} · m log"),
+        ReadStatus::Ready => {}
+    }
     if state.pane_len(state.pane) > 0 {
-        return "no match";
+        return "no match".into();
     }
     match state.pane {
         Pane::Containers => "no containers",
@@ -180,6 +185,7 @@ fn empty_hint(state: &AppState) -> &'static str {
         Pane::Volumes => "no volumes · [c] create one",
         Pane::Networks => "no networks",
     }
+    .into()
 }
 
 fn row_line(
@@ -401,7 +407,11 @@ pub fn header_line(state: &AppState, th: &Theme) -> Vec<Span<'static>> {
             },
         ));
         spans.push(Span::styled(
-            state.pane_len(pane).to_string(),
+            if state.reads[pane.index()] == ReadStatus::Ready {
+                state.pane_len(pane).to_string()
+            } else {
+                absent(th).into()
+            },
             if active {
                 Style::new().fg(th.text()).bold()
             } else {
