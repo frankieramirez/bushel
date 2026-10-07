@@ -709,6 +709,181 @@ engine_test!(external_stop_is_announced_but_bushel_stops_are_not, || {
     );
 });
 
+engine_test!(
+    failed_restart_keeps_its_stop_attribution_until_polled,
+    || {
+        let mock = happy_mock();
+        mock.on(&["stop", "qtest"], Output::ok("qtest\n"));
+        mock.on(&["start", "qtest"], Output::fail(1, "Error: start blew up"));
+        let mut h = Harness::started(mock);
+
+        h.engine.dispatch(Command::Run(UiAction::Restart));
+        h.pump();
+        let stopped = fixture_str("ls.json").replace(
+            r#""startedDate":"2026-08-20T01:46:37Z","state":"running""#,
+            r#""startedDate":"2026-08-20T01:46:37Z","state":"stopped""#,
+        );
+        h.mock
+            .on(&["ls", "-a", "--format", "json"], Output::ok(stopped));
+        h.engine.on_tick();
+        h.pump();
+
+        assert!(
+            !h.state()
+                .messages
+                .iter()
+                .any(|m| m.contains("stopped externally")),
+            "{:?}",
+            h.state().messages
+        );
+        let toast = h.state().toast.as_ref().expect("restart error");
+        assert!(toast.error);
+        assert!(
+            toast.text.contains("stopped, but start failed"),
+            "{}",
+            toast.text
+        );
+        assert!(toast.text.contains("start blew up"), "{}", toast.text);
+        assert!(h.state().messages.iter().any(|m| {
+            m.contains("$ container start qtest → failed") && m.contains("start blew up")
+        }));
+        let row = h
+            .state()
+            .containers
+            .iter()
+            .find(|c| c.id == "qtest")
+            .unwrap();
+        assert!(!row.is_running());
+        assert!(row.pending.is_none());
+    }
+);
+
+engine_test!(
+    failed_stop_and_kill_keep_their_stop_attribution_until_polled,
+    || {
+        for (action, command) in [(UiAction::Stop, "stop"), (UiAction::Kill, "kill")] {
+            let mock = happy_mock();
+            mock.on(&[command, "qtest"], Output::fail(1, "Error: response lost"));
+            let mut h = Harness::started(mock);
+            h.engine.dispatch(Command::Run(action));
+            if action == UiAction::Kill {
+                h.engine.dispatch(Command::ConfirmYes);
+            }
+            h.pump();
+            let stopped = fixture_str("ls.json").replace(
+                r#""startedDate":"2026-08-20T01:46:37Z","state":"running""#,
+                r#""startedDate":"2026-08-20T01:46:37Z","state":"stopped""#,
+            );
+            h.mock
+                .on(&["ls", "-a", "--format", "json"], Output::ok(stopped));
+            h.engine.on_tick();
+            h.pump();
+            assert!(
+                !h.state()
+                    .messages
+                    .iter()
+                    .any(|m| m.contains("stopped externally"))
+            );
+            assert_eq!(h.state().toast.as_ref().unwrap().text, "response lost");
+            let row = h
+                .state()
+                .containers
+                .iter()
+                .find(|c| c.id == "qtest")
+                .unwrap();
+            assert!(!row.is_running());
+            assert!(row.pending.is_none());
+        }
+    }
+);
+
+engine_test!(
+    failed_restart_reports_stop_failure_without_running_start,
+    || {
+        let mock = happy_mock();
+        mock.on(&["stop", "qtest"], Output::fail(1, "Error: stop blew up"));
+        let mut h = Harness::started(mock);
+        h.engine.dispatch(Command::Run(UiAction::Restart));
+        let done = h.take_event(|e| matches!(e, AppEvent::ActionDone { .. }));
+        assert!(matches!(
+            done,
+            AppEvent::ActionDone {
+                completed_steps: 0,
+                ..
+            }
+        ));
+        h.engine.apply(done);
+        assert_eq!(
+            h.state().toast.as_ref().unwrap().text,
+            "restart qtest: stop failed: stop blew up"
+        );
+        assert!(
+            !h.mock
+                .commands()
+                .iter()
+                .any(|c| c == "container start qtest")
+        );
+        assert!(h.state().messages.iter().any(|m| {
+            m.contains("$ container stop qtest → failed (step 1/2)") && m.contains("stop blew up")
+        }));
+    }
+);
+
+engine_test!(
+    stop_attribution_survives_inflight_poll_and_ends_at_fresh_poll,
+    || {
+        let mock = happy_mock();
+        mock.on(&["stop", "qtest"], Output::ok("qtest\n"));
+        mock.on(&["start", "qtest"], Output::fail(1, "Error: start blew up"));
+        let mut h = Harness::started(mock);
+        let stopped = fixture_str("ls.json").replace(
+            r#""startedDate":"2026-08-20T01:46:37Z","state":"running""#,
+            r#""startedDate":"2026-08-20T01:46:37Z","state":"stopped""#,
+        );
+        h.mock.on(
+            &["ls", "-a", "--format", "json"],
+            Output::ok(stopped.clone()),
+        );
+        h.engine.on_tick();
+        // Hold a poll started before completion, which already observed the stop.
+        let inflight = h.take_event(|e| matches!(e, AppEvent::Containers(..)));
+        h.engine.dispatch(Command::Run(UiAction::Restart));
+        let done = h.take_event(|e| matches!(e, AppEvent::ActionDone { .. }));
+        assert!(matches!(
+            done,
+            AppEvent::ActionDone {
+                completed_steps: 1,
+                ..
+            }
+        ));
+        h.engine.apply(done);
+        h.engine.apply(inflight);
+        assert!(
+            !h.state()
+                .messages
+                .iter()
+                .any(|m| m.contains("stopped externally"))
+        );
+
+        // The first successful poll started after completion consumes attribution,
+        // even when it sees the container running again.
+        h.mock.on(
+            &["ls", "-a", "--format", "json"],
+            Output::ok(fixture("ls.json")),
+        );
+        h.engine.on_tick();
+        h.pump();
+        h.mock
+            .on(&["ls", "-a", "--format", "json"], Output::ok(stopped));
+        h.engine.on_tick();
+        h.pump();
+        assert_eq!(
+            h.state().toast.as_ref().unwrap().text,
+            "qtest stopped externally"
+        );
+    }
+);
+
 engine_test!(action_failure_clears_pending_and_surfaces_stderr, || {
     let mock = happy_mock();
     mock.on(

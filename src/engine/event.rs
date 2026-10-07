@@ -23,6 +23,7 @@ pub enum AppEvent {
     ActionDone {
         action_id: super::pending::ActionId,
         result: CliResult<()>,
+        completed_steps: usize,
     },
     PruneDone {
         generation: u64,

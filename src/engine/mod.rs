@@ -21,6 +21,11 @@ pub use state::*;
 pub const SLOW_POLL_TICKS: u64 = 10;
 pub const PROBE_TICKS: u64 = 2;
 
+struct StopAttribution {
+    completion_floor: u64,
+    completed_at: Instant,
+}
+
 pub struct Engine<R: Runner> {
     pub state: AppState,
     client: Client<R>,
@@ -42,6 +47,7 @@ pub struct Engine<R: Runner> {
     service_kill: Option<KillHandle>,
 
     pending: PendingActions,
+    stop_attribution: HashMap<String, StopAttribution>,
     confirmation: Option<ActionPlan>,
     tag_source: Option<(String, Option<String>)>,
     prune: Option<(u64, Pane)>,
@@ -77,6 +83,7 @@ impl<R: Runner> Engine<R> {
             pull_kill: None,
             service_kill: None,
             pending: PendingActions::default(),
+            stop_attribution: HashMap::new(),
             confirmation: None,
             tag_source: None,
             prune: None,
@@ -104,6 +111,7 @@ impl<R: Runner> Engine<R> {
 
     pub fn on_tick(&mut self) {
         self.state.tick += 1;
+        self.expire_stop_attribution();
         if let Some(t) = &self.state.toast {
             if t.at.elapsed().as_secs() >= 4 {
                 self.state.toast = None;
@@ -238,13 +246,21 @@ impl<R: Runner> Engine<R> {
         let tx = self.tx.clone();
         tokio::spawn(async move {
             let mut result = Ok(());
+            let mut completed_steps = 0;
             for args in &plan.commands {
                 if let Err(error) = client.run_action(args).await {
                     result = Err(error);
                     break;
                 }
+                completed_steps += 1;
             }
-            let _ = tx.send(AppEvent::ActionDone { action_id, result }).await;
+            let _ = tx
+                .send(AppEvent::ActionDone {
+                    action_id,
+                    result,
+                    completed_steps,
+                })
+                .await;
         });
     }
 
@@ -463,12 +479,19 @@ impl<R: Runner> Engine<R> {
                             })
                             .collect();
                         let (diffs, external) = self.state.update_containers(&list);
+                        self.expire_stop_attribution();
                         for d in diffs {
                             self.state.log_message(d);
                         }
                         for id in external {
-                            self.state.toast(format!("{id} stopped externally"), false);
+                            if !self.stop_attribution.contains_key(&id) {
+                                self.state.toast(format!("{id} stopped externally"), false);
+                            }
                         }
+                        // An older in-flight poll can also observe our stop, but
+                        // only a poll started after completion consumes attribution.
+                        self.stop_attribution
+                            .retain(|_, attribution| sequence <= attribution.completion_floor);
                         self.observe_pending(Pane::Containers, sequence, &rows);
                         self.state.recompute_in_use();
                         self.maybe_dissolve_splash();
@@ -599,7 +622,11 @@ impl<R: Runner> Engine<R> {
                 self.state
                     .log_message(format!("version check failed: {}", e.raw()));
             }
-            AppEvent::ActionDone { action_id, result } => self.on_action_done(action_id, result),
+            AppEvent::ActionDone {
+                action_id,
+                result,
+                completed_steps,
+            } => self.on_action_done(action_id, result, completed_steps),
             AppEvent::PruneDone {
                 generation,
                 command,
@@ -867,7 +894,19 @@ impl<R: Runner> Engine<R> {
         self.sync_follower();
     }
 
-    fn on_action_done(&mut self, action_id: ActionId, result: Result<(), CliError>) {
+    fn expire_stop_attribution(&mut self) {
+        // A failed or unavailable containers poll must not keep attributing
+        // future stops to this action beyond the ten-second read timeout.
+        self.stop_attribution
+            .retain(|_, attribution| attribution.completed_at.elapsed() < client::READ_TIMEOUT);
+    }
+
+    fn on_action_done(
+        &mut self,
+        action_id: ActionId,
+        result: Result<(), CliError>,
+        completed_steps: usize,
+    ) {
         let Some(completion) = self
             .pending
             .complete(action_id, result.is_ok(), self.poll_sequence)
@@ -888,7 +927,42 @@ impl<R: Runner> Engine<R> {
                 self.state.invalidate_inspect(&plan.target);
             }
             Err(e) => {
-                self.state.log_message(format!("$ {command}\n{}", e.raw()));
+                if matches!(plan.kind, ActionKind::Stop | ActionKind::Kill)
+                    || (plan.kind == ActionKind::Restart && completed_steps > 0)
+                {
+                    self.expire_stop_attribution();
+                    self.stop_attribution.insert(
+                        plan.target.name.clone(),
+                        StopAttribution {
+                            completion_floor: self.poll_sequence,
+                            completed_at: Instant::now(),
+                        },
+                    );
+                }
+                let failed_command = plan
+                    .commands
+                    .get(completed_steps)
+                    .map(|args| format!("container {}", args.join(" ")))
+                    .unwrap_or(command);
+                self.state.log_message(format!(
+                    "$ {failed_command} → failed (step {}/{})\n{}",
+                    completed_steps + 1,
+                    plan.commands.len(),
+                    e.raw()
+                ));
+                if plan.kind == ActionKind::Restart {
+                    let step = if completed_steps > 0 {
+                        "stopped, but start failed"
+                    } else {
+                        "stop failed"
+                    };
+                    self.state.toast(
+                        format!("restart {}: {step}: {}", plan.target.name, e.gist()),
+                        true,
+                    );
+                    self.sync_follower();
+                    return;
+                }
                 match e {
                     CliError::NotFound { .. } => {
                         self.state
