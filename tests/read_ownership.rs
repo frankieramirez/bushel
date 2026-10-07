@@ -355,3 +355,22 @@ async fn exec_and_shutdown_cancel_backlog_and_inspect_reads() {
         assert_eq!(runner.active.load(Ordering::SeqCst), 0);
     }
 }
+
+#[tokio::test]
+async fn an_older_list_success_cannot_clear_a_newer_poll_failure() {
+    let (mut engine, _) = setup(Arc::new(DelayedRunner::new("none")));
+    let original: Vec<ImageJson> = serde_json::from_str(
+        r#"[{"id":"a","configuration":{"name":"a","descriptor":{"digest":"sha256:a"}}}]"#,
+    )
+    .unwrap();
+    engine.apply(AppEvent::Images(10, Ok(original.clone())));
+    engine.apply(AppEvent::Images(12, Err(bushel::client::CliError::Timeout)));
+    let mut older = original;
+    older[0].configuration.descriptor.as_mut().unwrap().digest = Some("sha256:stale".into());
+    engine.apply(AppEvent::Images(11, Ok(older)));
+    assert_eq!(engine.state.images[0].digest.as_deref(), Some("sha256:a"));
+    assert!(matches!(
+        engine.state.reads[Pane::Images.index()],
+        bushel::engine::ReadStatus::Failed { .. }
+    ));
+}

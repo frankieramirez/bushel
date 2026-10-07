@@ -468,9 +468,9 @@ impl<R: Runner> Engine<R> {
                 if sequence <= self.applied_poll[Pane::Containers.index()] {
                     return;
                 }
+                self.applied_poll[Pane::Containers.index()] = sequence;
                 match result {
                     Ok(list) => {
-                        self.applied_poll[Pane::Containers.index()] = sequence;
                         self.state.parse_failures = 0;
                         self.state.degraded = false;
                         self.state.poll_health.succeed(self.state.tick);
@@ -512,9 +512,9 @@ impl<R: Runner> Engine<R> {
                 if sequence <= self.applied_poll[Pane::Images.index()] {
                     return;
                 }
+                self.applied_poll[Pane::Images.index()] = sequence;
                 match result {
                     Ok(list) => {
-                        self.applied_poll[Pane::Images.index()] = sequence;
                         let rows: Vec<_> = list
                             .iter()
                             .map(|i| Observation {
@@ -538,9 +538,9 @@ impl<R: Runner> Engine<R> {
                 if sequence <= self.applied_poll[Pane::Volumes.index()] {
                     return;
                 }
+                self.applied_poll[Pane::Volumes.index()] = sequence;
                 match result {
                     Ok(list) => {
-                        self.applied_poll[Pane::Volumes.index()] = sequence;
                         let rows: Vec<_> = list
                             .iter()
                             .map(|v| Observation {
@@ -779,14 +779,18 @@ impl<R: Runner> Engine<R> {
                     self.pull_kill = None;
                     if code == 0 {
                         self.state.toast(format!("pulled {reference}"), false);
-                        // A pull can be typed as a short alias for a listed reference.
-                        // Conservatively expire image inspections without rewriting argv.
+                        // Expire the pulled identity even when its typed spelling is a short alias.
                         let targets: Vec<_> = self
                             .state
                             .inspect_cache
                             .keys()
                             .chain(self.state.inspect_loading.iter())
-                            .filter(|target| target.pane == Pane::Images)
+                            .chain(self.state.inspect_errors.keys())
+                            .filter(|target| {
+                                target.pane == Pane::Images
+                                    && client::canonical_reference(&target.name)
+                                        == client::canonical_reference(&reference)
+                            })
                             .cloned()
                             .collect();
                         for target in targets {

@@ -2990,3 +2990,40 @@ engine_test!(
         );
     }
 );
+
+engine_test!(
+    a_successful_short_reference_pull_refreshes_its_existing_inspect,
+    || {
+        let mock = happy_mock();
+        mock.on(
+            &["image", "inspect", "docker.io/library/alpine:latest"],
+            Output::ok(r#"{"version":"before"}"#),
+        );
+        let mut h = Harness::started(mock);
+        h.engine.dispatch(Command::SwitchPane(Pane::Images));
+        h.pump();
+        let target =
+            bushel::engine::pending::Target::new(Pane::Images, "docker.io/library/alpine:latest");
+        assert!(h.state().inspect_cache[&target].json.contains("before"));
+        h.mock.set(
+            &["image", "inspect", "docker.io/library/alpine:latest"],
+            Output::ok(r#"{"version":"after"}"#),
+        );
+        h.mock.on_stream(
+            &["image", "pull", "alpine:latest", "--progress", "plain"],
+            vec![StreamEvent::Exit(0)],
+        );
+        pull_reference(&mut h, "alpine");
+        h.pump();
+        assert!(h.state().inspect_cache[&target].json.contains("after"));
+        assert_eq!(
+            h.mock
+                .commands()
+                .iter()
+                .filter(|command| command.as_str()
+                    == "container image inspect docker.io/library/alpine:latest")
+                .count(),
+            2
+        );
+    }
+);
