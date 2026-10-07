@@ -1166,6 +1166,102 @@ engine_test!(exec_request_pauses_follower_and_resumes_after, || {
     );
 });
 
+engine_test!(exec_runs_through_runner_and_reports_nonzero_exit, || {
+    let mock = happy_mock();
+    mock.on_interactive(&["exec", "-it", "qtest", "/bin/sh"], Ok(127));
+    let mut h = Harness::started(mock);
+    assert_eq!(h.engine.follower_id(), Some("qtest"));
+    h.engine.dispatch(Command::Run(UiAction::Exec));
+    let calls_before = h.mock.calls().len();
+    h.engine.run_exec();
+    assert_eq!(h.engine.follower_id(), None);
+    assert_eq!(h.state().exec_request, None);
+    assert_eq!(
+        h.mock.calls()[calls_before..],
+        [vec![
+            "exec".to_string(),
+            "-it".into(),
+            "qtest".into(),
+            "/bin/sh".into()
+        ]]
+    );
+    let toast = h
+        .state()
+        .toast
+        .as_ref()
+        .expect("nonzero exec exit is reported");
+    assert_eq!(toast.text, "exec exited 127");
+    assert!(toast.error);
+    assert!(h.state().messages.iter().any(|m| m == "exec exited 127"));
+    h.engine.after_exec();
+    h.pump();
+    assert_eq!(h.engine.follower_id(), Some("qtest"));
+});
+
+engine_test!(successful_exec_is_quiet_and_resumes_the_follower, || {
+    let mock = happy_mock();
+    mock.on_interactive(&["exec", "-it", "qtest", "/bin/sh"], Ok(0));
+    let mut h = Harness::started(mock);
+    h.engine.dispatch(Command::Run(UiAction::Exec));
+    h.engine.run_exec();
+    assert!(h.state().toast.is_none());
+    assert_eq!(h.engine.follower_id(), None);
+    assert_eq!(h.state().exec_request, None);
+    assert_eq!(
+        h.mock
+            .calls()
+            .iter()
+            .filter(|args| args.first().is_some_and(|arg| arg == "exec"))
+            .count(),
+        1
+    );
+    h.engine.after_exec();
+    h.pump();
+    assert_eq!(h.engine.follower_id(), Some("qtest"));
+});
+
+engine_test!(
+    failed_exec_spawn_is_reported_and_resumes_the_follower,
+    || {
+        let mock = happy_mock();
+        mock.on_interactive(
+            &["exec", "-it", "qtest", "/bin/sh"],
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "fixture executable missing",
+            )),
+        );
+        let mut h = Harness::started(mock);
+        h.engine.dispatch(Command::Run(UiAction::Exec));
+        h.engine.run_exec();
+        let toast = h.state().toast.as_ref().unwrap();
+        assert_eq!(toast.text, "exec failed: fixture executable missing");
+        assert!(toast.error);
+        assert!(
+            h.state()
+                .messages
+                .iter()
+                .any(|m| m == "exec failed: fixture executable missing")
+        );
+        assert_eq!(h.engine.follower_id(), None);
+        h.engine.after_exec();
+        h.pump();
+        assert_eq!(h.engine.follower_id(), Some("qtest"));
+    }
+);
+
+engine_test!(
+    exec_without_a_request_does_not_invoke_runner_or_stop_following,
+    || {
+        let mut h = Harness::started(happy_mock());
+        let calls_before = h.mock.calls();
+        h.engine.run_exec();
+        assert_eq!(h.mock.calls(), calls_before);
+        assert_eq!(h.engine.follower_id(), Some("qtest"));
+        assert!(h.state().toast.is_none());
+    }
+);
+
 engine_test!(prune_confirms_then_runs_as_a_bottom_bar_activity, || {
     let mock = happy_mock();
     mock.on(&["delete", "--all"], Output::ok("old-batch\n"));
