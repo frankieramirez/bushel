@@ -13,7 +13,7 @@ use bushel::client::Client;
 use bushel::completions;
 use bushel::config::Config;
 use bushel::engine::{Command, Engine};
-use bushel::runner::{CONTAINER_BIN, CliRunner};
+use bushel::runner::CliRunner;
 use bushel::ui::theme::Theme;
 use bushel::ui::{Ui, keymap};
 
@@ -206,23 +206,11 @@ async fn main() -> std::io::Result<()> {
         }
 
         if engine.state.exec_request.is_some() {
-            let exec_args = engine.prepare_exec();
             ratatui::restore();
-            let status = std::process::Command::new(CONTAINER_BIN)
-                .args(&exec_args)
-                .status();
+            engine.run_exec();
             let _ = std::io::stdout().flush();
             terminal = ratatui::init();
             let _ = terminal.clear();
-            match status {
-                Ok(s) if !s.success() => {
-                    engine
-                        .state
-                        .toast(format!("exec exited {}", s.code().unwrap_or(-1)), true);
-                }
-                Err(e) => engine.state.toast(format!("exec failed: {e}"), true),
-                _ => {}
-            }
             engine.after_exec();
             ui.after_exec();
             continue;

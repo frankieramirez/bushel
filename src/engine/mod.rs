@@ -1355,6 +1355,20 @@ impl<R: Runner> Engine<R> {
         }
     }
 
+    /// Run the requested shell while the caller has suspended the terminal.
+    /// Blocking here keeps the UI poll loop paused until interactive exit.
+    pub fn run_exec(&mut self) {
+        let Some(id) = self.state.exec_request.clone() else {
+            return;
+        };
+        self.prepare_exec();
+        match self.client.exec_shell(&id) {
+            Ok(0) => {}
+            Ok(code) => self.state.toast(format!("exec exited {code}"), true),
+            Err(error) => self.state.toast(format!("exec failed: {error}"), true),
+        }
+    }
+
     pub fn prepare_exec(&mut self) -> Vec<String> {
         let id = self.state.exec_request.take().unwrap_or_default();
         if let Some((_, kill)) = self.follower.take() {
