@@ -1822,6 +1822,33 @@ engine_test!(the_settings_panel_moves_toggles_and_persists, || {
     );
     assert!(h.state().toast.is_none());
 
+    let editor_limited = include_str!("../fixtures/config/uint64.toml");
+    std::fs::write(dir.join("config.toml"), editor_limited).unwrap();
+    h.engine
+        .configure(Config::load_from(dir.join("config.toml")));
+    assert!(
+        h.state().config.ascii,
+        "valid effective settings survive lossless editor limits"
+    );
+    assert!(
+        h.state()
+            .messages
+            .iter()
+            .any(|message| message.contains("cannot edit config losslessly"))
+    );
+    h.engine.dispatch(Command::OpenSettings);
+    h.engine.dispatch(Command::SettingsToggle);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("config.toml")).unwrap(),
+        editor_limited
+    );
+    assert!(
+        h.state()
+            .toast
+            .as_ref()
+            .is_some_and(|toast| toast.error && toast.text.contains("settings writes disabled"))
+    );
+
     #[cfg(unix)]
     {
         let target = dir.join("target.toml");

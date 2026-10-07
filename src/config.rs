@@ -91,16 +91,20 @@ impl Config {
             Ok(text) => {
                 loaded.source = Some(text.clone());
                 match toml::from_str::<Config>(&text) {
-                    Ok(config) => match text.parse::<toml_edit::DocumentMut>() {
-                        Ok(document) => {
-                            loaded.config = config;
-                            loaded.document = document;
+                    Ok(config) => {
+                        // Effective settings remain valid even when the lossless
+                        // editor supports less TOML than the existing loader.
+                        loaded.config = config;
+                        match text.parse::<toml_edit::DocumentMut>() {
+                            Ok(document) => loaded.document = document,
+                            Err(e) => {
+                                loaded.error = Some(format!(
+                                    "cannot edit config losslessly at {}: {e}; existing settings loaded, settings writes disabled",
+                                    path.display()
+                                ));
+                            }
                         }
-                        Err(e) => {
-                            loaded.error =
-                                Some(format!("invalid config at {}: {e}", path.display()))
-                        }
-                    },
+                    }
                     Err(e) => {
                         loaded.error = Some(format!("invalid config at {}: {e}", path.display()))
                     }
@@ -263,6 +267,31 @@ mod tests {
         );
         unsafe { std::env::remove_var(Config::DIR_ENV) };
         assert_eq!(Config::display_path(), Config::DOC_PATH);
+    }
+
+    #[test]
+    fn lossless_parser_limits_do_not_discard_successfully_loaded_settings() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("config.toml");
+        let original = include_str!("../fixtures/config/uint64.toml");
+        let effective =
+            toml::from_str::<Config>(original).expect("the existing loader supports this file");
+        assert!(effective.ascii);
+        assert!(original.parse::<toml_edit::DocumentMut>().is_err());
+        std::fs::write(&path, original).unwrap();
+        let mut loaded = Config::load_from(path.clone());
+        assert_eq!(
+            loaded.effective(),
+            effective,
+            "lossless editing failure must not reset valid settings"
+        );
+        assert!(loaded.load_error().unwrap().contains("lossless"));
+        assert!(
+            loaded
+                .save_setting("reduced_motion", &Config::default())
+                .is_err()
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     }
 
     #[test]
