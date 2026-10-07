@@ -59,7 +59,8 @@ pub struct Ui {
 }
 
 impl Ui {
-    pub fn new(theme: Theme, reduced_motion: bool) -> Self {
+    pub fn new(mut theme: Theme, reduced_motion: bool) -> Self {
+        theme.reduced_motion = reduced_motion;
         Self {
             theme,
             reduced_motion,
@@ -72,6 +73,7 @@ impl Ui {
     }
 
     pub fn sync_config(&mut self, cfg: &crate::config::Config) {
+        self.theme.reduced_motion = cfg.reduced_motion;
         if self.theme.ascii != cfg.ascii {
             self.theme.ascii = cfg.ascii;
         }
@@ -85,10 +87,11 @@ impl Ui {
     }
 
     pub fn animating(&self, state: &AppState) -> bool {
-        self.transitions.is_running()
-            || state.screen == Screen::Splash
-            || state.service_starting
-            || state.pull.is_some()
+        !self.reduced_motion
+            && (self.transitions.is_running()
+                || state.screen == Screen::Splash
+                || state.service_starting
+                || state.pull.is_some())
     }
 
     pub fn ambient_active(&self) -> bool {
@@ -107,6 +110,9 @@ impl Ui {
         };
         if !self.reduced_motion {
             if let Some(prev) = self.prev {
+                if prev != snap || state.toast.as_ref().map(|t| t.at) != self.last_toast_at {
+                    self.interrupt();
+                }
                 if prev.screen == Screen::Splash && snap.screen == Screen::Main
                     || prev.screen == Screen::ServiceDown && snap.screen == Screen::Main
                 {
@@ -189,6 +195,10 @@ impl Ui {
             self.ambient
                 .process_effects(elapsed.into(), frame.buffer_mut(), area);
         }
+    }
+
+    pub fn interrupt(&mut self) {
+        self.transitions = EffectManager::default();
     }
 
     pub fn after_exec(&mut self) {

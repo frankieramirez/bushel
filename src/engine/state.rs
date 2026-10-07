@@ -291,7 +291,7 @@ impl Setting {
         match self {
             Setting::Layout => cfg.layout.blurb(),
             Setting::Ascii => "no Unicode dots, sparks or spinners",
-            Setting::ReducedMotion => "no transitions, no ambient shimmer",
+            Setting::ReducedMotion => "no transitions, shimmer or spinners",
             Setting::Splash => "the launch screen while probes run",
         }
     }
@@ -385,9 +385,11 @@ pub struct AppState {
 
     pub detail_scroll: u16,
     pub help_scroll: u16,
+    pub message_scroll: usize,
+    pub confirm_scroll: usize,
     pub follow: bool,
     pub wrap: bool,
-    pub log_lines: Vec<String>,
+    pub log_lines: VecDeque<String>,
     pub log_owner: Option<String>,
     pub logs_loading: bool,
     pub follow_ended: bool,
@@ -433,6 +435,8 @@ impl AppState {
             detail_tab: DetailTab::Logs,
             overlay: Overlay::None,
             help_scroll: 0,
+            message_scroll: 0,
+            confirm_scroll: 0,
             quit: false,
             containers: Vec::new(),
             images: Vec::new(),
@@ -444,7 +448,7 @@ impl AppState {
             detail_scroll: 0,
             follow: true,
             wrap: true,
-            log_lines: Vec::new(),
+            log_lines: VecDeque::new(),
             log_owner: None,
             logs_loading: false,
             follow_ended: false,
@@ -633,6 +637,12 @@ impl AppState {
         let rows = self.visible_rows();
         let idx = if top { rows.first() } else { rows.last() };
         self.selected[self.pane.index()] = idx.and_then(|&i| self.entity_id(self.pane, i));
+    }
+
+    pub fn clamp_filtered_selection(&mut self) {
+        if self.selected_pos().is_none() {
+            self.select_edge(true);
+        }
     }
 
     pub fn clamp_selection(&mut self) {
@@ -921,10 +931,17 @@ impl AppState {
     }
 
     pub fn push_log_line(&mut self, line: String) {
-        self.log_lines.push(line);
-        if self.log_lines.len() > LOG_RING_CAP {
-            let excess = self.log_lines.len() - LOG_RING_CAP;
-            self.log_lines.drain(..excess);
+        self.extend_log_lines(std::iter::once(line));
+    }
+
+    pub fn extend_log_lines(&mut self, lines: impl IntoIterator<Item = String>) {
+        self.log_lines.extend(lines);
+        let excess = self.log_lines.len().saturating_sub(LOG_RING_CAP);
+        for _ in 0..excess {
+            self.log_lines.pop_front();
+        }
+        if !self.follow {
+            self.detail_scroll = (self.detail_scroll as usize).saturating_sub(excess) as u16;
         }
     }
 

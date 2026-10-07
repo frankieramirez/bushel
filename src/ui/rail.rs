@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::engine::state::{AppState, Focus, Pane};
-use crate::ui::humanize::elide;
+use crate::ui::humanize::elide_ascii;
 use crate::ui::layout::LayoutPlan;
 use crate::ui::rows::{
     absent, cpu_cell, mem_cell, reference_spans, scroll_start, select_bar, state_dot,
@@ -21,14 +21,14 @@ const SIZE_MIN: usize = 26;
 const MODE_MIN: usize = 50;
 const BUILTIN_MIN: usize = 62;
 
-fn pad(text: &str, w: usize) -> String {
-    let text = elide(text, w);
+fn pad(text: &str, w: usize, ascii: bool) -> String {
+    let text = elide_ascii(text, w, ascii);
     let used = text.chars().count();
     format!("{text}{}", " ".repeat(w.saturating_sub(used)))
 }
 
-fn rpad(text: &str, w: usize) -> String {
-    let text = elide(text, w);
+fn rpad(text: &str, w: usize, ascii: bool) -> String {
+    let text = elide_ascii(text, w, ascii);
     let used = text.chars().count();
     format!("{}{text}", " ".repeat(w.saturating_sub(used)))
 }
@@ -88,7 +88,7 @@ fn draw_footer(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect) {
     } else {
         Line::from(vec![
             Span::styled(
-                format!(" {} reclaimable · ", human_size(reclaimable)),
+                th.chrome(format!(" {} reclaimable · ", human_size(reclaimable))),
                 Style::new().fg(th.dim()),
             ),
             Span::styled("[P]", Style::new().fg(th.accent())),
@@ -118,9 +118,13 @@ fn label_line(state: &AppState, th: &Theme, pane: Pane, width: usize) -> Line<'s
     ];
     let mut used = 1 + pane.title().chars().count();
     if active && (state.filter_input || !state.filter.is_empty()) {
-        let cursor = if state.filter_input { "▏" } else { "" };
-        let text = format!("  /{}{cursor}", state.filter);
-        used += text.chars().count();
+        let cursor = if state.filter_input { th.cursor() } else { "" };
+        let room = width.saturating_sub(used + n.to_string().len() + 4);
+        let text = format!(
+            "  /{}{cursor}",
+            crate::ui::log_view::input_tail(&state.filter, room)
+        );
+        used += ratatui::text::Line::raw(text.clone()).width();
         left.push(Span::styled(text, Style::new().fg(th.accent())));
     }
     let count = format!("{n} ");
@@ -174,7 +178,7 @@ fn draw_section(
 
     if rows_idx.is_empty() {
         lines.push(Line::from(Span::styled(
-            format!(" {}", empty_hint(state, pane)),
+            th.chrome(format!(" {}", empty_hint(state, pane))),
             Style::new().fg(th.dim()),
         )));
     } else {
@@ -196,7 +200,16 @@ fn bar_span(state: &AppState, th: &Theme, selected: bool) -> Span<'static> {
     } else {
         th.dim()
     };
-    Span::styled(select_bar(th), Style::new().fg(color))
+    Span::styled(
+        if state.focus == Focus::List {
+            select_bar(th)
+        } else if th.ascii {
+            ":"
+        } else {
+            "▏"
+        },
+        Style::new().fg(color),
+    )
 }
 
 fn row_line(
@@ -231,18 +244,22 @@ fn row_line(
             let name_w = body.saturating_sub(2 + num_w + mem_w + image_w);
             let num_style = Style::new().fg(if c.is_running() { th.text() } else { th.dim() });
             spans.push(state_dot(th, c.is_running()));
-            if let Some(s) = pending_span(th, c.pending.is_some()) {
+            if let Some(s) = pending_span(state, th, c.pending.is_some()) {
                 spans.push(s);
             }
             let name = pad(
                 &c.id,
                 name_w.saturating_sub(usize::from(c.pending.is_some()) * 2),
+                th.ascii,
             );
             spans.push(text(name, selected || c.is_running()));
             if num_w > 0 {
-                spans.push(Span::styled(rpad(&cpu_cell(th, c), num_w), num_style));
                 spans.push(Span::styled(
-                    rpad(&format!("{} ", mem_cell(th, c)), mem_w),
+                    rpad(&cpu_cell(th, c), num_w, th.ascii),
+                    num_style,
+                ));
+                spans.push(Span::styled(
+                    rpad(&format!("{} ", mem_cell(th, c)), mem_w, th.ascii),
                     num_style,
                 ));
             }
@@ -256,7 +273,7 @@ fn row_line(
             };
             let size_w = if body >= SIZE_MIN { 9 } else { 0 };
             let ref_w = body.saturating_sub(size_w);
-            if let Some(s) = pending_span(th, im.pending.is_some()) {
+            if let Some(s) = pending_span(state, th, im.pending.is_some()) {
                 spans.push(s);
             }
             let name_w = ref_w.saturating_sub(3 + usize::from(im.pending.is_some()) * 2);
@@ -271,7 +288,7 @@ fn row_line(
                 spans.push(Span::raw(" ".repeat(gap)));
                 let size = im.size.map(human_size).unwrap_or_else(|| absent(th).into());
                 spans.push(Span::styled(
-                    rpad(&format!("{size} "), size_w),
+                    rpad(&format!("{size} "), size_w, th.ascii),
                     Style::new().fg(th.dim()),
                 ));
             }
@@ -282,17 +299,17 @@ fn row_line(
             };
             let badge_w = if body >= BADGE_MIN { 8 } else { 0 };
             let name_w = body.saturating_sub(badge_w + usize::from(v.pending.is_some()) * 2);
-            if let Some(s) = pending_span(th, v.pending.is_some()) {
+            if let Some(s) = pending_span(state, th, v.pending.is_some()) {
                 spans.push(s);
             }
-            spans.push(text(pad(&v.name, name_w), true));
+            spans.push(text(pad(&v.name, name_w, th.ascii), true));
             if badge_w > 0 {
                 let (badge, style) = if v.in_use() {
                     ("in use ", Style::new().fg(th.yellow()))
                 } else {
                     ("free ", Style::new().fg(th.dim()))
                 };
-                spans.push(Span::styled(rpad(badge, badge_w), style));
+                spans.push(Span::styled(rpad(badge, badge_w, th.ascii), style));
             }
         }
         Pane::Networks => {
@@ -304,16 +321,16 @@ fn row_line(
             let mode_w = if body >= MODE_MIN { 10 } else { 0 };
             let badge_w = if body >= BUILTIN_MIN { 10 } else { 0 };
             let name_w = body.saturating_sub(sub_w + mode_w + badge_w);
-            spans.push(text(pad(&n.name, name_w), true));
+            spans.push(text(pad(&n.name, name_w, th.ascii), true));
             if mode_w > 0 {
                 spans.push(Span::styled(
-                    pad(&n.mode, mode_w),
+                    pad(&n.mode, mode_w, th.ascii),
                     Style::new().fg(th.text()),
                 ));
             }
             if sub_w > 0 {
                 spans.push(Span::styled(
-                    rpad(&format!("{subnet} "), sub_w),
+                    rpad(&format!("{subnet} "), sub_w, th.ascii),
                     Style::new().fg(th.dim()),
                 ));
             }
@@ -323,17 +340,17 @@ fn row_line(
                 } else {
                     ("", Style::new().fg(th.dim()))
                 };
-                spans.push(Span::styled(rpad(badge, badge_w), style));
+                spans.push(Span::styled(rpad(badge, badge_w, th.ascii), style));
             }
         }
     }
     Line::from(spans)
 }
 
-pub(crate) fn pending_span(th: &Theme, pending: bool) -> Option<Span<'static>> {
+pub(crate) fn pending_span(state: &AppState, th: &Theme, pending: bool) -> Option<Span<'static>> {
     pending.then(|| {
         Span::styled(
-            format!("{} ", th.spinner(crate::ui::draw::spinner_frame())),
+            format!("{} ", th.spinner(crate::ui::draw::spinner_frame(state))),
             Style::new().fg(th.yellow()),
         )
     })
@@ -349,12 +366,12 @@ mod tests {
 
     #[test]
     fn padding_never_overflows_the_column_it_was_given() {
-        assert_eq!(pad("ab", 5), "ab   ");
-        assert_eq!(rpad("ab", 5), "   ab");
-        assert_eq!(pad("abcdefgh", 4).chars().count(), 4);
-        assert_eq!(rpad("abcdefgh", 4).chars().count(), 4);
-        assert!(pad("abcdefgh", 4).contains('…'), "long cells elide");
-        assert_eq!(pad("abc", 0), "");
+        assert_eq!(pad("ab", 5, false), "ab   ");
+        assert_eq!(rpad("ab", 5, false), "   ab");
+        assert_eq!(pad("abcdefgh", 4, false).chars().count(), 4);
+        assert_eq!(rpad("abcdefgh", 4, false).chars().count(), 4);
+        assert!(pad("abcdefgh", 4, false).contains('…'), "long cells elide");
+        assert_eq!(pad("abc", 0, false), "");
     }
 
     #[test]
@@ -364,6 +381,7 @@ mod tests {
         let th = Theme {
             truecolor: false,
             ascii: false,
+            reduced_motion: false,
         };
         let pending = |kind| {
             Some(Pending {

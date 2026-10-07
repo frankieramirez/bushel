@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, Paragraph};
 
 use crate::config::LayoutMode;
 use crate::engine::state::{AppState, DetailTab, Focus, Overlay, Pane, Screen, Setting};
@@ -23,9 +23,14 @@ pub struct DrawInfo {
     pub bottom: Rect,
     pub log_scroll: u16,
     pub help_max_scroll: u16,
+    pub message_max_scroll: usize,
+    pub confirm_max_scroll: usize,
 }
 
-pub(crate) fn spinner_frame() -> usize {
+pub(crate) fn spinner_frame(state: &AppState) -> usize {
+    if state.config.reduced_motion {
+        return 0;
+    }
     static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     (START.get_or_init(Instant::now).elapsed().as_millis() / 100) as usize
 }
@@ -39,7 +44,7 @@ pub fn draw(frame: &mut Frame, state: &AppState, th: &Theme) -> DrawInfo {
     );
     match state.screen {
         Screen::Splash => draw_splash(frame, state, th),
-        Screen::ServiceDown => draw_service_down(frame, state, th),
+        Screen::ServiceDown => draw_service_down(frame, state, th, &mut info),
         Screen::Main => draw_main(frame, state, th, &mut info),
     }
     info
@@ -59,7 +64,7 @@ fn draw_splash(frame: &mut Frame, state: &AppState, th: &Theme) {
         r"  \        /       | |_) | |_| \__ \ | | |  __/ |",
         r"   `._,._,'        |_.__/ \__,_|___/_| |_|\___|_|",
     ];
-    let sp = spinner_frame();
+    let sp = spinner_frame(state);
     let probes = [
         (
             "probing container system status …",
@@ -81,13 +86,20 @@ fn draw_splash(frame: &mut Frame, state: &AppState, th: &Theme) {
         .collect();
     lines.push(Line::raw(""));
     for (p, done) in probes {
-        let mark = if done { "✓" } else { th.spinner(sp) };
+        let mark = if done {
+            if th.ascii { "+" } else { "✓" }
+        } else {
+            th.spinner(sp)
+        };
         let style = if done {
             Style::new().fg(th.accent())
         } else {
             Style::new().fg(th.dim())
         };
-        lines.push(Line::from(Span::styled(format!("  {mark} {p}"), style)));
+        lines.push(Line::from(Span::styled(
+            th.chrome(format!("  {mark} {p}")),
+            style,
+        )));
     }
     lines.push(Line::from(Span::styled(
         "  any key skips",
@@ -96,11 +108,15 @@ fn draw_splash(frame: &mut Frame, state: &AppState, th: &Theme) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn draw_service_down(frame: &mut Frame, state: &AppState, th: &Theme) {
-    let h = (12 + state.service_output.len() as u16).min(frame.area().height);
+fn draw_service_down(frame: &mut Frame, state: &AppState, th: &Theme, info: &mut DrawInfo) {
+    let h = state
+        .service_output
+        .len()
+        .saturating_add(12)
+        .min(frame.area().height as usize) as u16;
     let area = centered(frame.area(), 68, h);
     let block = Block::bordered()
-        .border_type(BorderType::Rounded)
+        .border_set(th.borders())
         .border_style(Style::new().fg(th.red()))
         .title(Line::from(th.gradient_spans(" bushel ", true)));
     let mut lines = vec![
@@ -114,10 +130,12 @@ fn draw_service_down(frame: &mut Frame, state: &AppState, th: &Theme) {
     if state.service_starting {
         lines.push(Line::from(vec![
             Span::styled(
-                format!("  {} ", th.spinner(spinner_frame())),
+                format!("  {} ", th.spinner(spinner_frame(state))),
                 Style::new().fg(th.yellow()),
             ),
-            Span::raw("starting the service … (kernel install can take a while on first run)"),
+            Span::raw(
+                th.chrome("starting the service … (kernel install can take a while on first run)"),
+            ),
         ]));
     } else {
         lines.push(Line::from(vec![
@@ -131,18 +149,40 @@ fn draw_service_down(frame: &mut Frame, state: &AppState, th: &Theme) {
     }
     lines.push(Line::from(vec![
         Span::styled("  [q]", Style::new().fg(th.accent()).bold()),
-        Span::raw(" quit"),
+        Span::raw(" quit  "),
+        Span::styled("[m]", Style::new().fg(th.accent()).bold()),
+        Span::raw(" message log"),
     ]));
     lines.push(Line::raw(""));
-    for l in &state.service_output {
-        lines.push(Line::from(Span::styled(
-            format!("  {l}"),
-            Style::new().fg(th.dim()),
-        )));
-    }
+    let inner = block.inner(area);
+    let toast_rows: Vec<Line> = state
+        .toast
+        .as_ref()
+        .map(|t| {
+            log_view::split_line(&t.text, true, inner.width.saturating_sub(2).max(1))
+                .into_iter()
+                .map(|row| {
+                    Line::from(Span::styled(
+                        format!("  {row}"),
+                        Style::new()
+                            .fg(if t.error { th.red() } else { th.accent() })
+                            .bold(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let room = (inner.height as usize).saturating_sub(lines.len() + toast_rows.len());
+    let start = state.service_output.len().saturating_sub(room);
+    lines.extend(
+        state.service_output[start..]
+            .iter()
+            .map(|l| Line::from(Span::styled(format!("  {l}"), Style::new().fg(th.dim())))),
+    );
+    lines.extend(toast_rows);
     frame.render_widget(Paragraph::new(lines).block(block), area);
     if state.overlay == Overlay::MessageLog {
-        draw_message_log(frame, state, th);
+        info.message_max_scroll = draw_message_log(frame, state, th);
     }
 }
 
@@ -150,13 +190,16 @@ fn draw_main(frame: &mut Frame, state: &AppState, th: &Theme, info: &mut DrawInf
     let mut banners: Vec<Line> = Vec::new();
     if let Some(b) = &state.version_banner {
         banners.push(Line::from(vec![
-            Span::styled(format!(" ⚠ {b} "), Style::new().fg(th.bg()).bg(th.yellow())),
+            Span::styled(
+                th.chrome(format!(" ⚠ {b} ")),
+                Style::new().fg(th.bg()).bg(th.yellow()),
+            ),
             Span::styled("  [b] dismiss", Style::new().fg(th.yellow())),
         ]));
     }
     if state.degraded {
         banners.push(Line::from(Span::styled(
-            " ⚠ polls failing to parse — showing last good state (see message log [m]) ",
+            th.chrome(" ⚠ polls failing to parse — showing last good state (see message log [m]) "),
             Style::new().fg(th.bg()).bg(th.red()),
         )));
     }
@@ -198,10 +241,18 @@ fn draw_main(frame: &mut Frame, state: &AppState, th: &Theme, info: &mut DrawInf
     draw_bottom_bar(frame, state, th, plan.bottom, plan.floor);
 
     match &state.overlay {
-        Overlay::ActionMenu => draw_action_menu(frame, state, th, plan.detail, plan.floor),
-        Overlay::Confirm { command, .. } => draw_confirm(frame, th, command),
+        Overlay::ActionMenu => draw_action_menu(
+            frame,
+            state,
+            th,
+            if plan.zoom { plan.body } else { plan.detail },
+            plan.floor,
+        ),
+        Overlay::Confirm { command, .. } => {
+            info.confirm_max_scroll = draw_confirm(frame, th, command, state.confirm_scroll)
+        }
         Overlay::Help => info.help_max_scroll = draw_help(frame, state, th),
-        Overlay::MessageLog => draw_message_log(frame, state, th),
+        Overlay::MessageLog => info.message_max_scroll = draw_message_log(frame, state, th),
         Overlay::PullInput { text } => draw_pull_input(frame, th, text),
         Overlay::TagInput { text } => draw_tag_input(frame, th, text),
         Overlay::CreateVolumeInput { text } => draw_create_volume_input(frame, th, text),
@@ -236,15 +287,21 @@ fn draw_header(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, floo
         }
     }
     if !floor {
-        append_status_cluster(&mut spans, state, th, area.width);
+        append_status_cluster(&mut spans, state, th, area.width, spinner_frame(state));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn append_status_cluster(spans: &mut Vec<Span<'static>>, state: &AppState, th: &Theme, width: u16) {
+fn append_status_cluster(
+    spans: &mut Vec<Span<'static>>,
+    state: &AppState,
+    th: &Theme,
+    width: u16,
+    spinner_tick: usize,
+) {
     let service_up = state.screen != Screen::ServiceDown;
     let version = state.cli_version.clone().unwrap_or_else(|| "?".into());
-    let sp = th.spinner(spinner_frame());
+    let sp = th.spinner(spinner_tick);
     let cluster = format!("● service   container {version}  {sp} ");
     let cluster_len = cluster.chars().count();
     let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
@@ -304,7 +361,7 @@ fn detail_header(state: &AppState, th: &Theme, width: u16) -> Line<'static> {
                 } else {
                     format!("   image · used by {}", users.join(", "))
                 };
-                left.push(Span::styled(tail, Style::new().fg(th.dim())));
+                left.push(Span::styled(th.chrome(tail), Style::new().fg(th.dim())));
             }
             None => left.push(Span::styled("no selection", Style::new().fg(th.dim()))),
         },
@@ -319,7 +376,7 @@ fn detail_header(state: &AppState, th: &Theme, width: u16) -> Line<'static> {
                 } else {
                     "   volume · free".to_string()
                 };
-                left.push(Span::styled(tail, Style::new().fg(th.dim())));
+                left.push(Span::styled(th.chrome(tail), Style::new().fg(th.dim())));
                 left.push(Span::styled(
                     format!("   {}", age_cell(th, v.created.as_deref())),
                     Style::new().fg(th.dim()),
@@ -336,7 +393,7 @@ fn detail_header(state: &AppState, th: &Theme, width: u16) -> Line<'static> {
                 let subnet = n.ipv4_subnet.clone().unwrap_or_else(|| absent(th).into());
                 let builtin = if n.builtin { " · builtin" } else { "" };
                 left.push(Span::styled(
-                    format!("   {} {subnet}{builtin}", n.mode),
+                    th.chrome(format!("   {} {subnet}{builtin}", n.mode)),
                     Style::new().fg(th.dim()),
                 ));
             }
@@ -415,7 +472,7 @@ fn draw_detail(
                 Line::raw(""),
                 Line::from(vec![
                     Span::styled(
-                        format!(" {} ", th.spinner(spinner_frame())),
+                        format!(" {} ", th.spinner(spinner_frame(state))),
                         Style::new().fg(th.yellow()),
                     ),
                     Span::styled(
@@ -487,6 +544,11 @@ fn draw_detail(
         }
     }
 
+    if state.pane == Pane::Containers && state.detail_tab == DetailTab::Logs {
+        draw_logs(frame, state, th, content_area, info);
+        return;
+    }
+
     let inspect_lines = |id: Option<&str>| -> Vec<Line> {
         let Some(id) = id else {
             return vec![Line::raw("no selection")];
@@ -504,49 +566,19 @@ fn draw_detail(
                 })
                 .collect(),
             None => vec![Line::from(Span::styled(
-                format!("{} loading inspect …", th.spinner(spinner_frame())),
+                format!(
+                    "{} loading inspect {}",
+                    th.spinner(spinner_frame(state)),
+                    if th.ascii { "..." } else { "…" }
+                ),
                 Style::new().fg(th.dim()),
             ))],
         }
     };
 
-    let (lines, follow_tail): (Vec<Line>, bool) = match state.pane {
+    let (lines, _): (Vec<Line>, bool) = match state.pane {
         Pane::Containers => match state.detail_tab {
-            DetailTab::Logs => {
-                let width = content_area.width;
-                let mut l: Vec<Line> = Vec::new();
-                if state.logs_loading {
-                    l.push(Line::from(Span::styled(
-                        format!("{} loading log backlog …", th.spinner(spinner_frame())),
-                        Style::new().fg(th.dim()),
-                    )));
-                }
-                let log_style = Style::new().fg(th.text());
-                for s in &state.log_lines {
-                    for row in log_view::split_line(s, state.wrap, width) {
-                        l.push(Line::from(Span::styled(row, log_style)));
-                    }
-                }
-                let marker = if state.selected_container().is_none() {
-                    Span::styled("── no selection ──", Style::new().fg(th.dim()))
-                } else if state.log_owner.is_none() {
-                    Span::styled(
-                        "── container not running: no live logs ──",
-                        Style::new().fg(th.dim()),
-                    )
-                } else if state.follow_ended {
-                    Span::styled("── follow ended ──", Style::new().fg(th.dim()))
-                } else {
-                    let style = if state.follow {
-                        Style::new().fg(th.accent())
-                    } else {
-                        Style::new().fg(th.dim())
-                    };
-                    Span::styled(log_view::follow_marker(state.follow, state.wrap), style)
-                };
-                l.push(Line::from(marker));
-                (l, state.follow)
-            }
+            DetailTab::Logs => unreachable!("logs rendered above"),
             DetailTab::Inspect => (
                 inspect_lines(state.selected_container().map(|c| c.id.as_str())),
                 false,
@@ -590,34 +622,53 @@ fn draw_detail(
         }
     };
 
-    let logs = state.pane == Pane::Containers && state.detail_tab == DetailTab::Logs;
-    if logs {
-        let total = lines.len();
-        let h = content_area.height as usize;
-        let width = content_area.width;
-        let prefix = if state.logs_loading { 1 } else { 0 };
-        let scroll = if follow_tail {
-            log_view::tail_scroll(total, h)
-        } else {
-            let raw = (state.detail_scroll as usize).min(state.log_lines.len().saturating_sub(1));
-            log_view::display_start(&state.log_lines, state.wrap, width, raw)
-                .saturating_add(prefix)
-                .min(total.saturating_sub(1))
-        };
-        info.log_scroll = log_view::raw_index(
-            &state.log_lines,
-            state.wrap,
-            width,
-            scroll.saturating_sub(prefix),
-        ) as u16;
-        let end = scroll.saturating_add(h).min(total);
-        let window = lines.get(scroll..end).unwrap_or(&[]).to_vec();
-        frame.render_widget(Paragraph::new(window), content_area);
-    } else {
-        let total = lines.len() as u16;
-        let scroll = state.detail_scroll.min(total.saturating_sub(1));
-        frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), content_area);
+    let total = lines.len().min(u16::MAX as usize) as u16;
+    let scroll = state.detail_scroll.min(total.saturating_sub(1));
+    frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), content_area);
+}
+
+fn draw_logs(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, info: &mut DrawInfo) {
+    let room = area.height as usize;
+    let prefix = usize::from(state.logs_loading && !state.follow && state.detail_scroll == 0);
+    let budget = room.saturating_sub(if state.follow { 1 } else { prefix });
+    let view = log_view::window(
+        state.log_lines.iter(),
+        state.wrap,
+        area.width,
+        budget,
+        state.follow,
+        state.detail_scroll as usize,
+    );
+    info.log_scroll = view.raw_top.min(u16::MAX as usize) as u16;
+    let mut lines = Vec::with_capacity(room + 1);
+    if state.logs_loading && (prefix > 0 || (view.at_start && view.rows.len() < budget)) {
+        lines.push(Line::from(Span::styled(
+            th.chrome(format!(
+                "{} loading log backlog …",
+                th.spinner(spinner_frame(state))
+            )),
+            Style::new().fg(th.dim()),
+        )));
     }
+    lines.extend(
+        view.rows
+            .into_iter()
+            .map(|s| Line::from(Span::styled(s, Style::new().fg(th.text())))),
+    );
+    let marker = if state.selected_container().is_none() {
+        "── no selection ──".to_string()
+    } else if state.log_owner.is_none() {
+        "── container not running: no live logs ──".to_string()
+    } else if state.follow_ended {
+        "── follow ended ──".to_string()
+    } else {
+        log_view::follow_marker(state.follow, state.wrap)
+    };
+    lines.push(Line::from(Span::styled(
+        th.chrome(marker),
+        Style::new().fg(if state.follow { th.accent() } else { th.dim() }),
+    )));
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 fn key_glyph(th: &Theme, key: &'static str) -> &'static str {
@@ -636,7 +687,13 @@ fn draw_bottom_bar(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, 
     let key_style = Style::new().fg(th.accent());
     let mut spans: Vec<Span> = Vec::new();
     let mut transient = false;
-    if let Some(t) = &state.toast {
+    if state.filter_input {
+        spans.push(Span::styled(" enter", key_style));
+        spans.push(Span::styled(" keep  ", hint_style));
+        spans.push(Span::styled("esc", key_style));
+        spans.push(Span::styled(" clear", hint_style));
+        transient = true;
+    } else if let Some(t) = &state.toast {
         transient = true;
         let style = if t.error {
             Style::new().fg(th.red()).bold()
@@ -649,14 +706,21 @@ fn draw_bottom_bar(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, 
         spans.push(Span::styled(
             format!(
                 " {} {}  ({}s)",
-                th.spinner(spinner_frame()),
+                th.spinner(spinner_frame(state)),
                 a.label,
                 a.started.elapsed().as_secs()
             ),
             Style::new().fg(th.yellow()),
         ));
     } else {
-        let hints: &[(&str, &str)] = if floor {
+        let hints: &[(&str, &str)] = if floor && state.focus == Focus::Detail {
+            &[
+                ("j/k", "scroll"),
+                ("esc", "back"),
+                ("w", log_view::wrap_hint(state.wrap)),
+                ("f", "zoom"),
+            ]
+        } else if floor {
             &[
                 ("j/k", "move"),
                 ("space", "actions"),
@@ -714,7 +778,7 @@ fn append_selection_actions(
             return;
         }
         let mut tail: Vec<Span<'static>> = vec![Span::styled(
-            format!("{label} · "),
+            th.chrome(format!("{label} · ")),
             Style::new().fg(th.dim()),
         )];
         for a in &actions {
@@ -744,7 +808,7 @@ fn draw_action_menu(frame: &mut Frame, state: &AppState, th: &Theme, detail: Rec
     let area = layout::action_sheet(detail, items.len() as u16);
     frame.render_widget(Clear, area);
     let block = Block::bordered()
-        .border_type(BorderType::Rounded)
+        .border_set(th.borders())
         .border_style(Style::new().fg(th.accent()))
         .title(Span::styled(
             " actions ",
@@ -776,18 +840,18 @@ fn draw_action_menu(frame: &mut Frame, state: &AppState, th: &Theme, detail: Rec
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-fn draw_confirm(frame: &mut Frame, th: &Theme, command: &str) {
+fn draw_confirm(frame: &mut Frame, th: &Theme, command: &str, scroll: usize) -> usize {
     let area = layout::confirm_modal(frame.area());
     frame.render_widget(Clear, area);
     let block = Block::bordered()
-        .border_type(BorderType::Rounded)
+        .border_set(th.borders())
         .border_style(Style::new().fg(th.red()))
         .title(Span::styled(" confirm ", Style::new().fg(th.red()).bold()))
         .style(Style::new().bg(th.panel()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 {
-        return;
+        return 0;
     }
     let keys = Rect {
         y: inner.bottom() - 1,
@@ -798,19 +862,15 @@ fn draw_confirm(frame: &mut Frame, th: &Theme, command: &str) {
         height: inner.height - 1,
         ..inner
     };
-    let mut rows = log_view::split_line(command, true, body.width.saturating_sub(4));
+    let rows = log_view::split_line(command, true, body.width.saturating_sub(4).max(1));
     let room = body.height as usize;
+    let max_scroll = rows.len().saturating_sub(room);
+    let scroll = scroll.min(max_scroll);
     let mut lines = Vec::new();
     if rows.len() < room {
         lines.push(Line::raw(""));
-    } else if rows.len() > room {
-        rows.truncate(room);
-        if let Some(last) = rows.last_mut() {
-            last.pop();
-            last.push('…');
-        }
     }
-    for (i, row) in rows.iter().enumerate() {
+    for (i, row) in rows.iter().enumerate().skip(scroll).take(room) {
         let prefix = if i == 0 { "  $ " } else { "    " };
         lines.push(Line::from(vec![
             Span::raw(prefix),
@@ -827,25 +887,57 @@ fn draw_confirm(frame: &mut Frame, th: &Theme, command: &str) {
         ])),
         keys,
     );
+    if max_scroll > 0 {
+        frame.render_widget(
+            Paragraph::new(th.chrome(" j/k scroll ")),
+            Rect {
+                x: area.x.saturating_add(2),
+                y: area.bottom().saturating_sub(1),
+                width: area.width.saturating_sub(4),
+                height: 1,
+            },
+        );
+    }
+    max_scroll
 }
 
 fn draw_prompt(frame: &mut Frame, th: &Theme, title: &str, field: &str, text: &str, hint: &str) {
     let area = centered(frame.area(), 56, 4);
     frame.render_widget(Clear, area);
     let block = Block::bordered()
-        .border_type(BorderType::Rounded)
+        .border_set(th.borders())
         .border_style(Style::new().fg(th.accent()))
         .title(Span::styled(
             format!(" {title} "),
             Style::new().fg(th.accent()).bold(),
         ))
         .style(Style::new().bg(th.panel()));
+    let inner = block.inner(area);
+    let mut prefix = format!(" {field}: ");
+    if prefix.len() >= inner.width as usize {
+        prefix.clear();
+    }
+    let cursor = th.cursor();
+    let room = (inner.width as usize).saturating_sub(prefix.len() + 1);
+    let clipped = log_view::input_tail(text, room) != text;
+    let marker = if clipped && room > 0 {
+        if th.ascii { "~" } else { "…" }
+    } else {
+        ""
+    };
+    let tail = log_view::input_tail(text, room.saturating_sub(marker.len().min(1)));
     let lines = vec![
         Line::from(vec![
-            Span::raw(format!(" {field}: ")),
-            Span::styled(format!("{text}▏"), Style::new().fg(th.text())),
+            Span::raw(prefix),
+            Span::styled(
+                format!("{marker}{tail}{cursor}"),
+                Style::new().fg(th.text()),
+            ),
         ]),
-        Line::from(Span::styled(format!(" {hint}"), Style::new().fg(th.dim()))),
+        Line::from(Span::styled(
+            th.chrome(format!(" {hint}")),
+            Style::new().fg(th.dim()),
+        )),
     ];
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
@@ -888,11 +980,11 @@ fn draw_settings(frame: &mut Frame, state: &AppState, th: &Theme, cursor: usize)
     let area = layout::settings_modal(frame.area(), rows);
     frame.render_widget(Clear, area);
     let block = Block::bordered()
-        .border_type(BorderType::Rounded)
+        .border_set(th.borders())
         .border_style(Style::new().fg(th.accent()))
         .title(Line::from(th.gradient_spans(" settings ", true)))
         .title_bottom(Line::from(Span::styled(
-            " j/k move · enter toggles · esc closes ",
+            th.chrome(" j/k move · enter toggles · esc closes "),
             Style::new().fg(th.dim()),
         )))
         .style(Style::new().bg(th.panel()));
@@ -938,10 +1030,17 @@ fn draw_settings(frame: &mut Frame, state: &AppState, th: &Theme, cursor: usize)
     }
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
-        saved_to_line(&crate::config::Config::display_path(), inner.width),
+        th.chrome(saved_to_line(
+            &crate::config::Config::display_path(),
+            inner.width,
+        )),
         Style::new().fg(th.dim()),
     )));
-    frame.render_widget(Paragraph::new(lines), inner);
+    let start = crate::ui::rows::scroll_start(Some(cursor), inner.height as usize);
+    frame.render_widget(
+        Paragraph::new(lines.into_iter().skip(start).collect::<Vec<_>>()),
+        inner,
+    );
 }
 
 const SAVED_TO: &str = " saved to ";
@@ -977,7 +1076,7 @@ pub(crate) fn help_lines(th: &Theme, width: u16) -> Vec<Line<'static>> {
             let key = if i == 0 { row.keys } else { "" };
             out.push(Line::from(vec![
                 Span::styled(format!("  {key:<12}"), Style::new().fg(th.yellow())),
-                Span::raw(chunk),
+                Span::raw(th.chrome(chunk)),
             ]));
         }
     }
@@ -993,13 +1092,13 @@ fn draw_help(frame: &mut Frame, state: &AppState, th: &Theme) -> u16 {
     let max_scroll = (lines.len() as u16).saturating_sub(visible);
     let scroll = state.help_scroll.min(max_scroll);
     let mut block = Block::bordered()
-        .border_type(BorderType::Rounded)
+        .border_set(th.borders())
         .border_style(Style::new().fg(th.accent()))
         .title(Line::from(th.gradient_spans(" keys ", true)))
         .style(Style::new().bg(th.panel()));
     if max_scroll > 0 {
         block = block.title_bottom(Line::from(Span::styled(
-            " j/k scroll · esc close ",
+            th.chrome(" j/k scroll · esc close "),
             Style::new().fg(th.dim()),
         )));
     }
@@ -1007,39 +1106,52 @@ fn draw_help(frame: &mut Frame, state: &AppState, th: &Theme) -> u16 {
     max_scroll
 }
 
-fn draw_message_log(frame: &mut Frame, state: &AppState, th: &Theme) {
+fn draw_message_log(frame: &mut Frame, state: &AppState, th: &Theme) -> usize {
     let full = frame.area();
     let area = Rect {
-        x: full.x + 2,
+        x: full.x + full.width.min(4) / 2,
         y: full.y + full.height / 2,
         width: full.width.saturating_sub(4),
         height: (full.height / 2).saturating_sub(1),
     };
     frame.render_widget(Clear, area);
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
+    let mut block = Block::bordered()
+        .border_set(th.borders())
         .border_style(Style::new().fg(th.accent()))
         .title(Span::styled(
             " message log ",
             Style::new().fg(th.accent()).bold(),
         ))
         .style(Style::new().bg(th.panel()));
-    let lines: Vec<Line> = state
+    let inner = block.inner(area);
+    let lines: Vec<_> = state
         .messages
         .iter()
         .rev()
-        .flat_map(|m| {
-            m.split('\n')
-                .map(|s| Line::raw(format!(" {s}")).style(Style::new().fg(th.text())))
-                .collect::<Vec<_>>()
-        })
+        .flat_map(|m| m.split('\n'))
+        .flat_map(|s| log_view::rows(s, true, inner.width.saturating_sub(1)))
         .collect();
+    let max_scroll = lines.len().saturating_sub(inner.height as usize);
+    let scroll = state.message_scroll.min(max_scroll);
+    if max_scroll > 0 {
+        block = block.title_bottom(Span::styled(
+            th.chrome(" j/k scroll · esc close "),
+            Style::new().fg(th.dim()),
+        ));
+    }
+    frame.render_widget(block, area);
     frame.render_widget(
-        Paragraph::new(lines)
-            .block(block)
-            .wrap(Wrap { trim: false }),
-        area,
+        Paragraph::new(
+            lines
+                .into_iter()
+                .skip(scroll)
+                .take(inner.height as usize)
+                .map(|s| Line::from(Span::styled(format!(" {s}"), Style::new().fg(th.text()))))
+                .collect::<Vec<_>>(),
+        ),
+        inner,
     );
+    max_scroll
 }
 
 #[cfg(test)]
@@ -1132,6 +1244,7 @@ mod tests {
         let th = Theme {
             truecolor: false,
             ascii,
+            reduced_motion: false,
         };
         terminal
             .draw(|f| {
@@ -1204,6 +1317,29 @@ mod tests {
 
     fn line(frame: &str, n: usize) -> &str {
         frame.lines().nth(n).unwrap_or("")
+    }
+
+    #[test]
+    fn reduced_motion_status_cluster_cells_do_not_change_with_spinner_frames() {
+        let mut s = sample();
+        s.config.reduced_motion = true;
+        let th = Theme {
+            truecolor: false,
+            ascii: false,
+            reduced_motion: true,
+        };
+        let render = |tick| {
+            let mut terminal = Terminal::new(TestBackend::new(120, 1)).unwrap();
+            terminal
+                .draw(|f| {
+                    let mut spans = th.gradient_spans(" bushel ", true);
+                    append_status_cluster(&mut spans, &s, &th, 120, tick);
+                    f.render_widget(Paragraph::new(Line::from(spans)), f.area());
+                })
+                .unwrap();
+            terminal.backend().buffer().clone()
+        };
+        assert_eq!(render(0), render(7));
     }
 
     #[test]
@@ -1625,14 +1761,21 @@ mod tests {
 
     #[test]
     fn a_filter_rides_on_the_section_label() {
-        let mut s = sample();
-        s.filter = "qt".into();
-        s.filter_input = true;
-        let frame = render(120, 40, &s);
-        assert!(line(&frame, 2).contains("containers  /qt▏"), "{frame}");
-        s.filter = "zzz".into();
-        let frame = render(120, 40, &s);
-        assert!(frame.contains(" no match"), "{frame}");
+        for mode in [LayoutMode::Rail, LayoutMode::Table] {
+            let mut s = sample();
+            s.config.layout = mode;
+            s.filter = "qt".into();
+            s.filter_input = true;
+            let frame = render(120, 40, &s);
+            assert!(frame.contains("/qt▏"), "{mode:?}: {frame}");
+            assert!(frame.contains("enter keep"), "{frame}");
+            assert!(frame.contains("esc clear"), "{frame}");
+            s.filter_input = false;
+            assert!(render(120, 40, &s).contains("/qt"));
+            s.filter = "zzz".into();
+            let frame = render(120, 40, &s);
+            assert!(frame.contains(" no match"), "{frame}");
+        }
     }
 
     #[test]
@@ -1758,6 +1901,74 @@ mod tests {
             "stopped current value is ·: {view}"
         );
         assert!(view.contains("cpu ·"), "{view}");
+    }
+
+    #[test]
+    fn ascii_chrome_is_ascii_in_all_screens_and_overlays() {
+        for mode in [LayoutMode::Rail, LayoutMode::Table] {
+            for pane in Pane::all() {
+                for (w, h) in [(55, 20), (120, 40)] {
+                    for screen in [Screen::Main, Screen::Splash, Screen::ServiceDown] {
+                        for overlay in [
+                            Overlay::None,
+                            Overlay::Help,
+                            Overlay::MessageLog,
+                            Overlay::ActionMenu,
+                            Overlay::Settings { cursor: 0 },
+                            Overlay::PullInput {
+                                text: "alpine".into(),
+                            },
+                            Overlay::TagInput {
+                                text: "new-tag".into(),
+                            },
+                            Overlay::CreateVolumeInput {
+                                text: "volume".into(),
+                            },
+                            Overlay::Confirm {
+                                command: "container delete qtest".into(),
+                                action: crate::engine::ActionKind::DeleteContainer,
+                                target: "qtest".into(),
+                            },
+                        ] {
+                            let mut s = sample();
+                            s.containers[0].id = "long-container-".repeat(20);
+                            s.images[0].reference =
+                                format!("docker.io/{}:latest", "long-image-".repeat(20));
+                            s.volumes[0].name = "long-volume-".repeat(20);
+                            s.networks[0].name = "long-network-".repeat(20);
+                            s.clamp_selection();
+                            s.config.layout = mode;
+                            s.pane = pane;
+                            s.screen = screen;
+                            s.first_run = true;
+                            s.overlay = overlay;
+                            s.filter_input = true;
+                            s.logs_loading = true;
+                            s.degraded = true;
+                            s.version_banner = Some("outside tested range".into());
+                            let view = render_theme(w, h, &s, true);
+                            assert!(
+                                view.is_ascii(),
+                                "{mode:?} {pane:?} {screen:?} {:?}:\n{view}",
+                                s.overlay
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_long_prompt_keeps_the_editable_tail_and_cursor_visible() {
+        let mut s = sample();
+        s.overlay = Overlay::PullInput {
+            text: format!("{}終点", "界".repeat(60)),
+        };
+        for (w, h) in [(55, 20), (120, 40)] {
+            let view = render(w, h, &s);
+            assert!(view.replace(' ', "").contains("終点▏"), "{view}");
+        }
     }
 
     #[test]

@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::engine::state::{AppState, Focus, Pane};
-use crate::ui::humanize::elide;
+use crate::ui::humanize::elide_ascii;
 use crate::ui::layout::LayoutPlan;
 use crate::ui::rail::pending_span;
 use crate::ui::rows::{
@@ -103,9 +103,9 @@ fn plan_columns(pane: Pane, width: u16) -> Vec<Col> {
     kept
 }
 
-fn cell(text: &str, c: &Col) -> String {
+fn cell(text: &str, c: &Col, ascii: bool) -> String {
     let w = c.width as usize;
-    let text = elide(text, w);
+    let text = elide_ascii(text, w, ascii);
     let used = text.chars().count();
     let space = " ".repeat(w.saturating_sub(used));
     let gutter = " ".repeat(GUTTER);
@@ -141,7 +141,10 @@ fn draw_table(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, floor
 
     let mut head = vec![Span::raw("  ")];
     for c in &cols {
-        head.push(Span::styled(cell(c.head, c), Style::new().fg(th.dim())));
+        head.push(Span::styled(
+            cell(c.head, c, th.ascii),
+            Style::new().fg(th.dim()),
+        ));
     }
     lines.push(Line::from(head));
     if !floor {
@@ -158,7 +161,7 @@ fn draw_table(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, floor
 
     if rows_idx.is_empty() {
         lines.push(Line::from(Span::styled(
-            format!("  {}", empty_hint(state)),
+            th.chrome(format!("  {}", empty_hint(state))),
             Style::new().fg(th.dim()),
         )));
     } else {
@@ -191,7 +194,13 @@ fn row_line(
 ) -> Line<'static> {
     let bar = if selected {
         Span::styled(
-            select_bar(th),
+            if state.focus == Focus::List {
+                select_bar(th)
+            } else if th.ascii {
+                ":"
+            } else {
+                "▏"
+            },
             Style::new().fg(if state.focus == Focus::List {
                 th.accent()
             } else {
@@ -222,7 +231,7 @@ fn row_line(
             let num_style = if running { live } else { dim };
             if let Some(name) = get("name") {
                 let mut c1 = vec![state_dot(th, running)];
-                if let Some(s) = pending_span(th, c.pending.is_some()) {
+                if let Some(s) = pending_span(state, th, c.pending.is_some()) {
                     c1.push(s);
                 }
                 let w = Col {
@@ -231,7 +240,7 @@ fn row_line(
                         .saturating_sub(if c.pending.is_some() { 4 } else { 2 }),
                     ..name
                 };
-                c1.push(Span::styled(cell(&c.id, &w), name_style));
+                c1.push(Span::styled(cell(&c.id, &w, th.ascii), name_style));
                 push_cell(&mut spans, c1, &name);
             }
             if let Some(c2) = get("state") {
@@ -240,16 +249,25 @@ fn row_line(
                 } else {
                     dim
                 };
-                spans.push(Span::styled(cell(&c.state, &c2), style));
+                spans.push(Span::styled(cell(&c.state, &c2, th.ascii), style));
             }
             if let Some(c3) = get("up") {
-                spans.push(Span::styled(cell(&uptime_cell(th, c), &c3), num_style));
+                spans.push(Span::styled(
+                    cell(&uptime_cell(th, c), &c3, th.ascii),
+                    num_style,
+                ));
             }
             if let Some(c4) = get("cpu") {
-                spans.push(Span::styled(cell(&cpu_cell(th, c), &c4), num_style));
+                spans.push(Span::styled(
+                    cell(&cpu_cell(th, c), &c4, th.ascii),
+                    num_style,
+                ));
             }
             if let Some(c5) = get("mem") {
-                spans.push(Span::styled(cell(&mem_of_limit(th, c), &c5), num_style));
+                spans.push(Span::styled(
+                    cell(&mem_of_limit(th, c), &c5, th.ascii),
+                    num_style,
+                ));
             }
             if let Some(c6) = get("image") {
                 let image = reference_spans(th, &c.image, c6.width.saturating_sub(3) as usize);
@@ -262,7 +280,7 @@ fn row_line(
                 } else {
                     nets.join(",")
                 };
-                spans.push(Span::styled(cell(&text, &c7), dim));
+                spans.push(Span::styled(cell(&text, &c7, th.ascii), dim));
             }
             if let Some(c8) = get("volumes") {
                 let text = if c.volumes.is_empty() {
@@ -270,11 +288,11 @@ fn row_line(
                 } else {
                     c.volumes.join(", ")
                 };
-                spans.push(Span::styled(cell(&text, &c8), dim));
+                spans.push(Span::styled(cell(&text, &c8, th.ascii), dim));
             }
             if let Some(c9) = get("created") {
                 spans.push(Span::styled(
-                    cell(&age_cell(th, c.created.as_deref()), &c9),
+                    cell(&age_cell(th, c.created.as_deref()), &c9, th.ascii),
                     dim,
                 ));
             }
@@ -285,7 +303,7 @@ fn row_line(
             };
             if let Some(name) = get("reference") {
                 let mut c1: Vec<Span<'static>> = Vec::new();
-                if let Some(s) = pending_span(th, im.pending.is_some()) {
+                if let Some(s) = pending_span(state, th, im.pending.is_some()) {
                     c1.push(s);
                 }
                 let w = name
@@ -299,11 +317,14 @@ fn row_line(
                     .size
                     .map(human_size)
                     .unwrap_or_else(|| absent(th).to_string());
-                spans.push(Span::styled(cell(&text, &size), Style::new().fg(th.text())));
+                spans.push(Span::styled(
+                    cell(&text, &size, th.ascii),
+                    Style::new().fg(th.text()),
+                ));
             }
             if let Some(created) = get("created") {
                 spans.push(Span::styled(
-                    cell(&age_cell(th, im.created.as_deref()), &created),
+                    cell(&age_cell(th, im.created.as_deref()), &created, th.ascii),
                     dim,
                 ));
             }
@@ -313,7 +334,7 @@ fn row_line(
                 return Line::from(spans);
             };
             if let Some(name) = get("name") {
-                if let Some(s) = pending_span(th, v.pending.is_some()) {
+                if let Some(s) = pending_span(state, th, v.pending.is_some()) {
                     spans.push(s);
                 }
                 let w = Col {
@@ -322,7 +343,7 @@ fn row_line(
                         .saturating_sub(if v.pending.is_some() { 2 } else { 0 }),
                     ..name
                 };
-                spans.push(Span::styled(cell(&v.name, &w), live));
+                spans.push(Span::styled(cell(&v.name, &w, th.ascii), live));
             }
             if let Some(used) = get("used by") {
                 let (text, style) = if v.in_use() {
@@ -330,11 +351,11 @@ fn row_line(
                 } else {
                     (absent(th).to_string(), dim)
                 };
-                spans.push(Span::styled(cell(&text, &used), style));
+                spans.push(Span::styled(cell(&text, &used, th.ascii), style));
             }
             if let Some(created) = get("created") {
                 spans.push(Span::styled(
-                    cell(&age_cell(th, v.created.as_deref()), &created),
+                    cell(&age_cell(th, v.created.as_deref()), &created, th.ascii),
                     dim,
                 ));
             }
@@ -344,17 +365,17 @@ fn row_line(
                 return Line::from(spans);
             };
             if let Some(name) = get("name") {
-                spans.push(Span::styled(cell(&n.name, &name), live));
+                spans.push(Span::styled(cell(&n.name, &name, th.ascii), live));
             }
             if let Some(mode) = get("mode") {
                 spans.push(Span::styled(
-                    cell(&n.mode, &mode),
+                    cell(&n.mode, &mode, th.ascii),
                     Style::new().fg(th.text()),
                 ));
             }
             if let Some(subnet) = get("subnet") {
                 let text = n.ipv4_subnet.clone().unwrap_or_else(|| absent(th).into());
-                spans.push(Span::styled(cell(&text, &subnet), dim));
+                spans.push(Span::styled(cell(&text, &subnet, th.ascii), dim));
             }
             if let Some(attached) = get("attached") {
                 let text = if n.attached.is_empty() {
@@ -366,7 +387,7 @@ fn row_line(
                         .collect::<Vec<_>>()
                         .join(", ")
                 };
-                spans.push(Span::styled(cell(&text, &attached), dim));
+                spans.push(Span::styled(cell(&text, &attached, th.ascii), dim));
             }
             if let Some(badge) = get("kind") {
                 let (text, style) = if n.builtin {
@@ -374,7 +395,7 @@ fn row_line(
                 } else {
                     ("", dim)
                 };
-                spans.push(Span::styled(cell(text, &badge), style));
+                spans.push(Span::styled(cell(text, &badge, th.ascii), style));
             }
         }
     }
@@ -385,7 +406,10 @@ pub fn header_line(state: &AppState, th: &Theme) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     for (i, pane) in Pane::all().into_iter().enumerate() {
         if i > 0 {
-            spans.push(Span::styled("   ·   ", Style::new().fg(th.dim())));
+            spans.push(Span::styled(
+                th.chrome("   ·   "),
+                Style::new().fg(th.dim()),
+            ));
         }
         let active = state.pane == pane;
         spans.push(Span::styled(
@@ -408,6 +432,16 @@ pub fn header_line(state: &AppState, th: &Theme) -> Vec<Span<'static>> {
                 Style::new().fg(th.dim())
             },
         ));
+        if active && (state.filter_input || !state.filter.is_empty()) {
+            spans.push(Span::styled(
+                format!(
+                    "  /{}{}",
+                    state.filter,
+                    if state.filter_input { th.cursor() } else { "" }
+                ),
+                Style::new().fg(th.accent()),
+            ));
+        }
     }
     spans
 }
@@ -484,9 +518,15 @@ mod tests {
     #[test]
     fn a_cell_never_exceeds_its_column() {
         let c = col("x", 6, 0);
-        assert_eq!(cell("ab", &c), "ab    ".to_string() + &" ".repeat(GUTTER));
-        assert_eq!(cell("abcdefghij", &c).chars().count(), 6 + GUTTER);
+        assert_eq!(
+            cell("ab", &c, false),
+            "ab    ".to_string() + &" ".repeat(GUTTER)
+        );
+        assert_eq!(cell("abcdefghij", &c, false).chars().count(), 6 + GUTTER);
         let r = rcol("x", 6, 0);
-        assert_eq!(cell("ab", &r), "    ab".to_string() + &" ".repeat(GUTTER));
+        assert_eq!(
+            cell("ab", &r, false),
+            "    ab".to_string() + &" ".repeat(GUTTER)
+        );
     }
 }

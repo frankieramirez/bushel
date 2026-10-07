@@ -253,6 +253,7 @@ async fn main() -> std::io::Result<()> {
             key = keys.next() => {
                 match key {
                     Some(Ok(Event::Key(k))) if k.kind == KeyEventKind::Press => {
+                        ui.interrupt();
                         for cmd in keymap::map_key(&engine.state, k, &ui.last_info) {
                             engine.dispatch(cmd);
                         }

@@ -90,6 +90,8 @@ pub enum Command {
     ScrollDetail(isize),
     SetDetailScroll(u16),
     SetHelpScroll(u16),
+    SetMessageScroll(usize),
+    SetConfirmScroll(usize),
     ScrollTop,
     ScrollBottom,
     ToggleFollow,
