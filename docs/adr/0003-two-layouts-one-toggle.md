@@ -16,7 +16,7 @@ They are not rankable. The rail wins when the question is "what else is running"
 
 Ship both. `layout = "rail" | "table"` in the config file, `--layout` on the command line, and a settings panel on `,` that toggles it live and writes the file.
 
-**Rail is the default**, because it is the continuation of ADR 0002 and the one that answers the ambient question. It loses its boxes: four typographic sections in one borderless column, separated from the detail pane by a single rule. Focus is carried by the accented section label, the `▎` selection bar, and the rule's colour. Sections shrink to fit and the slack pools once at the bottom, over a footer naming the reclaimable bytes and the key that frees them.
+**Rail is the default**, because it is the continuation of ADR 0002 and the one that answers the ambient question. It loses its boxes: four typographic sections in one borderless column, separated from the detail pane by a single rule. The accented section label identifies the active pane. Focus uses the selection bar: `▎` (`|` in ASCII) while the list has focus, `▏` (`:` in ASCII) while detail has focus. The bottom bar names list movement or detail scrolling at every size; the rail rule also changes colour. These shape and text cues keep focus legible in the table layout and at the floor, including when the dim palette is raised for text contrast. Sections shrink to fit and the slack pools once at the bottom, over a footer naming the reclaimable bytes and the key that frees them.
 
 **Table** is the alternative. The header becomes the switcher and carries the counts, which kills the collision by merging the two things rather than separating them.
 

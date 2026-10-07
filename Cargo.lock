@@ -273,6 +273,8 @@ dependencies = [
  "tokio",
  "toml",
  "toml_edit",
+ "unicode-segmentation",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]

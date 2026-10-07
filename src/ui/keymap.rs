@@ -9,6 +9,16 @@ pub fn map_key(state: &AppState, key: KeyEvent, drawn: &DrawInfo) -> Vec<Command
         return vec![Command::ForceQuit];
     }
 
+    if key.modifiers.intersects(
+        KeyModifiers::CONTROL
+            | KeyModifiers::ALT
+            | KeyModifiers::SUPER
+            | KeyModifiers::HYPER
+            | KeyModifiers::META,
+    ) {
+        return vec![];
+    }
+
     if let Overlay::QuitConfirm { scroll, .. } = state.overlay {
         let to = |delta: i16| {
             vec![Command::SetQuitScroll(
@@ -34,7 +44,7 @@ pub fn map_key(state: &AppState, key: KeyEvent, drawn: &DrawInfo) -> Vec<Command
         return vec![Command::SkipSplash];
     }
 
-    if state.screen == Screen::ServiceDown {
+    if state.screen == Screen::ServiceDown && state.overlay != Overlay::MessageLog {
         return match key.code {
             KeyCode::Char('s') => vec![Command::StartService],
             KeyCode::Char('q') => vec![Command::Quit],
@@ -43,22 +53,33 @@ pub fn map_key(state: &AppState, key: KeyEvent, drawn: &DrawInfo) -> Vec<Command
         };
     }
 
-    if state.screen == Screen::CliMissing {
-        return match (key.code, &state.overlay) {
-            (KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('m'), Overlay::MessageLog) => {
-                vec![Command::CloseOverlay]
-            }
-            (KeyCode::Char('q'), _) => vec![Command::Quit],
-            (KeyCode::Char('m'), _) => vec![Command::OpenMessageLog],
+    if state.screen == Screen::CliMissing && state.overlay != Overlay::MessageLog {
+        return match key.code {
+            KeyCode::Char('q') => vec![Command::Quit],
+            KeyCode::Char('m') => vec![Command::OpenMessageLog],
             _ => vec![],
         };
     }
 
     match &state.overlay {
         Overlay::Confirm { .. } => {
+            let to = |delta: isize| {
+                let scroll = state.confirm_scroll.min(drawn.confirm_max_scroll);
+                vec![Command::SetConfirmScroll(
+                    scroll
+                        .saturating_add_signed(delta)
+                        .min(drawn.confirm_max_scroll),
+                )]
+            };
             return match key.code {
                 KeyCode::Char('y') => vec![Command::ConfirmYes],
                 KeyCode::Esc | KeyCode::Char('n') => vec![Command::CloseOverlay],
+                KeyCode::Char('j') | KeyCode::Down => to(1),
+                KeyCode::Char('k') | KeyCode::Up => to(-1),
+                KeyCode::PageDown => to(10),
+                KeyCode::PageUp => to(-10),
+                KeyCode::Char('g') => vec![Command::SetConfirmScroll(0)],
+                KeyCode::Char('G') => vec![Command::SetConfirmScroll(drawn.confirm_max_scroll)],
                 _ => vec![],
             };
         }
@@ -85,10 +106,24 @@ pub fn map_key(state: &AppState, key: KeyEvent, drawn: &DrawInfo) -> Vec<Command
             };
         }
         Overlay::MessageLog => {
+            let to = |delta: isize| {
+                let scroll = state.message_scroll.min(drawn.message_max_scroll);
+                vec![Command::SetMessageScroll(
+                    scroll
+                        .saturating_add_signed(delta)
+                        .min(drawn.message_max_scroll),
+                )]
+            };
             return match key.code {
                 KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') | KeyCode::Char('m') => {
                     vec![Command::CloseOverlay]
                 }
+                KeyCode::Char('j') | KeyCode::Down => to(1),
+                KeyCode::Char('k') | KeyCode::Up => to(-1),
+                KeyCode::PageDown => to(10),
+                KeyCode::PageUp => to(-10),
+                KeyCode::Char('g') => vec![Command::SetMessageScroll(0)],
+                KeyCode::Char('G') => vec![Command::SetMessageScroll(drawn.message_max_scroll)],
                 _ => vec![],
             };
         }
@@ -284,6 +319,18 @@ mod tests {
     }
 
     #[test]
+    fn service_down_message_log_can_be_closed_without_starting_the_service() {
+        let mut s = main_state();
+        s.screen = Screen::ServiceDown;
+        s.overlay = Overlay::MessageLog;
+        assert_eq!(
+            map_key(&s, key(KeyCode::Esc), &drawn(0, 0)),
+            vec![Command::CloseOverlay]
+        );
+        assert_eq!(map_key(&s, key(KeyCode::Char('s')), &drawn(0, 0)), vec![]);
+    }
+
+    #[test]
     fn service_down_screen_only_accepts_start_quit_and_message_log() {
         let mut s = main_state();
         s.screen = Screen::ServiceDown;
@@ -455,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn the_message_log_is_unchanged_at_every_size() {
+    fn a_message_log_that_fits_still_captures_navigation() {
         let mut s = main_state();
         s.overlay = Overlay::MessageLog;
         for c in ['q', 'm', '?'] {
@@ -464,7 +511,10 @@ mod tests {
                 vec![Command::CloseOverlay]
             );
         }
-        assert_eq!(map_key(&s, key(KeyCode::Char('j')), &drawn(0, 0)), vec![]);
+        assert_eq!(
+            map_key(&s, key(KeyCode::Char('j')), &drawn(0, 0)),
+            vec![Command::SetMessageScroll(0)]
+        );
     }
 
     fn documented_keys() -> Vec<String> {
