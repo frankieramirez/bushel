@@ -83,6 +83,10 @@ fn brew_upgrade_command() -> std::process::Command {
     cmd
 }
 
+fn cargo_upgrade_hint() -> &'static str {
+    "bushel was installed with cargo; upgrade with:\n  cargo install bushel --force"
+}
+
 async fn self_update() -> i32 {
     let method = install_method();
     match method {
@@ -113,11 +117,7 @@ async fn self_update() -> i32 {
     let mut updater = axoupdater::AxoUpdater::new_for("bushel");
     if updater.load_receipt().is_err() {
         if method == InstallMethod::Cargo {
-            eprintln!(
-                "bushel was installed with cargo; upgrade with:\n  \
-                 cargo install --git {} --force",
-                env!("CARGO_PKG_REPOSITORY")
-            );
+            eprintln!("{}", cargo_upgrade_hint());
         } else {
             eprintln!(
                 "no install receipt found — bushel wasn't installed via the shell installer.\n\
@@ -274,6 +274,13 @@ async fn main() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cargo_upgrade_stays_on_crates_io() {
+        let hint = cargo_upgrade_hint();
+        assert!(hint.contains("cargo install bushel --force"), "{hint}");
+        assert!(!hint.contains("--git"), "{hint}");
+    }
 
     fn cargo_bins() -> Vec<PathBuf> {
         vec![PathBuf::from("/Users/x/.cargo/bin")]
