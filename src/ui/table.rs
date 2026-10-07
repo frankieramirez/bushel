@@ -4,7 +4,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::engine::state::{AppState, Focus, Pane};
+use crate::engine::state::{AppState, Focus, Pane, ReadStatus};
 use crate::ui::humanize::elide_ascii;
 use crate::ui::layout::LayoutPlan;
 use crate::ui::rail::pending_span;
@@ -168,7 +168,7 @@ fn draw_table(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, floor
 
     if rows_idx.is_empty() {
         lines.push(Line::from(Span::styled(
-            th.chrome(format!("  {}", empty_hint(state))),
+            format!("  {}", empty_hint(state, th)),
             Style::new().fg(th.dim()),
         )));
     } else {
@@ -215,16 +215,23 @@ fn draw_table(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, floor
     }
 }
 
-fn empty_hint(state: &AppState) -> &'static str {
-    if state.pane_len(state.pane) > 0 {
-        return "no match";
+fn empty_hint(state: &AppState, th: &Theme) -> String {
+    match &state.reads[state.pane.index()] {
+        ReadStatus::Loading => return th.chrome(format!("{} loading …", th.spinner(0))),
+        ReadStatus::Failed { gist } => {
+            return format!("list failed: {gist}{}", th.chrome(" · m log"));
+        }
+        ReadStatus::Ready => {}
     }
-    match state.pane {
+    if state.pane_len(state.pane) > 0 {
+        return "no match".into();
+    }
+    th.chrome(match state.pane {
         Pane::Containers => "no containers",
         Pane::Images => "no images · [u] pull one",
         Pane::Volumes => "no volumes · [c] create one",
         Pane::Networks => "no networks",
-    }
+    })
 }
 
 fn row_line(
@@ -291,7 +298,7 @@ fn row_line(
                 } else {
                     dim
                 };
-                spans.push(Span::styled(cell(&c.state, &c2, th.ascii), style));
+                spans.push(Span::styled(cell(c.state.label(), &c2, th.ascii), style));
             }
             if let Some(c3) = get("up") {
                 spans.push(Span::styled(
@@ -467,7 +474,11 @@ pub fn header_line(state: &AppState, th: &Theme) -> Vec<Span<'static>> {
             },
         ));
         spans.push(Span::styled(
-            state.pane_len(pane).to_string(),
+            if state.reads[pane.index()] == ReadStatus::Ready {
+                state.pane_len(pane).to_string()
+            } else {
+                absent(th).into()
+            },
             if active {
                 Style::new().fg(th.text()).bold()
             } else {

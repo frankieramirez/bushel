@@ -11,14 +11,19 @@ pub enum AppEvent {
     Containers(u64, CliResult<Vec<ContainerJson>>),
     Images(u64, CliResult<Vec<ImageJson>>),
     Volumes(u64, CliResult<Vec<VolumeJson>>),
-    Networks(CliResult<Vec<NetworkJson>>),
-    Stats(CliResult<Vec<StatsJson>>),
+    Networks(u64, CliResult<Vec<NetworkJson>>),
+    Stats {
+        sequence: u64,
+        taken_at: std::time::Instant,
+        result: CliResult<Vec<StatsJson>>,
+    },
     ServiceProbe(CliResult<SystemStatusJson>),
     VersionChecked(CliResult<String>),
 
     ActionDone {
         action_id: super::pending::ActionId,
         result: CliResult<()>,
+        completed_steps: usize,
     },
     PruneDone {
         generation: u64,
@@ -27,20 +32,26 @@ pub enum AppEvent {
     },
 
     LogBacklog {
+        generation: u64,
         id: String,
         lines: Vec<String>,
         error: Option<CliError>,
     },
     LogLine {
+        generation: u64,
         id: String,
         line: String,
     },
     FollowExited {
+        generation: u64,
         id: String,
     },
 
     InspectLoaded {
-        id: String,
+        target: super::pending::Target,
+        generation: u64,
+        revision: u64,
+        identity: Option<String>,
         result: CliResult<String>,
     },
 
@@ -60,6 +71,9 @@ pub enum AppEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Quit,
+    ForceQuit,
+    WaitAndQuit,
+    SetQuitScroll(u16),
     SkipSplash,
     SwitchPane(Pane),
     NextPane,

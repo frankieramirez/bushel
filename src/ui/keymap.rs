@@ -6,7 +6,7 @@ use crate::ui::draw::DrawInfo;
 
 pub fn map_key(state: &AppState, key: KeyEvent, drawn: &DrawInfo) -> Vec<Command> {
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        return vec![Command::Quit];
+        return vec![Command::ForceQuit];
     }
 
     if key.modifiers.intersects(
@@ -19,6 +19,27 @@ pub fn map_key(state: &AppState, key: KeyEvent, drawn: &DrawInfo) -> Vec<Command
         return vec![];
     }
 
+    if let Overlay::QuitConfirm { scroll, .. } = state.overlay {
+        let to = |delta: i16| {
+            vec![Command::SetQuitScroll(
+                scroll
+                    .min(drawn.quit_max_scroll)
+                    .saturating_add_signed(delta)
+                    .min(drawn.quit_max_scroll),
+            )]
+        };
+        return match key.code {
+            KeyCode::Char('q') => vec![Command::ForceQuit],
+            KeyCode::Char('w') => vec![Command::WaitAndQuit],
+            KeyCode::Esc => vec![Command::CloseOverlay],
+            KeyCode::Char('j') | KeyCode::Down => to(1),
+            KeyCode::Char('k') | KeyCode::Up => to(-1),
+            KeyCode::PageDown => to(10),
+            KeyCode::PageUp => to(-10),
+            _ => vec![],
+        };
+    }
+
     if state.screen == Screen::Splash {
         return vec![Command::SkipSplash];
     }
@@ -26,6 +47,14 @@ pub fn map_key(state: &AppState, key: KeyEvent, drawn: &DrawInfo) -> Vec<Command
     if state.screen == Screen::ServiceDown && state.overlay != Overlay::MessageLog {
         return match key.code {
             KeyCode::Char('s') => vec![Command::StartService],
+            KeyCode::Char('q') => vec![Command::Quit],
+            KeyCode::Char('m') => vec![Command::OpenMessageLog],
+            _ => vec![],
+        };
+    }
+
+    if state.screen == Screen::CliMissing && state.overlay != Overlay::MessageLog {
+        return match key.code {
             KeyCode::Char('q') => vec![Command::Quit],
             KeyCode::Char('m') => vec![Command::OpenMessageLog],
             _ => vec![],
@@ -132,6 +161,7 @@ pub fn map_key(state: &AppState, key: KeyEvent, drawn: &DrawInfo) -> Vec<Command
                 _ => vec![],
             };
         }
+        Overlay::QuitConfirm { .. } => unreachable!("handled before screen input"),
         Overlay::None => {}
     }
 

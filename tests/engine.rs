@@ -164,6 +164,82 @@ engine_test!(
     }
 );
 
+engine_test!(
+    inspect_for_same_named_entities_uses_the_selected_pane,
+    || {
+        let mock = happy_mock();
+        mock.set(
+            &["volume", "ls", "--format", "json"],
+            Output::ok(fixture_str("volume_ls.json").replace("qvol", "qtest")),
+        );
+        mock.on(&["inspect", "qtest"], Output::ok(r#"{"kind":"container"}"#));
+        mock.on(
+            &["volume", "inspect", "qtest"],
+            Output::ok(r#"{"kind":"volume"}"#),
+        );
+        let mut h = Harness::started(mock);
+        h.engine.dispatch(Command::SetDetailTab(DetailTab::Inspect));
+        h.pump();
+        h.engine.dispatch(Command::SwitchPane(Pane::Volumes));
+        h.pump();
+        assert!(
+            h.mock
+                .commands()
+                .contains(&"container volume inspect qtest".to_string())
+        );
+        assert!(render_state(h.state()).contains(r#""kind":"volume""#));
+        h.engine.dispatch(Command::SwitchPane(Pane::Containers));
+        h.pump();
+        assert!(render_state(h.state()).contains(r#""kind":"container""#));
+        assert_eq!(
+            h.mock
+                .commands()
+                .iter()
+                .filter(|command| command.as_str() == "container inspect qtest")
+                .count(),
+            1
+        );
+    }
+);
+
+engine_test!(
+    stats_reads_are_single_flight_until_their_event_is_applied,
+    || {
+        let mut h = Harness::started(happy_mock());
+        h.engine.on_tick();
+        h.engine.on_tick();
+        tokio::runtime::Handle::current().block_on(async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        });
+        assert_eq!(
+            h.mock
+                .commands()
+                .iter()
+                .filter(|c| c.as_str() == "container stats --no-stream --format json")
+                .count(),
+            1
+        );
+    }
+);
+
+engine_test!(
+    stopping_the_selected_container_retains_its_fetched_logs,
+    || {
+        let mut h = Harness::started(happy_mock());
+        let lines = h.state().log_lines.clone();
+        let stopped =
+            fixture_str("ls.json").replace(r#""state":"running""#, r#""state":"stopped""#);
+        h.mock
+            .set(&["ls", "-a", "--format", "json"], Output::ok(stopped));
+        h.engine.on_tick();
+        h.pump();
+        assert_eq!(h.state().log_lines, lines);
+        assert_eq!(h.state().log_owner.as_deref(), Some("qtest"));
+        assert!(h.state().follow_ended);
+        assert_eq!(h.engine.follower_id(), None);
+    }
+);
+
 engine_test!(startup_populates_all_four_panes_from_fixtures, || {
     let h = Harness::started(happy_mock());
     let s = h.state();
@@ -400,7 +476,7 @@ engine_test!(
             .iter()
             .find(|c| c.id == "qtest")
             .unwrap();
-        assert_eq!(qtest.state, "stopped");
+        assert_eq!(qtest.state.label(), "stopped");
         assert!(qtest.pending.is_none(), "confirmed pending must clear");
         let toast = h.state().toast.clone().expect("confirmation toast");
         assert_eq!(toast.text, "stopped qtest");
@@ -644,6 +720,181 @@ engine_test!(external_stop_is_announced_but_bushel_stops_are_not, || {
             .any(|m| m.contains("running -> stopped"))
     );
 });
+
+engine_test!(
+    failed_restart_keeps_its_stop_attribution_until_polled,
+    || {
+        let mock = happy_mock();
+        mock.on(&["stop", "qtest"], Output::ok("qtest\n"));
+        mock.on(&["start", "qtest"], Output::fail(1, "Error: start blew up"));
+        let mut h = Harness::started(mock);
+
+        h.engine.dispatch(Command::Run(UiAction::Restart));
+        h.pump();
+        let stopped = fixture_str("ls.json").replace(
+            r#""startedDate":"2026-08-20T01:46:37Z","state":"running""#,
+            r#""startedDate":"2026-08-20T01:46:37Z","state":"stopped""#,
+        );
+        h.mock
+            .on(&["ls", "-a", "--format", "json"], Output::ok(stopped));
+        h.engine.on_tick();
+        h.pump();
+
+        assert!(
+            !h.state()
+                .messages
+                .iter()
+                .any(|m| m.contains("stopped externally")),
+            "{:?}",
+            h.state().messages
+        );
+        let toast = h.state().toast.as_ref().expect("restart error");
+        assert!(toast.error);
+        assert!(
+            toast.text.contains("stopped, but start failed"),
+            "{}",
+            toast.text
+        );
+        assert!(toast.text.contains("start blew up"), "{}", toast.text);
+        assert!(h.state().messages.iter().any(|m| {
+            m.contains("$ container start qtest -> failed") && m.contains("start blew up")
+        }));
+        let row = h
+            .state()
+            .containers
+            .iter()
+            .find(|c| c.id == "qtest")
+            .unwrap();
+        assert!(!row.is_running());
+        assert!(row.pending.is_none());
+    }
+);
+
+engine_test!(
+    failed_stop_and_kill_keep_their_stop_attribution_until_polled,
+    || {
+        for (action, command) in [(UiAction::Stop, "stop"), (UiAction::Kill, "kill")] {
+            let mock = happy_mock();
+            mock.on(&[command, "qtest"], Output::fail(1, "Error: response lost"));
+            let mut h = Harness::started(mock);
+            h.engine.dispatch(Command::Run(action));
+            if action == UiAction::Kill {
+                h.engine.dispatch(Command::ConfirmYes);
+            }
+            h.pump();
+            let stopped = fixture_str("ls.json").replace(
+                r#""startedDate":"2026-08-20T01:46:37Z","state":"running""#,
+                r#""startedDate":"2026-08-20T01:46:37Z","state":"stopped""#,
+            );
+            h.mock
+                .on(&["ls", "-a", "--format", "json"], Output::ok(stopped));
+            h.engine.on_tick();
+            h.pump();
+            assert!(
+                !h.state()
+                    .messages
+                    .iter()
+                    .any(|m| m.contains("stopped externally"))
+            );
+            assert_eq!(h.state().toast.as_ref().unwrap().text, "response lost");
+            let row = h
+                .state()
+                .containers
+                .iter()
+                .find(|c| c.id == "qtest")
+                .unwrap();
+            assert!(!row.is_running());
+            assert!(row.pending.is_none());
+        }
+    }
+);
+
+engine_test!(
+    failed_restart_reports_stop_failure_without_running_start,
+    || {
+        let mock = happy_mock();
+        mock.on(&["stop", "qtest"], Output::fail(1, "Error: stop blew up"));
+        let mut h = Harness::started(mock);
+        h.engine.dispatch(Command::Run(UiAction::Restart));
+        let done = h.take_event(|e| matches!(e, AppEvent::ActionDone { .. }));
+        assert!(matches!(
+            done,
+            AppEvent::ActionDone {
+                completed_steps: 0,
+                ..
+            }
+        ));
+        h.engine.apply(done);
+        assert_eq!(
+            h.state().toast.as_ref().unwrap().text,
+            "restart qtest: stop failed: stop blew up"
+        );
+        assert!(
+            !h.mock
+                .commands()
+                .iter()
+                .any(|c| c == "container start qtest")
+        );
+        assert!(h.state().messages.iter().any(|m| {
+            m.contains("$ container stop qtest -> failed (step 1/2)") && m.contains("stop blew up")
+        }));
+    }
+);
+
+engine_test!(
+    stop_attribution_survives_inflight_poll_and_ends_at_fresh_poll,
+    || {
+        let mock = happy_mock();
+        mock.on(&["stop", "qtest"], Output::ok("qtest\n"));
+        mock.on(&["start", "qtest"], Output::fail(1, "Error: start blew up"));
+        let mut h = Harness::started(mock);
+        let stopped = fixture_str("ls.json").replace(
+            r#""startedDate":"2026-08-20T01:46:37Z","state":"running""#,
+            r#""startedDate":"2026-08-20T01:46:37Z","state":"stopped""#,
+        );
+        h.mock.on(
+            &["ls", "-a", "--format", "json"],
+            Output::ok(stopped.clone()),
+        );
+        h.engine.on_tick();
+        // Hold a poll started before completion, which already observed the stop.
+        let inflight = h.take_event(|e| matches!(e, AppEvent::Containers(..)));
+        h.engine.dispatch(Command::Run(UiAction::Restart));
+        let done = h.take_event(|e| matches!(e, AppEvent::ActionDone { .. }));
+        assert!(matches!(
+            done,
+            AppEvent::ActionDone {
+                completed_steps: 1,
+                ..
+            }
+        ));
+        h.engine.apply(done);
+        h.engine.apply(inflight);
+        assert!(
+            !h.state()
+                .messages
+                .iter()
+                .any(|m| m.contains("stopped externally"))
+        );
+
+        // The first successful poll started after completion consumes attribution,
+        // even when it sees the container running again.
+        h.mock.on(
+            &["ls", "-a", "--format", "json"],
+            Output::ok(fixture("ls.json")),
+        );
+        h.engine.on_tick();
+        h.pump();
+        h.mock
+            .on(&["ls", "-a", "--format", "json"], Output::ok(stopped));
+        h.engine.on_tick();
+        h.pump();
+        assert_eq!(
+            h.state().toast.as_ref().unwrap().text,
+            "qtest stopped externally"
+        );
+    }
+);
 
 engine_test!(action_failure_clears_pending_and_surfaces_stderr, || {
     let mock = happy_mock();
@@ -1085,7 +1336,14 @@ engine_test!(
         assert_eq!(h.state().pane, Pane::Networks);
         assert_eq!(h.state().selected[3].as_deref(), Some("default"));
         assert!(h.state().available_actions().is_empty());
-        assert!(h.state().inspect_cache.contains_key("default"));
+        assert!(
+            h.state()
+                .inspect_cache
+                .contains_key(&bushel::engine::pending::Target::new(
+                    Pane::Networks,
+                    "default"
+                ))
+        );
         assert!(
             h.mock
                 .commands()
@@ -1131,7 +1389,14 @@ engine_test!(inspect_is_fetched_lazily_and_cached, || {
 
         h.engine.dispatch(Command::SetDetailTab(DetailTab::Inspect));
         h.pump();
-        assert!(h.state().inspect_cache.contains_key("qtest"));
+        assert!(
+            h.state()
+                .inspect_cache
+                .contains_key(&bushel::engine::pending::Target::new(
+                    Pane::Containers,
+                    "qtest"
+                ))
+        );
 
         let calls_before = h.mock.calls().len();
         h.engine.dispatch(Command::SetDetailTab(DetailTab::Logs));
@@ -2385,3 +2650,594 @@ engine_test!(concurrent_tags_confirm_their_own_destinations, || {
     assert!(h.state().messages.iter().any(|m| m == "tagged second:v1"));
     assert!(h.state().images.iter().all(|i| i.pending.is_none()));
 });
+
+engine_test!(
+    short_image_references_share_pull_and_action_reservations,
+    || {
+        let canonical = "docker.io/library/alpine:latest";
+        let mut h = Harness::started(happy_mock());
+        h.engine.dispatch(Command::SwitchPane(Pane::Images));
+        h.pump();
+        h.engine.dispatch(Command::Top);
+        pull_reference(&mut h, "alpine");
+        assert_eq!(h.state().pull.as_ref().unwrap().reference, "alpine:latest");
+        assert!(
+            h.mock
+                .commands()
+                .iter()
+                .any(|c| c == "container image pull alpine:latest --progress plain")
+        );
+        h.engine.dispatch(Command::Run(UiAction::Delete));
+        assert!(
+            h.state()
+                .toast
+                .as_ref()
+                .is_some_and(|t| t.text.contains("pull already running"))
+        );
+        assert_eq!(h.state().overlay, Overlay::None);
+        tag_selected(&mut h, "dest:v1");
+        assert!(
+            h.state()
+                .toast
+                .as_ref()
+                .is_some_and(|t| t.text.contains("pull already running"))
+        );
+        assert!(
+            !h.mock
+                .commands()
+                .iter()
+                .any(|c| c.starts_with("container image tag"))
+        );
+
+        h.engine.apply(AppEvent::PullDone {
+            reference: canonical.into(),
+            code: 0,
+        });
+        assert!(
+            h.state().pull.is_none(),
+            "canonical completion must match a shorthand pull"
+        );
+        h.engine.dispatch(Command::Run(UiAction::Delete));
+        h.engine.dispatch(Command::ConfirmYes);
+        pull_reference(&mut h, "alpine");
+        assert!(
+            h.state()
+                .toast
+                .as_ref()
+                .is_some_and(|t| t.text.contains("action already pending"))
+        );
+        assert!(h.state().pull.is_none());
+        assert_eq!(
+            h.mock
+                .commands()
+                .iter()
+                .filter(|c| *c == "container image pull alpine:latest --progress plain")
+                .count(),
+            1
+        );
+    }
+);
+
+engine_test!(
+    inspect_failure_is_visible_but_retried_after_a_list_refresh,
+    || {
+        let mock = happy_mock();
+        mock.on(
+            &["image", "inspect", "docker.io/library/alpine:latest"],
+            Output::fail(1, "Error: transient"),
+        );
+        let mut h = Harness::started(mock);
+        h.engine.dispatch(Command::SwitchPane(Pane::Images));
+        h.pump();
+        let target =
+            bushel::engine::pending::Target::new(Pane::Images, "docker.io/library/alpine:latest");
+        assert!(!h.state().inspect_cache.contains_key(&target));
+        assert!(h.state().inspect_errors[&target].contains("transient"));
+        h.mock.set(
+            &["image", "inspect", "docker.io/library/alpine:latest"],
+            Output::ok(r#"{"digest":"fresh"}"#),
+        );
+        let list = serde_json::from_slice(&fixture("image_ls.json")).unwrap();
+        h.engine.apply(AppEvent::Images(100, Ok(list)));
+        h.pump();
+        assert!(h.state().inspect_cache[&target].json.contains("fresh"));
+        assert!(!h.state().inspect_errors.contains_key(&target));
+    }
+);
+
+engine_test!(
+    inspect_cache_follows_image_volume_and_network_identity_changes,
+    || {
+        let mock = happy_mock();
+        mock.on(
+            &["image", "inspect", "docker.io/library/alpine:latest"],
+            Output::ok(r#"{"digest":"before"}"#),
+        );
+        mock.on(
+            &["volume", "inspect", "qvol"],
+            Output::ok(r#"{"created":"before"}"#),
+        );
+        mock.on(
+            &["network", "inspect", "default"],
+            Output::ok(r#"{"created":"before"}"#),
+        );
+        let mut h = Harness::started(mock);
+        for pane in [Pane::Images, Pane::Volumes, Pane::Networks] {
+            h.engine.dispatch(Command::SwitchPane(pane));
+            h.pump();
+        }
+        let mut images: Vec<bushel::client::model::ImageJson> =
+            serde_json::from_slice(&fixture("image_ls.json")).unwrap();
+        for image in &mut images {
+            if let Some(descriptor) = &mut image.configuration.descriptor {
+                descriptor.digest = Some("sha256:new".into());
+            }
+        }
+        let mut volumes: Vec<bushel::client::model::VolumeJson> =
+            serde_json::from_slice(&fixture("volume_ls.json")).unwrap();
+        for volume in &mut volumes {
+            volume.configuration.creation_date = Some("new date".into());
+        }
+        let mut networks: Vec<bushel::client::model::NetworkJson> =
+            serde_json::from_slice(&fixture("network_ls.json")).unwrap();
+        for network in &mut networks {
+            network.configuration.creation_date = Some("new date".into());
+        }
+        h.mock.set(
+            &["image", "inspect", "docker.io/library/alpine:latest"],
+            Output::ok(r#"{"digest":"after"}"#),
+        );
+        h.mock.set(
+            &["volume", "inspect", "qvol"],
+            Output::ok(r#"{"created":"after"}"#),
+        );
+        h.mock.set(
+            &["network", "inspect", "default"],
+            Output::ok(r#"{"created":"after"}"#),
+        );
+        h.engine.apply(AppEvent::Images(100, Ok(images)));
+        h.engine.apply(AppEvent::Volumes(101, Ok(volumes)));
+        h.engine.apply(AppEvent::Networks(102, Ok(networks)));
+        h.pump();
+        for (pane, name) in [
+            (Pane::Images, "docker.io/library/alpine:latest"),
+            (Pane::Volumes, "qvol"),
+            (Pane::Networks, "default"),
+        ] {
+            h.engine.dispatch(Command::SwitchPane(pane));
+            h.pump();
+            let target = bushel::engine::pending::Target::new(pane, name);
+            assert!(h.state().inspect_cache[&target].json.contains("after"));
+        }
+        h.engine.apply(AppEvent::Images(200, Ok(vec![])));
+        h.engine.apply(AppEvent::Volumes(201, Ok(vec![])));
+        h.engine.apply(AppEvent::Networks(202, Ok(vec![])));
+        assert!(h.state().inspect_cache.is_empty());
+    }
+);
+
+engine_test!(
+    a_stopped_container_tail_and_marker_are_rendered_together,
+    || {
+        let mut h = Harness::started(happy_mock());
+        h.mock.set(
+            &["ls", "-a", "--format", "json"],
+            Output::ok(
+                fixture_str("ls.json").replace(r#""state":"running""#, r#""state":"stopped""#),
+            ),
+        );
+        h.engine.on_tick();
+        h.pump();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+        terminal
+            .draw(|frame| {
+                bushel::ui::draw::draw(frame, h.state(), &bushel::ui::theme::Theme::detect(false));
+            })
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("follow-1"));
+        assert!(text.contains("container stopped"));
+    }
+);
+
+fn stats_event(
+    result: Result<Vec<bushel::client::model::StatsJson>, bushel::client::CliError>,
+) -> AppEvent {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1_000_000);
+    AppEvent::Stats {
+        sequence: SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        taken_at: Instant::now(),
+        result,
+    }
+}
+
+fn render_state(state: &AppState) -> String {
+    use ratatui::{Terminal, backend::TestBackend};
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    let theme = bushel::ui::theme::Theme {
+        truecolor: false,
+        ascii: true,
+        reduced_motion: false,
+    };
+    terminal
+        .draw(|frame| {
+            bushel::ui::draw::draw(frame, state, &theme);
+        })
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    (0..40)
+        .map(|y| {
+            (0..120)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn unloaded_panes_render_loading_without_empty_resource_claims() {
+    for layout in [LayoutMode::Rail, LayoutMode::Table] {
+        for pane in Pane::all() {
+            let mut state = AppState::new(true);
+            state.config.layout = layout;
+            state.pane = pane;
+            let rendered = render_state(&state);
+            assert!(
+                rendered.contains("loading"),
+                "{layout:?} {pane:?}: {rendered}"
+            );
+            assert!(!rendered.contains("no containers"));
+            assert!(!rendered.contains("create one"));
+            assert!(!rendered.contains("none"));
+        }
+    }
+}
+
+engine_test!(
+    failed_volume_read_has_no_empty_create_hint_in_either_layout,
+    || {
+        let mock = happy_mock();
+        mock.set(
+            &["volume", "ls", "--format", "json"],
+            Output::fail(1, "Error: boom"),
+        );
+        let mut h = Harness::started(mock);
+        h.engine.dispatch(Command::SwitchPane(Pane::Volumes));
+        h.pump();
+        for layout in [LayoutMode::Rail, LayoutMode::Table] {
+            h.engine.state.config.layout = layout;
+            let rendered = render_state(h.state());
+            assert!(rendered.contains("failed: boom"), "{layout:?}: {rendered}");
+            assert!(!rendered.contains("[c] create"), "{rendered}");
+        }
+        h.mock
+            .set(&["volume", "ls", "--format", "json"], Output::ok("[]"));
+        h.engine.dispatch(Command::SwitchPane(Pane::Containers));
+        h.engine.dispatch(Command::SwitchPane(Pane::Volumes));
+        h.pump();
+        assert!(render_state(h.state()).contains("no volumes . [c] create one"));
+    }
+);
+
+engine_test!(
+    all_container_poll_failures_degrade_preserve_rows_and_recover,
+    || {
+        use bushel::client::CliError;
+        for error in [
+            CliError::Timeout,
+            CliError::Other {
+                raw: "Error: boom".into(),
+            },
+            CliError::NotFound {
+                raw: "not found".into(),
+            },
+            CliError::InUse {
+                raw: "in use".into(),
+            },
+            CliError::Usage {
+                raw: "invalid argument".into(),
+            },
+        ] {
+            let mut h = Harness::started(happy_mock());
+            for sequence in 100..103 {
+                h.engine
+                    .apply(AppEvent::Containers(sequence, Err(error.clone())));
+            }
+            assert!(h.state().degraded, "{error:?} must degrade polling");
+            let rendered = render_state(h.state());
+            assert!(rendered.contains(&error.gist()), "{rendered}");
+            assert!(rendered.contains("last good"));
+            assert!(rendered.contains("qtest"));
+            assert!(
+                h.state()
+                    .messages
+                    .iter()
+                    .any(|message| message.contains(error.raw()))
+            );
+            h.engine.apply(AppEvent::Containers(
+                104,
+                Ok(serde_json::from_slice(&fixture("ls.json")).unwrap()),
+            ));
+            assert!(!h.state().degraded);
+            assert!(!render_state(h.state()).contains("last good"));
+        }
+    }
+);
+
+engine_test!(
+    missing_cli_shows_unavailable_guidance_and_keeps_message_log_accessible,
+    || {
+        use bushel::ui::{draw::DrawInfo, keymap::map_key};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut h = Harness::started(MockRunner::new());
+        for _ in 0..3 {
+            h.engine.on_tick();
+            h.pump();
+        }
+        assert_eq!(
+            h.state().poll_health.last_error.as_deref(),
+            Some("container CLI not found")
+        );
+        assert!(h.state().degraded);
+        let rendered = render_state(h.state());
+        assert!(rendered.contains("container CLI not found"), "{rendered}");
+        assert!(rendered.contains("unavailable"), "{rendered}");
+        assert!(
+            rendered.contains("github.com/apple/container"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("none"));
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        assert!(map_key(h.state(), key(KeyCode::Char('s')), &DrawInfo::default()).is_empty());
+        h.engine.dispatch(Command::OpenMessageLog);
+        assert_eq!(
+            map_key(h.state(), key(KeyCode::Esc), &DrawInfo::default()),
+            vec![Command::CloseOverlay]
+        );
+        h.engine.dispatch(Command::CloseOverlay);
+        h.mock.on_default(Output::ok("[]"));
+        h.engine.on_tick();
+        h.pump();
+        assert_eq!(h.state().screen, Screen::Main);
+        assert!(!h.state().degraded);
+    }
+);
+
+engine_test!(
+    stats_failures_are_visible_clear_frozen_values_and_recover_independently,
+    || {
+        use bushel::client::CliError;
+        let mut h = Harness::started(happy_mock());
+        let sample = || serde_json::from_slice(&fixture("stats.json")).unwrap();
+        h.engine.apply(stats_event(Ok(sample())));
+        h.engine.apply(stats_event(Ok(sample())));
+        assert!(h.state().containers[0].mem_bytes.is_some());
+        h.engine.apply(stats_event(Err(CliError::Timeout)));
+        h.engine.apply(stats_event(Ok(sample())));
+        assert!(
+            h.state().containers[0].cpu_percent.is_none(),
+            "recovery cannot reuse a pre-failure CPU derivative"
+        );
+        assert!(
+            h.state().containers[0].telemetry.is_empty(),
+            "recovery cannot label pre-failure rates as current"
+        );
+        h.engine.apply(stats_event(Ok(sample())));
+        for sequence in 100..103 {
+            h.engine.apply(stats_event(Err(CliError::Timeout)));
+            h.engine.apply(AppEvent::Containers(
+                sequence,
+                Ok(serde_json::from_slice(&fixture("ls.json")).unwrap()),
+            ));
+        }
+        let rendered = render_state(h.state());
+        assert!(
+            rendered.contains("stats unavailable: timed out"),
+            "{rendered}"
+        );
+        let container = &h.state().containers[0];
+        assert!(container.mem_bytes.is_none());
+        assert!(container.cpu_percent.is_none());
+        assert!(container.telemetry.is_empty());
+        assert!(
+            h.state()
+                .messages
+                .iter()
+                .any(|message| message.contains("stats failed: timed out"))
+        );
+        h.engine.apply(stats_event(Ok(sample())));
+        assert!(!render_state(h.state()).contains("stats unavailable"));
+        assert!(h.state().containers[0].mem_bytes.is_some());
+        assert!(
+            h.state().containers[0].cpu_percent.is_none(),
+            "first recovery sample has no cumulative baseline"
+        );
+    }
+);
+
+struct DelayedContainers {
+    mock: MockRunner,
+    delayed: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl bushel::runner::Runner for DelayedContainers {
+    async fn run(&self, args: &[String]) -> std::io::Result<Output> {
+        if args.first().is_some_and(|arg| arg == "ls")
+            && self.delayed.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            tokio::time::sleep(bushel::client::READ_TIMEOUT + Duration::from_secs(1)).await;
+        }
+        bushel::runner::Runner::run(&self.mock, args).await
+    }
+
+    fn spawn_stream(
+        &self,
+        args: &[String],
+    ) -> std::io::Result<(bushel::runner::LineStream, bushel::runner::KillHandle)> {
+        bushel::runner::Runner::spawn_stream(&self.mock, args)
+    }
+}
+
+async fn drain_ready<R: bushel::runner::Runner>(
+    engine: &mut Engine<R>,
+    rx: &mut mpsc::Receiver<AppEvent>,
+) {
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+        while let Ok(event) = rx.try_recv() {
+            engine.apply(event);
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn hung_container_reads_show_staleness_before_timeout_and_recover_after_real_timeouts() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let runner = Arc::new(DelayedContainers {
+        mock: happy_mock(),
+        delayed: AtomicBool::new(false),
+    });
+    let (tx, mut rx) = mpsc::channel(1024);
+    let mut engine = Engine::new(Client::new(Arc::clone(&runner)), tx, true);
+    engine.start();
+    drain_ready(&mut engine, &mut rx).await;
+    assert_eq!(engine.state.containers.len(), 2);
+    runner.delayed.store(true, Ordering::Relaxed);
+    for _ in 0..3 {
+        engine.on_tick();
+        drain_ready(&mut engine, &mut rx).await;
+    }
+    assert!(
+        engine.state.degraded,
+        "three ticks without a completed containers poll must look stale"
+    );
+    assert!(render_state(&engine.state).contains("last good"));
+    for failures in 1..=3 {
+        tokio::time::advance(bushel::client::READ_TIMEOUT).await;
+        drain_ready(&mut engine, &mut rx).await;
+        assert_eq!(engine.state.poll_health.consecutive_failures, failures);
+        assert_eq!(
+            engine.state.poll_health.last_error.as_deref(),
+            Some("timed out")
+        );
+        assert_eq!(engine.state.containers.len(), 2);
+        assert!(render_state(&engine.state).contains("timed out"));
+        if failures < 3 {
+            engine.on_tick();
+            drain_ready(&mut engine, &mut rx).await;
+        }
+    }
+    runner.delayed.store(false, Ordering::Relaxed);
+    engine.on_tick();
+    drain_ready(&mut engine, &mut rx).await;
+    assert!(!engine.state.degraded);
+    assert_eq!(engine.state.poll_health.consecutive_failures, 0);
+    assert!(engine.state.poll_health.last_success.is_some());
+}
+
+#[tokio::test]
+async fn missing_executable_is_distinct_from_a_missing_resource_on_reads_and_probe() {
+    use bushel::client::CliError;
+    let client = Client::new(Arc::new(MockRunner::new()));
+    for error in [
+        client.list_containers().await.unwrap_err(),
+        client.system_status().await.unwrap_err(),
+        client.version().await.unwrap_err(),
+    ] {
+        assert!(matches!(error, CliError::CliMissing { .. }), "{error:?}");
+        assert_eq!(error.gist(), "container CLI not found");
+        assert!(error.raw().contains("MockRunner: no response"));
+    }
+    let mock = MockRunner::new();
+    mock.on(
+        &["ls", "-a", "--format", "json"],
+        Output::fail(1, "resource not found"),
+    );
+    let error = Client::new(Arc::new(mock))
+        .list_containers()
+        .await
+        .unwrap_err();
+    assert!(matches!(error, CliError::NotFound { .. }));
+}
+
+engine_test!(
+    status_cluster_reflects_stale_stats_only_while_running_containers_need_them,
+    || {
+        use bushel::client::CliError;
+        let mut h = Harness::started(happy_mock());
+        h.engine
+            .apply(stats_event(Ok(serde_json::from_slice(&fixture(
+                "stats.json",
+            ))
+            .unwrap())));
+        for _ in 0..3 {
+            h.engine.on_tick();
+        }
+        h.engine.apply(AppEvent::Containers(
+            100,
+            Ok(serde_json::from_slice(&fixture("ls.json")).unwrap()),
+        ));
+        let rendered = render_state(h.state());
+        assert!(rendered.contains("stats unavailable"));
+        assert!(
+            rendered.lines().next().unwrap().contains("degraded"),
+            "{rendered}"
+        );
+        for _ in 0..3 {
+            h.engine.apply(stats_event(Err(CliError::Timeout)));
+        }
+        h.engine.apply(AppEvent::Containers(101, Ok(vec![])));
+        let rendered = render_state(h.state());
+        assert!(!rendered.contains("stats unavailable"));
+        assert!(
+            rendered.lines().next().unwrap().contains("service"),
+            "{rendered}"
+        );
+    }
+);
+
+engine_test!(
+    a_successful_short_reference_pull_refreshes_its_existing_inspect,
+    || {
+        let mock = happy_mock();
+        mock.on(
+            &["image", "inspect", "docker.io/library/alpine:latest"],
+            Output::ok(r#"{"version":"before"}"#),
+        );
+        let mut h = Harness::started(mock);
+        h.engine.dispatch(Command::SwitchPane(Pane::Images));
+        h.pump();
+        let target =
+            bushel::engine::pending::Target::new(Pane::Images, "docker.io/library/alpine:latest");
+        assert!(h.state().inspect_cache[&target].json.contains("before"));
+        h.mock.set(
+            &["image", "inspect", "docker.io/library/alpine:latest"],
+            Output::ok(r#"{"version":"after"}"#),
+        );
+        h.mock.on_stream(
+            &["image", "pull", "alpine:latest", "--progress", "plain"],
+            vec![StreamEvent::Exit(0)],
+        );
+        pull_reference(&mut h, "alpine");
+        h.pump();
+        assert!(h.state().inspect_cache[&target].json.contains("after"));
+        assert_eq!(
+            h.mock
+                .commands()
+                .iter()
+                .filter(|command| command.as_str()
+                    == "container image inspect docker.io/library/alpine:latest")
+                .count(),
+            2
+        );
+    }
+);

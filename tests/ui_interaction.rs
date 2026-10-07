@@ -77,12 +77,12 @@ async fn filtering_keeps_a_visible_selection_and_unicode_backspace_removes_a_gra
 async fn actual_action_and_poll_messages_render_ascii_without_rewriting_external_text() {
     let mock = Arc::new(MockRunner::new());
     mock.on(&["start", "old-batch"], Output::ok(""));
-    mock.on(&["stop", "old-batch"], Output::fail(1, "external → é"));
+    mock.on(&["stop", "old-batch"], Output::fail(1, "external failure"));
     for id in ["qtest", "old-batch"] {
         mock.on(&["inspect", id], Output::ok("{}"));
     }
     let (tx, mut rx) = mpsc::channel(64);
-    let mut engine = Engine::new(Client::new(mock), tx, true);
+    let mut engine = Engine::new(Client::new(Arc::clone(&mock)), tx, true);
     engine.state.config.ascii = true;
     engine.state.detail_tab = DetailTab::Inspect;
     let mut containers: Vec<ContainerJson> =
@@ -121,6 +121,16 @@ async fn actual_action_and_poll_messages_render_ascii_without_rewriting_external
     // Raw CLI stderr and user identifiers retain their original Unicode.
     engine.dispatch(Command::CloseOverlay);
     engine.dispatch(Command::Top);
+    engine.dispatch(Command::Run(UiAction::Stop));
+    apply_action_completion(&mut engine, &mut rx).await;
+    engine.dispatch(Command::OpenMessageLog);
+    for (width, height) in [(55, 20), (80, 24), (120, 40)] {
+        let (text, _) = render(&engine.state, width, height);
+        assert!(text.is_ascii(), "{width}x{height}: {text}");
+        assert!(text.contains("-> failed"), "{text}");
+    }
+    mock.set(&["stop", "old-batch"], Output::fail(1, "external → é"));
+    engine.dispatch(Command::CloseOverlay);
     engine.dispatch(Command::Run(UiAction::Stop));
     apply_action_completion(&mut engine, &mut rx).await;
     engine.dispatch(Command::OpenMessageLog);
@@ -174,6 +184,100 @@ fn message_navigation_reaches_old_wrapped_stderr_and_clamps_after_resize() {
         assert!(bottom.contains("message 0"));
         state.message_scroll = 0;
     }
+}
+
+#[tokio::test]
+async fn quit_wait_survives_service_loss_and_retains_its_command_choices() {
+    let (tx, _rx) = mpsc::channel(64);
+    let mock = Arc::new(MockRunner::new());
+    mock.on(&["stop", "qtest"], Output::ok(""));
+    let mut engine = Engine::new(Client::new(mock), tx, true);
+    let containers: Vec<ContainerJson> =
+        serde_json::from_str(include_str!("../fixtures/1.2.0/ls.json")).unwrap();
+    engine.apply(AppEvent::Containers(1, Ok(containers)));
+    engine.dispatch(Command::Top);
+    engine.dispatch(Command::Run(UiAction::Stop));
+    engine.dispatch(Command::Quit);
+    engine.dispatch(Command::WaitAndQuit);
+    engine.apply(AppEvent::ServiceProbe(Err(
+        bushel::client::CliError::ServiceDown {
+            raw: "service down".into(),
+        },
+    )));
+    assert_eq!(engine.state.screen, Screen::ServiceDown);
+    assert!(engine.state.quitting);
+    assert!(matches!(engine.state.overlay, Overlay::QuitConfirm { .. }));
+    for (width, height) in [(55, 20), (120, 40)] {
+        let (text, info) = render(&engine.state, width, height);
+        assert!(text.is_ascii(), "{text}");
+        assert!(text.contains("container stop qtest"), "{text}");
+        assert!(text.contains("waiting to quit"), "{text}");
+        assert_eq!(
+            keymap::map_key(
+                &engine.state,
+                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+                &info
+            ),
+            [Command::ForceQuit]
+        );
+        assert!(
+            keymap::map_key(
+                &engine.state,
+                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::ALT),
+                &info
+            )
+            .is_empty()
+        );
+    }
+    engine.dispatch(Command::CloseOverlay);
+    assert!(!engine.state.quitting);
+    assert!(!engine.state.quit);
+    assert_eq!(engine.state.overlay, Overlay::None);
+    engine.shutdown();
+}
+
+#[tokio::test]
+async fn missing_cli_keeps_full_message_history_scrollable_and_ascii() {
+    let (tx, _rx) = mpsc::channel(64);
+    let mut engine = Engine::new(Client::new(Arc::new(MockRunner::new())), tx, true);
+    engine.apply(AppEvent::VersionChecked(Err(
+        bushel::client::CliError::CliMissing {
+            raw: "container executable missing".into(),
+        },
+    )));
+    assert_eq!(engine.state.screen, Screen::CliMissing);
+    for i in 0..100 {
+        engine.state.log_message(format!("message {i}"));
+    }
+    engine.dispatch(Command::OpenMessageLog);
+    for (width, height) in [(55, 20), (120, 40)] {
+        engine.state.message_scroll = 0;
+        let (text, info) = render(&engine.state, width, height);
+        assert!(text.is_ascii(), "{text}");
+        assert!(text.contains("message 99"), "{text}");
+        assert!(info.message_max_scroll > 0);
+        let commands = keymap::map_key(
+            &engine.state,
+            KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE),
+            &info,
+        );
+        assert_eq!(
+            commands,
+            [Command::SetMessageScroll(info.message_max_scroll)]
+        );
+        engine.dispatch(commands[0].clone());
+        let (text, _) = render(&engine.state, width, height);
+        assert!(text.contains("version check failed"), "{text}");
+        assert_eq!(
+            keymap::map_key(
+                &engine.state,
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+                &info
+            ),
+            [Command::ForceQuit]
+        );
+    }
+    engine.shutdown();
 }
 
 #[test]
