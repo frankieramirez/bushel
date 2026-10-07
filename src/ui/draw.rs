@@ -7,6 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 
 use crate::config::LayoutMode;
+use crate::engine::pending::Target;
 use crate::engine::state::{AppState, DetailTab, Focus, Overlay, Pane, Screen, Setting};
 use crate::ui::help::{HELP, HELP_KEY_COL};
 use crate::ui::layout::{self, LayoutFacts, LayoutPlan, centered};
@@ -491,8 +492,10 @@ fn draw_detail(
         let Some(id) = id else {
             return vec![Line::raw("no selection")];
         };
-        match state.inspect_cache.get(id) {
-            Some(json) => json
+        let target = Target::new(state.pane, id);
+        match state.inspect_cache.get(&target) {
+            Some(cached) => cached
+                .json
                 .lines()
                 .map(|l| {
                     let style = if l.trim_start().starts_with('"') {
@@ -504,7 +507,13 @@ fn draw_detail(
                 })
                 .collect(),
             None => vec![Line::from(Span::styled(
-                format!("{} loading inspect …", th.spinner(spinner_frame())),
+                state
+                    .inspect_errors
+                    .get(&target)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        format!("{} loading inspect …", th.spinner(spinner_frame()))
+                    }),
                 Style::new().fg(th.dim()),
             ))],
         }
@@ -529,6 +538,11 @@ fn draw_detail(
                 }
                 let marker = if state.selected_container().is_none() {
                     Span::styled("── no selection ──", Style::new().fg(th.dim()))
+                } else if state.selected_container().is_some_and(|c| !c.is_running()) {
+                    Span::styled(
+                        "── container stopped · follow ended ──",
+                        Style::new().fg(th.dim()),
+                    )
                 } else if state.log_owner.is_none() {
                     Span::styled(
                         "── container not running: no live logs ──",

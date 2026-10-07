@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
+use super::pending::Target;
 use crate::client::model::{
     ContainerJson, ContainerState, ImageJson, NetworkJson, StatsJson, VolumeJson,
 };
@@ -394,8 +395,10 @@ pub struct AppState {
     pub logs_loading: bool,
     pub follow_ended: bool,
 
-    pub inspect_cache: HashMap<String, String>,
-    pub inspect_loading: Option<String>,
+    pub inspect_cache: HashMap<Target, CachedInspect>,
+    pub inspect_loading: Option<Target>,
+    pub inspect_errors: HashMap<Target, String>,
+    inspect_revisions: HashMap<Target, u64>,
 
     pub messages: Vec<String>,
     pub toast: Option<Toast>,
@@ -417,6 +420,12 @@ pub struct AppState {
     pub tick: u64,
     pub last_poll_at: Option<Instant>,
     pub exec_request: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CachedInspect {
+    pub identity: Option<String>,
+    pub json: String,
 }
 
 impl AppState {
@@ -452,6 +461,8 @@ impl AppState {
             follow_ended: false,
             inspect_cache: HashMap::new(),
             inspect_loading: None,
+            inspect_errors: HashMap::new(),
+            inspect_revisions: HashMap::new(),
             messages: Vec::new(),
             toast: None,
             pull: None,
@@ -468,6 +479,61 @@ impl AppState {
             tick: 0,
             last_poll_at: None,
             exec_request: None,
+        }
+    }
+
+    pub fn inspect_revision(&self, target: &Target) -> u64 {
+        self.inspect_revisions.get(target).copied().unwrap_or(0)
+    }
+
+    pub fn invalidate_inspect(&mut self, target: &Target) {
+        self.inspect_cache.remove(target);
+        self.inspect_errors.remove(target);
+        *self.inspect_revisions.entry(target.clone()).or_default() += 1;
+    }
+
+    pub fn inspect_identity(&self, target: &Target) -> Option<String> {
+        match target.pane {
+            Pane::Containers => self
+                .containers
+                .iter()
+                .find(|c| c.id == target.name)
+                .map(|c| c.state.label().to_string()),
+            Pane::Images => self
+                .images
+                .iter()
+                .find(|i| i.reference == target.name)
+                .and_then(|i| i.digest.clone()),
+            Pane::Volumes => self
+                .volumes
+                .iter()
+                .find(|v| v.name == target.name)
+                .and_then(|v| v.created.clone()),
+            Pane::Networks => self
+                .networks
+                .iter()
+                .find(|n| n.name == target.name)
+                .and_then(|n| n.created.clone()),
+        }
+    }
+
+    fn invalidate_changed_inspects(&mut self, pane: Pane, fresh: &[(String, Option<String>)]) {
+        let targets: Vec<_> = self
+            .inspect_cache
+            .keys()
+            .chain(self.inspect_loading.iter())
+            .chain(self.inspect_errors.keys())
+            .filter(|target| target.pane == pane)
+            .filter(|target| {
+                fresh
+                    .iter()
+                    .find(|(name, _)| name == &target.name)
+                    .is_none_or(|(_, identity)| identity != &self.inspect_identity(target))
+            })
+            .cloned()
+            .collect();
+        for target in targets {
+            self.invalidate_inspect(&target);
         }
     }
 
@@ -694,6 +760,7 @@ impl AppState {
             })
             .collect();
         next.sort_by(|a, b| (!a.is_running(), &a.id).cmp(&(!b.is_running(), &b.id)));
+        let mut invalidated = Vec::new();
 
         for entry in &mut next {
             if let Some(old) = self.containers.iter().find(|o| o.id == entry.id) {
@@ -708,7 +775,7 @@ impl AppState {
                         old.state.label(),
                         entry.state.label()
                     ));
-                    self.inspect_cache.remove(&entry.id);
+                    invalidated.push(Target::new(Pane::Containers, &entry.id));
                     let ours = matches!(
                         old.pending.map(|p| p.kind),
                         Some(
@@ -733,10 +800,13 @@ impl AppState {
         for old in &self.containers {
             if !next.iter().any(|n| n.id == old.id) {
                 diffs.push(format!("{}: removed", old.id));
-                self.inspect_cache.remove(&old.id);
+                invalidated.push(Target::new(Pane::Containers, &old.id));
             }
         }
 
+        for target in invalidated {
+            self.invalidate_inspect(&target);
+        }
         self.containers = next;
         self.clamp_selection();
         self.first_data = true;
@@ -764,6 +834,13 @@ impl AppState {
                 entry.pending = old.pending;
             }
         }
+        self.invalidate_changed_inspects(
+            Pane::Images,
+            &next
+                .iter()
+                .map(|i| (i.reference.clone(), i.digest.clone()))
+                .collect::<Vec<_>>(),
+        );
         self.images = next;
         self.clamp_selection();
     }
@@ -792,6 +869,13 @@ impl AppState {
             }
         }
         next.sort_by(|a, b| a.name.cmp(&b.name));
+        self.invalidate_changed_inspects(
+            Pane::Volumes,
+            &next
+                .iter()
+                .map(|v| (v.name.clone(), v.created.clone()))
+                .collect::<Vec<_>>(),
+        );
         self.volumes = next;
         self.recompute_in_use();
         self.clamp_selection();
@@ -810,6 +894,13 @@ impl AppState {
             })
             .collect();
         next.sort_by(|a, b| a.name.cmp(&b.name));
+        self.invalidate_changed_inspects(
+            Pane::Networks,
+            &next
+                .iter()
+                .map(|n| (n.name.clone(), n.created.clone()))
+                .collect::<Vec<_>>(),
+        );
         self.networks = next;
         self.recompute_network_attachments();
         self.clamp_selection();

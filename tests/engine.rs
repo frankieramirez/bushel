@@ -164,6 +164,70 @@ engine_test!(
     }
 );
 
+engine_test!(
+    inspect_for_same_named_entities_uses_the_selected_pane,
+    || {
+        let mock = happy_mock();
+        mock.set(
+            &["volume", "ls", "--format", "json"],
+            Output::ok(fixture_str("volume_ls.json").replace("qvol", "qtest")),
+        );
+        mock.on(&["inspect", "qtest"], Output::ok(r#"{"kind":"container"}"#));
+        mock.on(
+            &["volume", "inspect", "qtest"],
+            Output::ok(r#"{"kind":"volume"}"#),
+        );
+        let mut h = Harness::started(mock);
+        h.engine.dispatch(Command::SetDetailTab(DetailTab::Inspect));
+        h.pump();
+        h.engine.dispatch(Command::SwitchPane(Pane::Volumes));
+        h.pump();
+        assert!(
+            h.mock
+                .commands()
+                .contains(&"container volume inspect qtest".to_string())
+        );
+    }
+);
+
+engine_test!(
+    stats_reads_are_single_flight_until_their_event_is_applied,
+    || {
+        let mut h = Harness::started(happy_mock());
+        h.engine.on_tick();
+        h.engine.on_tick();
+        tokio::runtime::Handle::current().block_on(async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        });
+        assert_eq!(
+            h.mock
+                .commands()
+                .iter()
+                .filter(|c| c.as_str() == "container stats --no-stream --format json")
+                .count(),
+            1
+        );
+    }
+);
+
+engine_test!(
+    stopping_the_selected_container_retains_its_fetched_logs,
+    || {
+        let mut h = Harness::started(happy_mock());
+        let lines = h.state().log_lines.clone();
+        let stopped =
+            fixture_str("ls.json").replace(r#""state":"running""#, r#""state":"stopped""#);
+        h.mock
+            .set(&["ls", "-a", "--format", "json"], Output::ok(stopped));
+        h.engine.on_tick();
+        h.pump();
+        assert_eq!(h.state().log_lines, lines);
+        assert_eq!(h.state().log_owner.as_deref(), Some("qtest"));
+        assert!(h.state().follow_ended);
+        assert_eq!(h.engine.follower_id(), None);
+    }
+);
+
 engine_test!(startup_populates_all_four_panes_from_fixtures, || {
     let h = Harness::started(happy_mock());
     let s = h.state();
@@ -1085,7 +1149,14 @@ engine_test!(
         assert_eq!(h.state().pane, Pane::Networks);
         assert_eq!(h.state().selected[3].as_deref(), Some("default"));
         assert!(h.state().available_actions().is_empty());
-        assert!(h.state().inspect_cache.contains_key("default"));
+        assert!(
+            h.state()
+                .inspect_cache
+                .contains_key(&bushel::engine::pending::Target::new(
+                    Pane::Networks,
+                    "default"
+                ))
+        );
         assert!(
             h.mock
                 .commands()
@@ -1131,7 +1202,14 @@ engine_test!(inspect_is_fetched_lazily_and_cached, || {
 
         h.engine.dispatch(Command::SetDetailTab(DetailTab::Inspect));
         h.pump();
-        assert!(h.state().inspect_cache.contains_key("qtest"));
+        assert!(
+            h.state()
+                .inspect_cache
+                .contains_key(&bushel::engine::pending::Target::new(
+                    Pane::Containers,
+                    "qtest"
+                ))
+        );
 
         let calls_before = h.mock.calls().len();
         h.engine.dispatch(Command::SetDetailTab(DetailTab::Logs));
@@ -2249,5 +2327,134 @@ engine_test!(
                 .count(),
             1
         );
+    }
+);
+
+engine_test!(
+    inspect_failure_is_visible_but_retried_after_a_list_refresh,
+    || {
+        let mock = happy_mock();
+        mock.on(
+            &["image", "inspect", "docker.io/library/alpine:latest"],
+            Output::fail(1, "Error: transient"),
+        );
+        let mut h = Harness::started(mock);
+        h.engine.dispatch(Command::SwitchPane(Pane::Images));
+        h.pump();
+        let target =
+            bushel::engine::pending::Target::new(Pane::Images, "docker.io/library/alpine:latest");
+        assert!(!h.state().inspect_cache.contains_key(&target));
+        assert!(h.state().inspect_errors[&target].contains("transient"));
+        h.mock.set(
+            &["image", "inspect", "docker.io/library/alpine:latest"],
+            Output::ok(r#"{"digest":"fresh"}"#),
+        );
+        let list = serde_json::from_slice(&fixture("image_ls.json")).unwrap();
+        h.engine.apply(AppEvent::Images(100, Ok(list)));
+        h.pump();
+        assert!(h.state().inspect_cache[&target].json.contains("fresh"));
+        assert!(!h.state().inspect_errors.contains_key(&target));
+    }
+);
+
+engine_test!(
+    inspect_cache_follows_image_volume_and_network_identity_changes,
+    || {
+        let mock = happy_mock();
+        mock.on(
+            &["image", "inspect", "docker.io/library/alpine:latest"],
+            Output::ok(r#"{"digest":"before"}"#),
+        );
+        mock.on(
+            &["volume", "inspect", "qvol"],
+            Output::ok(r#"{"created":"before"}"#),
+        );
+        mock.on(
+            &["network", "inspect", "default"],
+            Output::ok(r#"{"created":"before"}"#),
+        );
+        let mut h = Harness::started(mock);
+        for pane in [Pane::Images, Pane::Volumes, Pane::Networks] {
+            h.engine.dispatch(Command::SwitchPane(pane));
+            h.pump();
+        }
+        let mut images: Vec<bushel::client::model::ImageJson> =
+            serde_json::from_slice(&fixture("image_ls.json")).unwrap();
+        for image in &mut images {
+            if let Some(descriptor) = &mut image.configuration.descriptor {
+                descriptor.digest = Some("sha256:new".into());
+            }
+        }
+        let mut volumes: Vec<bushel::client::model::VolumeJson> =
+            serde_json::from_slice(&fixture("volume_ls.json")).unwrap();
+        for volume in &mut volumes {
+            volume.configuration.creation_date = Some("new date".into());
+        }
+        let mut networks: Vec<bushel::client::model::NetworkJson> =
+            serde_json::from_slice(&fixture("network_ls.json")).unwrap();
+        for network in &mut networks {
+            network.configuration.creation_date = Some("new date".into());
+        }
+        h.mock.set(
+            &["image", "inspect", "docker.io/library/alpine:latest"],
+            Output::ok(r#"{"digest":"after"}"#),
+        );
+        h.mock.set(
+            &["volume", "inspect", "qvol"],
+            Output::ok(r#"{"created":"after"}"#),
+        );
+        h.mock.set(
+            &["network", "inspect", "default"],
+            Output::ok(r#"{"created":"after"}"#),
+        );
+        h.engine.apply(AppEvent::Images(100, Ok(images)));
+        h.engine.apply(AppEvent::Volumes(101, Ok(volumes)));
+        h.engine.apply(AppEvent::Networks(102, Ok(networks)));
+        h.pump();
+        for (pane, name) in [
+            (Pane::Images, "docker.io/library/alpine:latest"),
+            (Pane::Volumes, "qvol"),
+            (Pane::Networks, "default"),
+        ] {
+            h.engine.dispatch(Command::SwitchPane(pane));
+            h.pump();
+            let target = bushel::engine::pending::Target::new(pane, name);
+            assert!(h.state().inspect_cache[&target].json.contains("after"));
+        }
+        h.engine.apply(AppEvent::Images(200, Ok(vec![])));
+        h.engine.apply(AppEvent::Volumes(201, Ok(vec![])));
+        h.engine.apply(AppEvent::Networks(202, Ok(vec![])));
+        assert!(h.state().inspect_cache.is_empty());
+    }
+);
+
+engine_test!(
+    a_stopped_container_tail_and_marker_are_rendered_together,
+    || {
+        let mut h = Harness::started(happy_mock());
+        h.mock.set(
+            &["ls", "-a", "--format", "json"],
+            Output::ok(
+                fixture_str("ls.json").replace(r#""state":"running""#, r#""state":"stopped""#),
+            ),
+        );
+        h.engine.on_tick();
+        h.pump();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+        terminal
+            .draw(|frame| {
+                bushel::ui::draw::draw(frame, h.state(), &bushel::ui::theme::Theme::detect(false));
+            })
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("follow-1"));
+        assert!(text.contains("container stopped"));
     }
 );
