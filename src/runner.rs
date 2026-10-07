@@ -49,6 +49,8 @@ pub enum StreamEvent {
     Exit(i32),
 }
 
+/// Output lines followed by exactly one terminal Exit event.
+/// Readers are drained for up to two seconds after process exit.
 pub type LineStream = mpsc::Receiver<StreamEvent>;
 
 pub struct KillHandle {
@@ -102,60 +104,76 @@ impl Runner for CliRunner {
     }
 
     fn spawn_stream(&self, args: &[String]) -> std::io::Result<(LineStream, KillHandle)> {
-        let mut child = Command::new(CONTAINER_BIN)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()?;
-
-        let (tx, rx) = mpsc::channel(256);
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-
-        if let Some(stdout) = stdout {
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(stdout).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    if tx.send(StreamEvent::Stdout(line)).await.is_err() {
-                        break;
-                    }
-                }
-            });
-        }
-        if let Some(stderr) = stderr {
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    if tx.send(StreamEvent::Stderr(line)).await.is_err() {
-                        break;
-                    }
-                }
-            });
-        }
-
-        let (kill_tx, mut kill_rx) = mpsc::channel::<()>(1);
-        tokio::spawn(async move {
-            let code = tokio::select! {
-                status = child.wait() => status.ok().and_then(|s| s.code()).unwrap_or(-1),
-                _ = kill_rx.recv() => {
-                    let _ = child.kill().await;
-                    -1
-                }
-            };
-            let _ = tx.send(StreamEvent::Exit(code)).await;
-        });
-
-        Ok((
-            rx,
-            KillHandle::new(move || {
-                let _ = kill_tx.try_send(());
-            }),
-        ))
+        let mut command = Command::new(CONTAINER_BIN);
+        command.args(args);
+        spawn_command_stream(command)
     }
+}
+
+fn spawn_command_stream(mut command: Command) -> std::io::Result<(LineStream, KillHandle)> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+
+    let (tx, rx) = mpsc::channel(256);
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let mut readers = tokio::task::JoinSet::new();
+
+    if let Some(stdout) = stdout {
+        let tx = tx.clone();
+        readers.spawn(async move {
+            let mut lines = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if tx.send(StreamEvent::Stdout(line)).await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    if let Some(stderr) = stderr {
+        let tx = tx.clone();
+        readers.spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if tx.send(StreamEvent::Stderr(line)).await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    let (kill_tx, mut kill_rx) = mpsc::channel::<()>(1);
+    tokio::spawn(async move {
+        let code = tokio::select! {
+            status = child.wait() => status.ok().and_then(|s| s.code()).unwrap_or(-1),
+            _ = kill_rx.recv() => {
+                let _ = child.kill().await;
+                -1
+            }
+        };
+        let drained = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while readers.join_next().await.is_some() {}
+        })
+        .await;
+        if drained.is_err() {
+            // A descendant may retain a pipe. Stop and join both readers so
+            // no output can arrive after the terminal event.
+            readers.abort_all();
+            while readers.join_next().await.is_some() {}
+        }
+        let _ = tx.send(StreamEvent::Exit(code)).await;
+    });
+
+    Ok((
+        rx,
+        KillHandle::new(move || {
+            let _ = kill_tx.try_send(());
+        }),
+    ))
 }
 
 #[derive(Default)]
@@ -328,6 +346,94 @@ mod tests {
         assert_eq!(rx.recv().await, Some(StreamEvent::Stdout("hello".into())));
         assert_eq!(rx.recv().await, Some(StreamEvent::Exit(0)));
         kill.kill();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stream_exit_follows_all_final_stderr_lines() {
+        for attempt in 0..200 {
+            let mut command = Command::new("sh");
+            command.args([
+                "-c",
+                "i=0; while [ $i -lt 300 ]; do echo line$i >&2; i=$((i+1)); done; exit 3",
+            ]);
+            let (mut stream, _kill) = spawn_command_stream(command).unwrap();
+            let mut events = Vec::new();
+            while let Some(event) = stream.recv().await {
+                events.push(event);
+            }
+            assert_eq!(events.len(), 301, "attempt {attempt}");
+            assert_eq!(
+                events.last(),
+                Some(&StreamEvent::Exit(3)),
+                "attempt {attempt}"
+            );
+            for (i, event) in events[..300].iter().enumerate() {
+                assert_eq!(
+                    event,
+                    &StreamEvent::Stderr(format!("line{i}")),
+                    "attempt {attempt}"
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stream_exit_drains_stdout_stderr_and_unterminated_lines() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "printf 'out1\nout2'; printf 'err1\nerr2' >&2; exit 4"]);
+        let (mut stream, _kill) = spawn_command_stream(command).unwrap();
+        let mut events = Vec::new();
+        while let Some(event) = stream.recv().await {
+            events.push(event);
+        }
+        assert_eq!(events.pop(), Some(StreamEvent::Exit(4)));
+        assert_eq!(
+            events
+                .iter()
+                .filter_map(|e| match e {
+                    StreamEvent::Stdout(s) => Some(s.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            ["out1", "out2"]
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter_map(|e| match e {
+                    StreamEvent::Stderr(s) => Some(s.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            ["err1", "err2"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stream_exit_is_terminal_when_a_descendant_holds_a_pipe() {
+        let mut command = Command::new("sh");
+        // stdout closes promptly; stderr is retained by an isolated fixture.
+        command.args([
+            "-c",
+            "(sleep 3; echo late >&2) >/dev/null & echo ready; exit 7",
+        ]);
+        let (mut stream, _kill) = spawn_command_stream(command).unwrap();
+        let events = tokio::time::timeout(std::time::Duration::from_millis(2800), async {
+            let mut events = Vec::new();
+            while let Some(event) = stream.recv().await {
+                events.push(event);
+            }
+            events
+        })
+        .await
+        .expect("inherited pipes must not stall Exit indefinitely");
+        assert_eq!(
+            events,
+            [StreamEvent::Stdout("ready".into()), StreamEvent::Exit(7)]
+        );
     }
 
     #[tokio::test]
