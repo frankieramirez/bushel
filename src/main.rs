@@ -155,7 +155,7 @@ async fn main() -> std::io::Result<()> {
         None => {}
     }
     let persisted = Config::load();
-    let mut cfg = persisted;
+    let mut cfg = persisted.effective();
     cfg.no_splash |= args.no_splash;
     cfg.reduced_motion |= args.reduced_motion;
     cfg.ascii |= args.ascii;
@@ -179,8 +179,8 @@ async fn main() -> std::io::Result<()> {
     let client = Client::new(Arc::new(CliRunner));
     let (tx, mut rx) = mpsc::channel(1024);
     let mut engine = Engine::new(client, tx, no_splash || reduced_motion);
+    engine.configure(persisted);
     engine.state.config = cfg;
-    engine.state.persisted = persisted;
     engine.state.first_run = first_run && !(no_splash || reduced_motion);
     let mut ui = Ui::new(Theme::detect(ascii), reduced_motion);
 

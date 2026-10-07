@@ -70,36 +70,145 @@ impl Config {
         }
     }
 
-    pub fn load() -> Self {
-        let Some(path) = Self::path() else {
-            return Self::default();
-        };
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            return Self::default();
-        };
-        match toml::from_str(&text) {
-            Ok(cfg) => cfg,
-            Err(e) => {
-                eprintln!("bushel: ignoring invalid config at {}: {e}", path.display());
-                Self::default()
-            }
+    pub fn load() -> PersistedConfig {
+        match Self::path() {
+            Some(path) => Self::load_from(path),
+            None => PersistedConfig {
+                error: Some("no home directory to read or write the config".into()),
+                ..PersistedConfig::default()
+            },
         }
     }
 
-    pub fn save(&self) -> std::io::Result<std::path::PathBuf> {
-        let path = Self::path().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "no home directory to write the config into",
-            )
-        })?;
-        let body = toml::to_string_pretty(self)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+    /// Load an explicit path, including diagnostics, without touching process
+    /// environment variables. Missing files start with an empty document.
+    pub fn load_from(path: std::path::PathBuf) -> PersistedConfig {
+        let mut loaded = PersistedConfig {
+            path: Some(path.clone()),
+            ..PersistedConfig::default()
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                loaded.source = Some(text.clone());
+                match toml::from_str::<Config>(&text) {
+                    Ok(config) => match text.parse::<toml_edit::DocumentMut>() {
+                        Ok(document) => {
+                            loaded.config = config;
+                            loaded.document = document;
+                        }
+                        Err(e) => {
+                            loaded.error =
+                                Some(format!("invalid config at {}: {e}", path.display()))
+                        }
+                    },
+                    Err(e) => {
+                        loaded.error = Some(format!("invalid config at {}: {e}", path.display()))
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                loaded.error = Some(format!("could not read config at {}: {e}", path.display()))
+            }
         }
-        std::fs::write(&path, body)?;
-        Ok(path)
+        loaded
+    }
+}
+
+/// The original file document and diagnostics, kept apart from CLI overrides.
+#[derive(Debug, Clone, Default)]
+pub struct PersistedConfig {
+    path: Option<std::path::PathBuf>,
+    source: Option<String>,
+    document: toml_edit::DocumentMut,
+    config: Config,
+    error: Option<String>,
+}
+
+impl PersistedConfig {
+    pub fn effective(&self) -> Config {
+        self.config
+    }
+
+    pub fn load_error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    /// Persist only one known setting, preserving all other document content.
+    /// Invalid or externally changed files are left untouched.
+    pub fn save_setting(
+        &mut self,
+        key: &str,
+        from: &Config,
+    ) -> std::io::Result<std::path::PathBuf> {
+        use std::io::Write as _;
+        if let Some(error) = &self.error {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                error.clone(),
+            ));
+        }
+        let path = self.path.as_ref().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "no config path to write into")
+        })?;
+        let mut value = match key {
+            "layout" => toml_edit::Value::from(from.layout.title()),
+            "ascii" => toml_edit::Value::from(from.ascii),
+            "reduced_motion" => toml_edit::Value::from(from.reduced_motion),
+            "no_splash" => toml_edit::Value::from(from.no_splash),
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "unknown config setting",
+                ));
+            }
+        };
+        let mut document = self.document.clone();
+        if let Some(old) = document.get(key).and_then(toml_edit::Item::as_value) {
+            *value.decor_mut() = old.decor().clone();
+        }
+        document[key] = toml_edit::Item::Value(value);
+        let body = document.to_string();
+        let config = toml::from_str(&body)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let unchanged = || -> std::io::Result<()> {
+            let current = match std::fs::read_to_string(path) {
+                Ok(text) => Some(text),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(e),
+            };
+            if current != self.source {
+                return Err(std::io::Error::other(
+                    "config changed on disk; reload bushel before saving settings",
+                ));
+            }
+            Ok(())
+        };
+        unchanged()?;
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(std::path::Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        if let Ok(metadata) = std::fs::symlink_metadata(path) {
+            if metadata.file_type().is_symlink() {
+                return Err(std::io::Error::other(
+                    "config is a symbolic link; edit it directly",
+                ));
+            }
+            temporary
+                .as_file()
+                .set_permissions(metadata.permissions())?;
+        }
+        temporary.write_all(body.as_bytes())?;
+        temporary.as_file().sync_all()?;
+        unchanged()?;
+        temporary.persist(path).map_err(|e| e.error)?;
+        self.source = Some(body);
+        self.document = document;
+        self.config = config;
+        Ok(path.clone())
     }
 }
 
@@ -152,6 +261,66 @@ mod tests {
         );
         unsafe { std::env::remove_var(Config::DIR_ENV) };
         assert_eq!(Config::display_path(), Config::DOC_PATH);
+    }
+
+    #[test]
+    fn malformed_and_unreadable_configs_cannot_be_overwritten() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("config.toml");
+        let original = "ascii = true\nlayout = [\n# preserve even malformed text\n";
+        std::fs::write(&path, original).unwrap();
+        let mut loaded = Config::load_from(path.clone());
+        assert!(loaded.load_error().unwrap().contains("invalid config"));
+        assert!(loaded.save_setting("ascii", &Config::default()).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let mut loaded = Config::load_from(path.clone());
+        assert!(
+            loaded
+                .load_error()
+                .unwrap()
+                .contains("could not read config")
+        );
+        assert!(loaded.save_setting("ascii", &Config::default()).is_err());
+        assert!(path.is_dir());
+    }
+
+    #[test]
+    fn external_config_edits_are_preserved_and_failed_saves_are_retryable() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("config.toml");
+        let original = "ascii = false\n# keep\n";
+        std::fs::write(&path, original).unwrap();
+        let mut loaded = Config::load_from(path.clone());
+        let changed = "ascii = false\nfuture = 123\n";
+        std::fs::write(&path, changed).unwrap();
+        let cfg = Config {
+            ascii: true,
+            ..Config::default()
+        };
+        assert!(
+            loaded
+                .save_setting("ascii", &cfg)
+                .unwrap_err()
+                .to_string()
+                .contains("changed on disk")
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), changed);
+        assert!(!loaded.effective().ascii);
+        std::fs::write(&path, original).unwrap();
+        loaded.save_setting("ascii", &cfg).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "ascii = true\n# keep\n"
+        );
+        assert!(loaded.effective().ascii);
+        assert_eq!(
+            std::fs::read_dir(temporary.path()).unwrap().count(),
+            1,
+            "temporary file was renamed or removed"
+        );
     }
 
     #[test]
