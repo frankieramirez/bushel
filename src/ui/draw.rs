@@ -232,7 +232,7 @@ fn draw_main(frame: &mut Frame, state: &AppState, th: &Theme, info: &mut DrawInf
             .as_deref()
             .unwrap_or("poll has not completed");
         banners.push(Line::from(Span::styled(
-            format!(" stats unavailable: {gist} · [m] log "),
+            format!(" stats unavailable: {gist}{}", th.chrome(" · [m] log ")),
             Style::new().fg(th.bg()).bg(th.red()),
         )));
     }
@@ -241,8 +241,9 @@ fn draw_main(frame: &mut Frame, state: &AppState, th: &Theme, info: &mut DrawInf
         if let ReadStatus::Failed { gist } = &state.reads[state.pane.index()] {
             banners.push(Line::from(Span::styled(
                 format!(
-                    " {} list failed: {gist} — showing last good state · [m] log ",
-                    state.pane.title()
+                    " {} list failed: {gist}{}",
+                    state.pane.title(),
+                    th.chrome(" — showing last good state · [m] log ")
                 ),
                 Style::new().fg(th.bg()).bg(th.red()),
             )));
