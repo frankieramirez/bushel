@@ -400,7 +400,7 @@ engine_test!(
             .iter()
             .find(|c| c.id == "qtest")
             .unwrap();
-        assert_eq!(qtest.state, "stopped");
+        assert_eq!(qtest.state.label(), "stopped");
         assert!(qtest.pending.is_none(), "confirmed pending must clear");
         let toast = h.state().toast.clone().expect("confirmation toast");
         assert_eq!(toast.text, "stopped qtest");

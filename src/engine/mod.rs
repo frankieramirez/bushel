@@ -344,7 +344,7 @@ impl<R: Runner> Engine<R> {
                             .iter()
                             .map(|c| Observation {
                                 name: c.id.clone(),
-                                state: Some(c.status.state.clone()),
+                                state: Some(c.state()),
                                 digest: None,
                             })
                             .collect();

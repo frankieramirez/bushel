@@ -240,7 +240,7 @@ fn row_line(
                 } else {
                     dim
                 };
-                spans.push(Span::styled(cell(&c.state, &c2), style));
+                spans.push(Span::styled(cell(c.state.label(), &c2), style));
             }
             if let Some(c3) = get("up") {
                 spans.push(Span::styled(cell(&uptime_cell(th, c), &c3), num_style));

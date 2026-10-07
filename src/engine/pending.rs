@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 
+use crate::client::ContainerState;
+
 use super::state::{ActionKind, CONFIRM_TICKS, Pane, Pending, PendingPhase};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -75,7 +77,7 @@ pub type ActionId = u64;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Observation {
     pub name: String,
-    pub state: Option<String>,
+    pub state: Option<ContainerState>,
     pub digest: Option<String>,
 }
 
@@ -282,10 +284,12 @@ impl PendingActions {
 fn confirms(plan: &ActionPlan, rows: &[Observation]) -> bool {
     match plan.kind {
         ActionKind::Start | ActionKind::Restart => {
-            row_for(&plan.target, rows).and_then(|row| row.state.as_deref()) == Some("running")
+            row_for(&plan.target, rows).and_then(|row| row.state.as_ref())
+                == Some(&ContainerState::Running)
         }
         ActionKind::Stop | ActionKind::Kill => {
-            row_for(&plan.target, rows).and_then(|row| row.state.as_deref()) == Some("stopped")
+            row_for(&plan.target, rows).and_then(|row| row.state.as_ref())
+                == Some(&ContainerState::Stopped)
         }
         ActionKind::DeleteContainer | ActionKind::DeleteImage | ActionKind::DeleteVolume => {
             row_for(&plan.target, rows).is_none()
@@ -327,7 +331,7 @@ mod tests {
     fn row(name: &str, state: Option<&str>, digest: Option<&str>) -> Observation {
         Observation {
             name: name.to_string(),
-            state: state.map(str::to_string),
+            state: state.map(ContainerState::from),
             digest: digest.map(str::to_string),
         }
     }
@@ -630,6 +634,21 @@ mod tests {
             pending.observe(Pane::Containers, 4, &[row("worker", Some("running"), None)]);
         assert_eq!(outcomes[0].id, current);
         assert_eq!(outcomes[0].status, OutcomeStatus::Confirmed);
+    }
+
+    #[test]
+    fn unknown_state_does_not_confirm_a_stop_or_kill() {
+        for kind in [ActionKind::Stop, ActionKind::Kill] {
+            let mut pending = PendingActions::new();
+            let id = pending
+                .begin(plan(kind, Pane::Containers, "worker"))
+                .unwrap();
+            pending.complete(id, true, 1).unwrap();
+            let rows = [row("worker", Some("stopping"), None)];
+            assert!(pending.observe(Pane::Containers, 2, &rows).is_empty());
+            let outcomes = pending.observe(Pane::Containers, 3, &rows);
+            assert_eq!(outcomes[0].status, OutcomeStatus::Unconfirmed);
+        }
     }
 
     #[test]
