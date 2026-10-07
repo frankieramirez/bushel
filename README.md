@@ -70,7 +70,7 @@ pinned versions, and installer verification.
 | `/` | Filter the list |
 | `?` | Open the cheatsheet |
 | `m` | Read the message log |
-| `q` | Quit |
+| `q` | Quit (running work: `w` waits, `q` quits now) |
 
 <details>
 <summary>All keyboard shortcuts</summary>
@@ -87,7 +87,8 @@ your installed version.
 - `,` — settings (layout, glyphs, motion, splash)
 - `m` — message log
 - `b` — dismiss version banner
-- `q` — quit
+- `q` — quit (running work: w waits, q quits now)
+- `ctrl-c` — quit now (reports interrupted commands)
 
 **list**
 

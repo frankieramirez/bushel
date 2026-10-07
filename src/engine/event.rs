@@ -60,6 +60,9 @@ pub enum AppEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Quit,
+    ForceQuit,
+    WaitAndQuit,
+    SetQuitScroll(u16),
     SkipSplash,
     SwitchPane(Pane),
     NextPane,

@@ -262,6 +262,15 @@ impl PendingActions {
         })
     }
 
+    /// Commands still executing, excluding actions awaiting a confirming poll.
+    pub fn in_flight(&self) -> Vec<&ActionPlan> {
+        self.attempts
+            .values()
+            .filter(|attempt| attempt.phase == PendingPhase::InFlight)
+            .map(|attempt| &attempt.plan)
+            .collect()
+    }
+
     pub fn has_kind(&self, pane: Pane) -> bool {
         self.reservations.keys().any(|target| target.pane == pane)
     }
