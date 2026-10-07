@@ -102,6 +102,14 @@ impl<R: Runner> Engine<R> {
         }
     }
 
+    pub fn configure(&mut self, persisted: crate::config::PersistedConfig) {
+        self.state.config = persisted.effective();
+        if let Some(error) = persisted.load_error() {
+            self.state.log_message(error);
+        }
+        self.state.persisted = persisted;
+    }
+
     pub fn start(&mut self) {
         self.spawn_version_check();
         self.spawn_probe();
@@ -1169,8 +1177,11 @@ impl<R: Runner> Engine<R> {
                 if let Overlay::Settings { cursor } = self.state.overlay {
                     if let Some(setting) = Setting::ALL.get(cursor) {
                         setting.cycle(&mut self.state.config);
-                        setting.apply(&self.state.config, &mut self.state.persisted);
-                        match self.state.persisted.save() {
+                        match self
+                            .state
+                            .persisted
+                            .save_setting(setting.config_key(), &self.state.config)
+                        {
                             Ok(_) => {}
                             Err(e) => self
                                 .state
