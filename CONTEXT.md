@@ -109,6 +109,7 @@ The exact `container …` command shown before confirming an action. Approval ap
 
 **Restart**:
 The synthetic stop-then-start action. The `container` CLI has no restart subcommand; bushel composes it.
+If either step fails, bushel reports the exact failed step and releases the pending reservation. A failed stop response can still follow a stop that took effect, so Stop, Kill and either failed Restart step retain bounded stop attribution. The first successful containers poll started after completion consumes that attribution. New polls can inherit it only during the ten seconds after completion. The poll already in flight at completion, or one started within that window, retains it through classification even if its result is applied later (for example, after interactive exec). Each poll has its own ten-second read timeout. A failed or timed-out poll does not extend the window to later reads. Within this bounded window an unrelated stop of the same container can be attributed to the failed action, since the CLI supplies no causal event identifier.
 
 **Follow**:
 The live-tailing mode of the logs view, backed by a `logs -f` subprocess that bushel owns and kills. When the selected container stops, bushel retains its fetched log tail with a stopped marker. Selecting another entity or detail tab clears it. Fresh backlog reads for already-stopped containers await native CLI compatibility validation.

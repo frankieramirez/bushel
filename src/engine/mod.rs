@@ -23,7 +23,8 @@ pub const PROBE_TICKS: u64 = 2;
 
 struct StopAttribution {
     completion_floor: u64,
-    completed_at: Instant,
+    completed_at: tokio::time::Instant,
+    protected_poll: Option<u64>,
 }
 
 pub struct Engine<R: Runner> {
@@ -55,7 +56,7 @@ pub struct Engine<R: Runner> {
     prune_command: Option<String>,
     poll_sequence: u64,
     applied_poll: [u64; Pane::COUNT],
-    poll_inflight: bool,
+    poll_inflight: Option<u64>,
     probe_inflight: bool,
     images_dirty: bool,
     volumes_dirty: bool,
@@ -92,7 +93,7 @@ impl<R: Runner> Engine<R> {
             prune_command: None,
             poll_sequence: 0,
             applied_poll: [0; Pane::COUNT],
-            poll_inflight: false,
+            poll_inflight: None,
             probe_inflight: false,
             images_dirty: false,
             volumes_dirty: false,
@@ -113,7 +114,7 @@ impl<R: Runner> Engine<R> {
 
     pub fn on_tick(&mut self) {
         self.state.tick += 1;
-        self.expire_stop_attribution();
+        self.expire_stop_attribution(None);
         self.state.degraded = self.state.poll_health.degraded(self.state.tick);
         if let Some(t) = &self.state.toast {
             if t.at.elapsed().as_secs() >= 4 {
@@ -139,11 +140,20 @@ impl<R: Runner> Engine<R> {
     }
 
     fn spawn_containers_poll(&mut self) {
-        if self.poll_inflight {
+        if self.poll_inflight.is_some() {
             return;
         }
-        self.poll_inflight = true;
         let sequence = self.next_poll();
+        self.poll_inflight = Some(sequence);
+        for attribution in self.stop_attribution.values_mut() {
+            if sequence > attribution.completion_floor
+                && attribution.completed_at.elapsed() < client::READ_TIMEOUT
+            {
+                // This read can finish after the completion window even though
+                // it started within it. Protect only this poll's classification.
+                attribution.protected_poll = Some(sequence);
+            }
+        }
         self.state.last_poll_at = Some(Instant::now());
         let client = self.client.clone();
         let tx = self.tx.clone();
@@ -464,7 +474,9 @@ impl<R: Runner> Engine<R> {
     pub fn apply(&mut self, event: AppEvent) {
         match event {
             AppEvent::Containers(sequence, result) => {
-                self.poll_inflight = false;
+                if self.poll_inflight == Some(sequence) {
+                    self.poll_inflight = None;
+                }
                 if sequence <= self.applied_poll[Pane::Containers.index()] {
                     return;
                 }
@@ -486,7 +498,7 @@ impl<R: Runner> Engine<R> {
                             })
                             .collect();
                         let (diffs, external) = self.state.update_containers(&list);
-                        self.expire_stop_attribution();
+                        self.expire_stop_attribution(Some(sequence));
                         for d in diffs {
                             self.state.log_message(d);
                         }
@@ -960,11 +972,14 @@ impl<R: Runner> Engine<R> {
         self.sync_follower();
     }
 
-    fn expire_stop_attribution(&mut self) {
-        // A failed or unavailable containers poll must not keep attributing
-        // future stops to this action beyond the ten-second read timeout.
-        self.stop_attribution
-            .retain(|_, attribution| attribution.completed_at.elapsed() < client::READ_TIMEOUT);
+    fn expire_stop_attribution(&mut self, classifying_poll: Option<u64>) {
+        let inflight = self.poll_inflight;
+        self.stop_attribution.retain(|_, attribution| {
+            attribution.completed_at.elapsed() < client::READ_TIMEOUT
+                || attribution.protected_poll.is_some_and(|sequence| {
+                    inflight == Some(sequence) || classifying_poll == Some(sequence)
+                })
+        });
     }
 
     fn on_action_done(
@@ -993,15 +1008,20 @@ impl<R: Runner> Engine<R> {
                 self.state.invalidate_inspect(&plan.target);
             }
             Err(e) => {
-                if matches!(plan.kind, ActionKind::Stop | ActionKind::Kill)
-                    || (plan.kind == ActionKind::Restart && completed_steps > 0)
-                {
-                    self.expire_stop_attribution();
+                if matches!(
+                    plan.kind,
+                    ActionKind::Stop | ActionKind::Kill | ActionKind::Restart
+                ) {
+                    // Even a failed stop response can follow an effective stop.
+                    self.expire_stop_attribution(None);
                     self.stop_attribution.insert(
                         plan.target.name.clone(),
                         StopAttribution {
                             completion_floor: self.poll_sequence,
-                            completed_at: Instant::now(),
+                            completed_at: tokio::time::Instant::now(),
+                            // An already running read can observe this stop,
+                            // including a result queued while exec blocks the UI.
+                            protected_poll: self.poll_inflight,
                         },
                     );
                 }
