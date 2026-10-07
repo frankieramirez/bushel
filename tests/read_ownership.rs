@@ -64,7 +64,10 @@ impl Runner for DelayedRunner {
     async fn run(&self, args: &[String]) -> std::io::Result<Output> {
         let delayed = match self.delay {
             "logs" => args.starts_with(&["logs".into(), "-n".into()]),
-            "inspect" => args.get(1).is_some_and(|arg| arg == "inspect"),
+            "inspect" => {
+                args.first().is_some_and(|arg| arg == "inspect")
+                    || args.get(1).is_some_and(|arg| arg == "inspect")
+            }
             "stats" => args.first().is_some_and(|arg| arg == "stats"),
             _ => false,
         };
@@ -281,4 +284,74 @@ async fn a_selected_inspect_invalidated_mid_read_cannot_repopulate_stale_json() 
     assert!(inspect.json.contains("sha256:b"));
     assert_eq!(inspect.identity.as_deref(), Some("sha256:b"));
     engine.shutdown();
+}
+
+#[tokio::test]
+async fn an_inspect_result_queued_before_invalidation_cannot_restore_stale_json() {
+    let runner = Arc::new(DelayedRunner::new("none"));
+    runner.mock.set(
+        &["image", "inspect", "a"],
+        Output::ok(r#"{"digest":"old"}"#),
+    );
+    let (mut engine, mut rx) = setup(runner.clone());
+    let rows: Vec<ImageJson> = serde_json::from_str(
+        r#"[{"id":"a","configuration":{"name":"a","descriptor":{"digest":"sha256:a"}}}]"#,
+    )
+    .unwrap();
+    engine.apply(AppEvent::Images(1, Ok(rows.clone())));
+    engine.dispatch(Command::SwitchPane(Pane::Images));
+    let old = loop {
+        let event = rx.recv().await.unwrap();
+        if matches!(event, AppEvent::InspectLoaded { .. }) {
+            break event;
+        }
+        engine.apply(event);
+    };
+    let mut newer = rows;
+    newer[0].configuration.descriptor.as_mut().unwrap().digest = Some("sha256:b".into());
+    runner.mock.set(
+        &["image", "inspect", "a"],
+        Output::ok(r#"{"digest":"new"}"#),
+    );
+    engine.apply(AppEvent::Images(2, Ok(newer)));
+    engine.apply(old);
+    assert!(
+        !engine
+            .state
+            .inspect_cache
+            .contains_key(&Target::new(Pane::Images, "a"))
+    );
+    settle(&mut engine, &mut rx).await;
+    assert!(
+        engine.state.inspect_cache[&Target::new(Pane::Images, "a")]
+            .json
+            .contains("new")
+    );
+    engine.shutdown();
+}
+
+#[tokio::test(start_paused = true)]
+async fn exec_and_shutdown_cancel_backlog_and_inspect_reads() {
+    for read in ["logs", "inspect"] {
+        let runner = Arc::new(DelayedRunner::new(read));
+        let (mut engine, mut rx) = setup(runner.clone());
+        engine.apply(AppEvent::Containers(1, Ok(fixture("ls.json"))));
+        if read == "inspect" {
+            engine.dispatch(Command::SetDetailTab(bushel::engine::DetailTab::Inspect));
+        }
+        settle(&mut engine, &mut rx).await;
+        assert_eq!(runner.active.load(Ordering::SeqCst), 1);
+        engine.dispatch(Command::Run(UiAction::Exec));
+        engine.prepare_exec();
+        settle(&mut engine, &mut rx).await;
+        assert_eq!(runner.cancelled.load(Ordering::SeqCst), 1);
+        assert_eq!(runner.active.load(Ordering::SeqCst), 0);
+        engine.after_exec();
+        settle(&mut engine, &mut rx).await;
+        assert_eq!(runner.active.load(Ordering::SeqCst), 1);
+        engine.shutdown();
+        settle(&mut engine, &mut rx).await;
+        assert_eq!(runner.cancelled.load(Ordering::SeqCst), 2);
+        assert_eq!(runner.active.load(Ordering::SeqCst), 0);
+    }
 }
