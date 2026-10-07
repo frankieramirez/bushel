@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use crate::client::ContainerState;
+use crate::client::{ContainerState, canonical_reference};
 
 use super::state::{ActionKind, CONFIRM_TICKS, Pane, Pending, PendingPhase};
 
@@ -15,6 +15,14 @@ impl Target {
         Self {
             pane,
             name: name.into(),
+        }
+    }
+
+    fn reservation_key(&self) -> Self {
+        if self.pane == Pane::Images {
+            Self::new(self.pane, canonical_reference(&self.name))
+        } else {
+            self.clone()
         }
     }
 }
@@ -66,7 +74,10 @@ impl ActionPlan {
 }
 
 fn push_unique(targets: &mut Vec<Target>, target: Target) {
-    if !targets.iter().any(|existing| existing == &target) {
+    if !targets
+        .iter()
+        .any(|existing| existing.reservation_key() == target.reservation_key())
+    {
         targets.push(target);
     }
 }
@@ -142,7 +153,7 @@ impl PendingActions {
 
     pub fn can_begin(&self, plan: &ActionPlan) -> Result<(), Target> {
         for target in plan.targets() {
-            if self.reservations.contains_key(&target) {
+            if self.reservations.contains_key(&target.reservation_key()) {
                 return Err(target);
             }
         }
@@ -158,7 +169,7 @@ impl PendingActions {
             .checked_add(1)
             .expect("action identity exhausted");
         for target in plan.targets() {
-            self.reservations.insert(target, id);
+            self.reservations.insert(target.reservation_key(), id);
         }
         self.attempts.insert(
             id,
@@ -256,7 +267,7 @@ impl PendingActions {
     }
 
     pub fn pending_for(&self, target: &Target) -> Option<Pending> {
-        let id = self.reservations.get(target)?;
+        let id = self.reservations.get(&target.reservation_key())?;
         let attempt = self.attempts.get(id)?;
         Some(Pending {
             kind: attempt.plan.kind,
@@ -271,7 +282,7 @@ impl PendingActions {
     fn finish(&mut self, id: ActionId, status: OutcomeStatus) -> Option<Outcome> {
         let attempt = self.attempts.remove(&id)?;
         for target in attempt.plan.targets() {
-            self.reservations.remove(&target);
+            self.reservations.remove(&target.reservation_key());
         }
         Some(Outcome {
             id,
@@ -300,15 +311,23 @@ fn confirms(plan: &ActionPlan, rows: &[Observation]) -> bool {
             let Some(digest) = tag.digest.as_deref().filter(|digest| !digest.is_empty()) else {
                 return false;
             };
-            rows.iter()
-                .any(|row| row.name == tag.reference && row.digest.as_deref() == Some(digest))
+            rows.iter().any(|row| {
+                canonical_reference(&row.name) == canonical_reference(&tag.reference)
+                    && row.digest.as_deref() == Some(digest)
+            })
         }
         ActionKind::PruneContainers | ActionKind::PruneImages | ActionKind::PruneVolumes => false,
     }
 }
 
 fn row_for<'a>(target: &Target, rows: &'a [Observation]) -> Option<&'a Observation> {
-    rows.iter().find(|row| row.name == target.name)
+    rows.iter().find(|row| {
+        if target.pane == Pane::Images {
+            canonical_reference(&row.name) == canonical_reference(&target.name)
+        } else {
+            row.name == target.name
+        }
+    })
 }
 
 #[cfg(test)]
@@ -447,6 +466,79 @@ mod tests {
             pending.begin(conflicting),
             Err(target(Pane::Images, "dest-a"))
         );
+    }
+
+    #[test]
+    fn image_aliases_reserve_and_confirm_one_identity_without_rewriting_the_plan() {
+        let mut pending = PendingActions::new();
+        let action = ActionPlan {
+            kind: ActionKind::TagImage,
+            target: target(Pane::Images, "alpine"),
+            commands: vec![vec![
+                "image".into(),
+                "tag".into(),
+                "alpine".into(),
+                "alpine:dev".into(),
+            ]],
+            tag: Some(TagTarget {
+                reference: "alpine:dev".into(),
+                digest: Some("sha256:a".into()),
+            }),
+        };
+        let id = pending.begin(action).unwrap();
+        for reference in [
+            "alpine:latest",
+            "docker.io/library/alpine:latest",
+            "docker.io/library/alpine:dev",
+        ] {
+            assert!(
+                pending
+                    .pending_for(&target(Pane::Images, reference))
+                    .is_some()
+            );
+            assert!(
+                pending
+                    .can_begin(&plan(ActionKind::DeleteImage, Pane::Images, reference))
+                    .is_err()
+            );
+        }
+        assert!(
+            pending
+                .can_begin(&plan(ActionKind::DeleteImage, Pane::Images, "alpine:other"))
+                .is_ok()
+        );
+        assert!(
+            pending
+                .pending_for(&target(Pane::Containers, "alpine"))
+                .is_none()
+        );
+        let completion = pending.complete(id, true, 1).unwrap();
+        assert_eq!(
+            completion.plan.command(),
+            "container image tag alpine alpine:dev"
+        );
+        let rows = [row("docker.io/library/alpine:dev", None, Some("sha256:a"))];
+        let outcomes = pending.observe(Pane::Images, 2, &rows);
+        assert_eq!(outcomes[0].status, OutcomeStatus::Confirmed);
+        assert!(!pending.has_kind(Pane::Images));
+        assert!(
+            pending
+                .pending_for(&target(Pane::Images, "alpine"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_qualified_image_row_does_not_confirm_deleting_its_short_alias() {
+        let mut pending = PendingActions::new();
+        let id = pending
+            .begin(plan(ActionKind::DeleteImage, Pane::Images, "alpine"))
+            .unwrap();
+        pending.complete(id, true, 1).unwrap();
+        let rows = [row("docker.io/library/alpine:latest", None, None)];
+        assert!(pending.observe(Pane::Images, 2, &rows).is_empty());
+        let outcomes = pending.observe(Pane::Images, 3, &rows);
+        assert_eq!(outcomes[0].status, OutcomeStatus::Unconfirmed);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 pub mod error;
 pub mod model;
+mod reference;
 pub mod version;
 
 use std::sync::Arc;
@@ -7,6 +8,7 @@ use std::time::Duration;
 
 pub use error::CliError;
 pub use model::*;
+pub use reference::canonical_reference;
 
 use crate::runner::{KillHandle, LineStream, Output, Runner};
 

@@ -2184,3 +2184,70 @@ engine_test!(concurrent_tags_confirm_their_own_destinations, || {
     assert!(h.state().messages.iter().any(|m| m == "tagged second:v1"));
     assert!(h.state().images.iter().all(|i| i.pending.is_none()));
 });
+
+engine_test!(
+    short_image_references_share_pull_and_action_reservations,
+    || {
+        let canonical = "docker.io/library/alpine:latest";
+        let mut h = Harness::started(happy_mock());
+        h.engine.dispatch(Command::SwitchPane(Pane::Images));
+        h.pump();
+        h.engine.dispatch(Command::Top);
+        pull_reference(&mut h, "alpine");
+        assert_eq!(h.state().pull.as_ref().unwrap().reference, "alpine:latest");
+        assert!(
+            h.mock
+                .commands()
+                .iter()
+                .any(|c| c == "container image pull alpine:latest --progress plain")
+        );
+        h.engine.dispatch(Command::Run(UiAction::Delete));
+        assert!(
+            h.state()
+                .toast
+                .as_ref()
+                .is_some_and(|t| t.text.contains("pull already running"))
+        );
+        assert_eq!(h.state().overlay, Overlay::None);
+        tag_selected(&mut h, "dest:v1");
+        assert!(
+            h.state()
+                .toast
+                .as_ref()
+                .is_some_and(|t| t.text.contains("pull already running"))
+        );
+        assert!(
+            !h.mock
+                .commands()
+                .iter()
+                .any(|c| c.starts_with("container image tag"))
+        );
+
+        h.engine.apply(AppEvent::PullDone {
+            reference: canonical.into(),
+            code: 0,
+        });
+        assert!(
+            h.state().pull.is_none(),
+            "canonical completion must match a shorthand pull"
+        );
+        h.engine.dispatch(Command::Run(UiAction::Delete));
+        h.engine.dispatch(Command::ConfirmYes);
+        pull_reference(&mut h, "alpine");
+        assert!(
+            h.state()
+                .toast
+                .as_ref()
+                .is_some_and(|t| t.text.contains("action already pending"))
+        );
+        assert!(h.state().pull.is_none());
+        assert_eq!(
+            h.mock
+                .commands()
+                .iter()
+                .filter(|c| *c == "container image pull alpine:latest --progress plain")
+                .count(),
+            1
+        );
+    }
+);
