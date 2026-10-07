@@ -534,7 +534,9 @@ impl<R: Runner> Engine<R> {
             }
             AppEvent::PullLine { reference, line } => {
                 if let Some(p) = &mut self.state.pull {
-                    if p.reference == reference {
+                    if client::canonical_reference(&p.reference)
+                        == client::canonical_reference(&reference)
+                    {
                         p.lines.push(line);
                         if p.lines.len() > 500 {
                             let excess = p.lines.len() - 500;
@@ -544,12 +546,10 @@ impl<R: Runner> Engine<R> {
                 }
             }
             AppEvent::PullDone { reference, code } => {
-                if self
-                    .state
-                    .pull
-                    .as_ref()
-                    .is_some_and(|p| p.reference == reference)
-                {
+                if self.state.pull.as_ref().is_some_and(|p| {
+                    client::canonical_reference(&p.reference)
+                        == client::canonical_reference(&reference)
+                }) {
                     let lines = self.state.pull.take().map(|p| p.lines).unwrap_or_default();
                     self.pull_kill = None;
                     if code == 0 {
@@ -1134,11 +1134,11 @@ impl<R: Runner> Engine<R> {
             .can_begin(plan)
             .map_err(|target| format!("{}: action already pending", target.name))?;
         if let Some(pull) = &self.state.pull {
-            if plan
-                .targets()
-                .iter()
-                .any(|target| target.pane == Pane::Images && target.name == pull.reference)
-            {
+            if plan.targets().iter().any(|target| {
+                target.pane == Pane::Images
+                    && client::canonical_reference(&target.name)
+                        == client::canonical_reference(&pull.reference)
+            }) {
                 return Err(format!("{}: pull already running", pull.reference));
             }
         }
