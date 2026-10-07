@@ -1,7 +1,10 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
-use crate::client::model::{ContainerJson, ImageJson, NetworkJson, StatsJson, VolumeJson};
+use super::pending::Target;
+use crate::client::model::{
+    ContainerJson, ContainerState, ImageJson, NetworkJson, StatsJson, VolumeJson,
+};
 use crate::config::{Config, LayoutMode, PersistedConfig};
 
 pub const LOG_RING_CAP: usize = 10_000;
@@ -11,11 +14,47 @@ pub const CONFIRM_TICKS: u8 = 2;
 pub const DEGRADED_THRESHOLD: u32 = 3;
 pub const FIRST_RUN_DWELL: std::time::Duration = std::time::Duration::from_millis(1000);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadStatus {
+    Loading,
+    Ready,
+    Failed { gist: String },
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PollHealth {
+    pub consecutive_failures: u32,
+    pub last_error: Option<String>,
+    pub last_success: Option<Instant>,
+    pub last_success_tick: Option<u64>,
+}
+
+impl PollHealth {
+    pub fn fail(&mut self, gist: String) {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        self.last_error = Some(gist);
+    }
+
+    pub fn succeed(&mut self, tick: u64) {
+        self.consecutive_failures = 0;
+        self.last_error = None;
+        self.last_success = Some(Instant::now());
+        self.last_success_tick = Some(tick);
+    }
+
+    pub fn degraded(&self, tick: u64) -> bool {
+        self.consecutive_failures >= DEGRADED_THRESHOLD
+            || tick.saturating_sub(self.last_success_tick.unwrap_or(0))
+                >= u64::from(DEGRADED_THRESHOLD)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Splash,
     Main,
     ServiceDown,
+    CliMissing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -154,7 +193,7 @@ pub struct Pending {
 pub struct ContainerEntry {
     pub id: String,
     pub image: String,
-    pub state: String,
+    pub state: ContainerState,
     pub created: Option<String>,
     pub started: Option<String>,
     pub cpus: Option<u32>,
@@ -189,7 +228,7 @@ pub struct StatsSnapshot {
 
 impl ContainerEntry {
     pub fn is_running(&self) -> bool {
-        self.state == "running"
+        self.state.is_running()
     }
 }
 
@@ -235,6 +274,10 @@ pub enum Overlay {
         command: String,
         action: ActionKind,
         target: String,
+    },
+    QuitConfirm {
+        commands: Vec<String>,
+        scroll: u16,
     },
     Help,
     MessageLog,
@@ -373,11 +416,14 @@ pub struct AppState {
     pub detail_tab: DetailTab,
     pub overlay: Overlay,
     pub quit: bool,
+    /// Exit after all running mutations have reported command completion.
+    pub quitting: bool,
 
     pub containers: Vec<ContainerEntry>,
     pub images: Vec<ImageEntry>,
     pub volumes: Vec<VolumeEntry>,
     pub networks: Vec<NetworkEntry>,
+    pub reads: [ReadStatus; Pane::COUNT],
     pub selected: [Option<String>; Pane::COUNT],
 
     pub filter: String,
@@ -392,8 +438,10 @@ pub struct AppState {
     pub logs_loading: bool,
     pub follow_ended: bool,
 
-    pub inspect_cache: HashMap<String, String>,
-    pub inspect_loading: Option<String>,
+    pub inspect_cache: HashMap<Target, CachedInspect>,
+    pub inspect_loading: Option<Target>,
+    pub inspect_errors: HashMap<Target, String>,
+    inspect_revisions: HashMap<Target, u64>,
 
     pub messages: Vec<String>,
     pub toast: Option<Toast>,
@@ -405,6 +453,8 @@ pub struct AppState {
     pub version_banner: Option<String>,
     pub degraded: bool,
     pub parse_failures: u32,
+    pub poll_health: PollHealth,
+    pub stats_health: PollHealth,
 
     pub service_output: Vec<String>,
     pub service_starting: bool,
@@ -415,6 +465,12 @@ pub struct AppState {
     pub tick: u64,
     pub last_poll_at: Option<Instant>,
     pub exec_request: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CachedInspect {
+    pub identity: Option<String>,
+    pub json: String,
 }
 
 impl AppState {
@@ -434,10 +490,12 @@ impl AppState {
             overlay: Overlay::None,
             help_scroll: 0,
             quit: false,
+            quitting: false,
             containers: Vec::new(),
             images: Vec::new(),
             volumes: Vec::new(),
             networks: Vec::new(),
+            reads: std::array::from_fn(|_| ReadStatus::Loading),
             selected: [None, None, None, None],
             filter: String::new(),
             filter_input: false,
@@ -450,6 +508,8 @@ impl AppState {
             follow_ended: false,
             inspect_cache: HashMap::new(),
             inspect_loading: None,
+            inspect_errors: HashMap::new(),
+            inspect_revisions: HashMap::new(),
             messages: Vec::new(),
             toast: None,
             pull: None,
@@ -458,6 +518,8 @@ impl AppState {
             version_banner: None,
             degraded: false,
             parse_failures: 0,
+            poll_health: PollHealth::default(),
+            stats_health: PollHealth::default(),
             service_output: Vec::new(),
             service_starting: false,
             first_data: false,
@@ -466,6 +528,61 @@ impl AppState {
             tick: 0,
             last_poll_at: None,
             exec_request: None,
+        }
+    }
+
+    pub fn inspect_revision(&self, target: &Target) -> u64 {
+        self.inspect_revisions.get(target).copied().unwrap_or(0)
+    }
+
+    pub fn invalidate_inspect(&mut self, target: &Target) {
+        self.inspect_cache.remove(target);
+        self.inspect_errors.remove(target);
+        *self.inspect_revisions.entry(target.clone()).or_default() += 1;
+    }
+
+    pub fn inspect_identity(&self, target: &Target) -> Option<String> {
+        match target.pane {
+            Pane::Containers => self
+                .containers
+                .iter()
+                .find(|c| c.id == target.name)
+                .map(|c| c.state.label().to_string()),
+            Pane::Images => self
+                .images
+                .iter()
+                .find(|i| i.reference == target.name)
+                .and_then(|i| i.digest.clone()),
+            Pane::Volumes => self
+                .volumes
+                .iter()
+                .find(|v| v.name == target.name)
+                .and_then(|v| v.created.clone()),
+            Pane::Networks => self
+                .networks
+                .iter()
+                .find(|n| n.name == target.name)
+                .and_then(|n| n.created.clone()),
+        }
+    }
+
+    fn invalidate_changed_inspects(&mut self, pane: Pane, fresh: &[(String, Option<String>)]) {
+        let targets: Vec<_> = self
+            .inspect_cache
+            .keys()
+            .chain(self.inspect_loading.iter())
+            .chain(self.inspect_errors.keys())
+            .filter(|target| target.pane == pane)
+            .filter(|target| {
+                fresh
+                    .iter()
+                    .find(|(name, _)| name == &target.name)
+                    .is_none_or(|(_, identity)| identity != &self.inspect_identity(target))
+            })
+            .cloned()
+            .collect();
+        for target in targets {
+            self.invalidate_inspect(&target);
         }
     }
 
@@ -518,7 +635,9 @@ impl AppState {
                 .containers
                 .iter()
                 .enumerate()
-                .filter(|(_, c)| Self::fuzzy_match(f, &format!("{} {} {}", c.id, c.image, c.state)))
+                .filter(|(_, c)| {
+                    Self::fuzzy_match(f, &format!("{} {} {}", c.id, c.image, c.state.label()))
+                })
                 .map(|(i, _)| i)
                 .collect(),
             Pane::Images => self
@@ -661,6 +780,7 @@ impl AppState {
     }
 
     pub fn update_containers(&mut self, fresh: &[ContainerJson]) -> (Vec<String>, Vec<String>) {
+        self.reads[Pane::Containers.index()] = ReadStatus::Ready;
         let mut diffs = Vec::new();
         let mut external_stops = Vec::new();
 
@@ -669,7 +789,7 @@ impl AppState {
             .map(|c| ContainerEntry {
                 id: c.id.clone(),
                 image: c.image_reference().to_string(),
-                state: c.status.state.clone(),
+                state: c.state(),
                 created: c.configuration.creation_date.clone(),
                 started: c.status.started_date.clone(),
                 cpus: c.configuration.resources.as_ref().and_then(|r| r.cpus),
@@ -690,6 +810,7 @@ impl AppState {
             })
             .collect();
         next.sort_by(|a, b| (!a.is_running(), &a.id).cmp(&(!b.is_running(), &b.id)));
+        let mut invalidated = Vec::new();
 
         for entry in &mut next {
             if let Some(old) = self.containers.iter().find(|o| o.id == entry.id) {
@@ -698,8 +819,13 @@ impl AppState {
                 entry.telemetry = old.telemetry.clone();
                 entry.pending = old.pending;
                 if old.state != entry.state {
-                    diffs.push(format!("{}: {} → {}", entry.id, old.state, entry.state));
-                    self.inspect_cache.remove(&entry.id);
+                    diffs.push(format!(
+                        "{}: {} → {}",
+                        entry.id,
+                        old.state.label(),
+                        entry.state.label()
+                    ));
+                    invalidated.push(Target::new(Pane::Containers, &entry.id));
                     let ours = matches!(
                         old.pending.map(|p| p.kind),
                         Some(
@@ -709,7 +835,7 @@ impl AppState {
                                 | ActionKind::DeleteContainer
                         )
                     );
-                    if old.state == "running" && !entry.is_running() && !ours {
+                    if old.is_running() && !entry.is_running() && !ours {
                         external_stops.push(entry.id.clone());
                     }
                 }
@@ -718,16 +844,19 @@ impl AppState {
                     entry.mem_bytes = None;
                 }
             } else {
-                diffs.push(format!("{}: appeared ({})", entry.id, entry.state));
+                diffs.push(format!("{}: appeared ({})", entry.id, entry.state.label()));
             }
         }
         for old in &self.containers {
             if !next.iter().any(|n| n.id == old.id) {
                 diffs.push(format!("{}: removed", old.id));
-                self.inspect_cache.remove(&old.id);
+                invalidated.push(Target::new(Pane::Containers, &old.id));
             }
         }
 
+        for target in invalidated {
+            self.invalidate_inspect(&target);
+        }
         self.containers = next;
         self.clamp_selection();
         self.first_data = true;
@@ -735,6 +864,7 @@ impl AppState {
     }
 
     pub fn update_images(&mut self, fresh: &[ImageJson]) {
+        self.reads[Pane::Images.index()] = ReadStatus::Ready;
         let mut next: Vec<ImageEntry> = fresh
             .iter()
             .map(|i| ImageEntry {
@@ -755,11 +885,19 @@ impl AppState {
                 entry.pending = old.pending;
             }
         }
+        self.invalidate_changed_inspects(
+            Pane::Images,
+            &next
+                .iter()
+                .map(|i| (i.reference.clone(), i.digest.clone()))
+                .collect::<Vec<_>>(),
+        );
         self.images = next;
         self.clamp_selection();
     }
 
     pub fn update_volumes(&mut self, fresh: &[VolumeJson]) {
+        self.reads[Pane::Volumes.index()] = ReadStatus::Ready;
         let mut next: Vec<VolumeEntry> = fresh
             .iter()
             .map(|v| VolumeEntry {
@@ -783,12 +921,20 @@ impl AppState {
             }
         }
         next.sort_by(|a, b| a.name.cmp(&b.name));
+        self.invalidate_changed_inspects(
+            Pane::Volumes,
+            &next
+                .iter()
+                .map(|v| (v.name.clone(), v.created.clone()))
+                .collect::<Vec<_>>(),
+        );
         self.volumes = next;
         self.recompute_in_use();
         self.clamp_selection();
     }
 
     pub fn update_networks(&mut self, fresh: &[NetworkJson]) {
+        self.reads[Pane::Networks.index()] = ReadStatus::Ready;
         let mut next: Vec<NetworkEntry> = fresh
             .iter()
             .map(|n| NetworkEntry {
@@ -801,6 +947,13 @@ impl AppState {
             })
             .collect();
         next.sort_by(|a, b| a.name.cmp(&b.name));
+        self.invalidate_changed_inspects(
+            Pane::Networks,
+            &next
+                .iter()
+                .map(|n| (n.name.clone(), n.created.clone()))
+                .collect::<Vec<_>>(),
+        );
         self.networks = next;
         self.recompute_network_attachments();
         self.clamp_selection();

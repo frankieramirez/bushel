@@ -7,7 +7,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 
 use crate::config::LayoutMode;
-use crate::engine::state::{AppState, DetailTab, Focus, Overlay, Pane, Screen, Setting};
+use crate::engine::pending::Target;
+use crate::engine::state::{
+    AppState, DetailTab, Focus, Overlay, Pane, ReadStatus, Screen, Setting,
+};
 use crate::ui::help::{HELP, HELP_KEY_COL};
 use crate::ui::layout::{self, LayoutFacts, LayoutPlan, centered};
 use crate::ui::rows::{absent, age_cell, state_dot, uptime_cell};
@@ -23,6 +26,7 @@ pub struct DrawInfo {
     pub bottom: Rect,
     pub log_scroll: u16,
     pub help_max_scroll: u16,
+    pub quit_max_scroll: u16,
 }
 
 pub(crate) fn spinner_frame() -> usize {
@@ -40,7 +44,11 @@ pub fn draw(frame: &mut Frame, state: &AppState, th: &Theme) -> DrawInfo {
     match state.screen {
         Screen::Splash => draw_splash(frame, state, th),
         Screen::ServiceDown => draw_service_down(frame, state, th),
+        Screen::CliMissing => draw_cli_missing(frame, state, th),
         Screen::Main => draw_main(frame, state, th, &mut info),
+    }
+    if let Overlay::QuitConfirm { commands, scroll } = &state.overlay {
+        info.quit_max_scroll = draw_quit_confirm(frame, state, th, commands, *scroll);
     }
     info
 }
@@ -155,10 +163,44 @@ fn draw_main(frame: &mut Frame, state: &AppState, th: &Theme, info: &mut DrawInf
         ]));
     }
     if state.degraded {
+        let gist = state
+            .poll_health
+            .last_error
+            .as_deref()
+            .unwrap_or("poll has not completed");
+        let availability = if state.first_data {
+            "showing last good state"
+        } else {
+            "list unavailable"
+        };
         banners.push(Line::from(Span::styled(
-            " ⚠ polls failing to parse — showing last good state (see message log [m]) ",
+            format!(" polls degraded: {gist} — {availability} · [m] log "),
             Style::new().fg(th.bg()).bg(th.red()),
         )));
+    }
+
+    if state.stats_health.degraded(state.tick) && state.containers.iter().any(|c| c.is_running()) {
+        let gist = state
+            .stats_health
+            .last_error
+            .as_deref()
+            .unwrap_or("poll has not completed");
+        banners.push(Line::from(Span::styled(
+            format!(" stats unavailable: {gist} · [m] log "),
+            Style::new().fg(th.bg()).bg(th.red()),
+        )));
+    }
+
+    if state.pane != Pane::Containers {
+        if let ReadStatus::Failed { gist } = &state.reads[state.pane.index()] {
+            banners.push(Line::from(Span::styled(
+                format!(
+                    " {} list failed: {gist} — showing last good state · [m] log ",
+                    state.pane.title()
+                ),
+                Style::new().fg(th.bg()).bg(th.red()),
+            )));
+        }
     }
 
     let mut facts = LayoutFacts::from_state(state);
@@ -206,7 +248,38 @@ fn draw_main(frame: &mut Frame, state: &AppState, th: &Theme, info: &mut DrawInf
         Overlay::TagInput { text } => draw_tag_input(frame, th, text),
         Overlay::CreateVolumeInput { text } => draw_create_volume_input(frame, th, text),
         Overlay::Settings { cursor } => draw_settings(frame, state, th, *cursor),
-        Overlay::None => {}
+        Overlay::QuitConfirm { .. } | Overlay::None => {}
+    }
+}
+
+fn draw_cli_missing(frame: &mut Frame, state: &AppState, th: &Theme) {
+    let area = centered(frame.area(), 68, 12);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(th.red()))
+        .title(" bushel ");
+    let lines = vec![
+        Line::raw(""),
+        Line::from(Span::styled(
+            " container CLI not found — lists unavailable",
+            Style::new().fg(th.red()).bold(),
+        )),
+        Line::raw(""),
+        Line::raw(" Install Apple's container CLI using its instructions:"),
+        Line::raw(" github.com/apple/container"),
+        Line::raw(""),
+        Line::raw(" Restart bushel once container is available on PATH."),
+        Line::raw(""),
+        Line::raw(" [m] message log    [q] quit"),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+    if state.overlay == Overlay::MessageLog {
+        draw_message_log(frame, state, th);
     }
 }
 
@@ -242,10 +315,23 @@ fn draw_header(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, floo
 }
 
 fn append_status_cluster(spans: &mut Vec<Span<'static>>, state: &AppState, th: &Theme, width: u16) {
-    let service_up = state.screen != Screen::ServiceDown;
+    let service_up = state.screen != Screen::ServiceDown
+        && state.reads[Pane::Containers.index()] == ReadStatus::Ready
+        && state.poll_health.consecutive_failures == 0
+        && !state.degraded
+        && (!state.containers.iter().any(|c| c.is_running())
+            || (state.stats_health.consecutive_failures == 0
+                && !state.stats_health.degraded(state.tick)));
     let version = state.cli_version.clone().unwrap_or_else(|| "?".into());
+    let status = if service_up {
+        "service"
+    } else if state.reads[Pane::Containers.index()] == ReadStatus::Loading && !state.degraded {
+        "loading"
+    } else {
+        "degraded"
+    };
     let sp = th.spinner(spinner_frame());
-    let cluster = format!("● service   container {version}  {sp} ");
+    let cluster = format!("● {status}   container {version}  {sp} ");
     let cluster_len = cluster.chars().count();
     let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
     if (width as usize) <= used + cluster_len {
@@ -256,7 +342,10 @@ fn append_status_cluster(spans: &mut Vec<Span<'static>>, state: &AppState, th: &
         if th.ascii { "* " } else { "● " },
         Style::new().fg(if service_up { th.accent() } else { th.red() }),
     ));
-    spans.push(Span::styled("service   ", Style::new().fg(th.dim())));
+    spans.push(Span::styled(
+        format!("{status}   "),
+        Style::new().fg(th.dim()),
+    ));
     spans.push(Span::styled(
         format!("container {version}  "),
         Style::new().fg(th.dim()),
@@ -276,7 +365,7 @@ fn detail_header(state: &AppState, th: &Theme, width: u16) -> Line<'static> {
                     Style::new().fg(th.text()).bold(),
                 ));
                 left.push(Span::styled(
-                    format!("   {} ", c.state),
+                    format!("   {} ", c.state.label()),
                     Style::new().fg(if c.is_running() {
                         th.accent()
                     } else {
@@ -491,8 +580,10 @@ fn draw_detail(
         let Some(id) = id else {
             return vec![Line::raw("no selection")];
         };
-        match state.inspect_cache.get(id) {
-            Some(json) => json
+        let target = Target::new(state.pane, id);
+        match state.inspect_cache.get(&target) {
+            Some(cached) => cached
+                .json
                 .lines()
                 .map(|l| {
                     let style = if l.trim_start().starts_with('"') {
@@ -504,7 +595,13 @@ fn draw_detail(
                 })
                 .collect(),
             None => vec![Line::from(Span::styled(
-                format!("{} loading inspect …", th.spinner(spinner_frame())),
+                state
+                    .inspect_errors
+                    .get(&target)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        format!("{} loading inspect …", th.spinner(spinner_frame()))
+                    }),
                 Style::new().fg(th.dim()),
             ))],
         }
@@ -529,6 +626,15 @@ fn draw_detail(
                 }
                 let marker = if state.selected_container().is_none() {
                     Span::styled("── no selection ──", Style::new().fg(th.dim()))
+                } else if state.selected_container().is_some_and(|c| !c.is_running()) {
+                    Span::styled(
+                        if th.ascii {
+                            "-- container stopped | follow ended --"
+                        } else {
+                            "── container stopped · follow ended ──"
+                        },
+                        Style::new().fg(th.dim()),
+                    )
                 } else if state.log_owner.is_none() {
                     Span::styled(
                         "── container not running: no live logs ──",
@@ -774,6 +880,66 @@ fn draw_action_menu(frame: &mut Frame, state: &AppState, th: &Theme, detail: Rec
         })
         .collect();
     frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+fn draw_quit_confirm(
+    frame: &mut Frame,
+    state: &AppState,
+    th: &Theme,
+    commands: &[String],
+    scroll: u16,
+) -> u16 {
+    let area = centered(
+        frame.area(),
+        76,
+        frame.area().height.saturating_sub(2).min(20),
+    );
+    frame.render_widget(Clear, area);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(th.yellow()))
+        .title(if state.quitting {
+            " waiting to quit "
+        } else {
+            " still running "
+        })
+        .style(Style::new().bg(th.panel()).fg(th.text()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height == 0 {
+        return 0;
+    }
+    let body = Rect {
+        height: inner.height.saturating_sub(2),
+        ..inner
+    };
+    let keys = Rect {
+        y: body.bottom(),
+        height: inner.height.min(2),
+        ..inner
+    };
+    let rows: Vec<_> = commands
+        .iter()
+        .flat_map(|command| log_view::split_line(command, true, body.width))
+        .map(Line::raw)
+        .collect();
+    let max_scroll = rows
+        .len()
+        .saturating_sub(body.height as usize)
+        .min(u16::MAX as usize) as u16;
+    frame.render_widget(
+        Paragraph::new(rows).scroll((scroll.min(max_scroll), 0)),
+        body,
+    );
+    frame.render_widget(
+        Paragraph::new(if state.quitting {
+            "[q] quit now   [esc] cancel wait\n[j/k, pgup/pgdn] scroll commands"
+        } else {
+            "[w] wait and quit   [q] quit now   [esc] cancel\n[j/k, pgup/pgdn] scroll commands"
+        }),
+        keys,
+    );
+    max_scroll
 }
 
 fn draw_confirm(frame: &mut Frame, th: &Theme, command: &str) {
@@ -1054,6 +1220,7 @@ mod tests {
 
     pub(crate) fn sample() -> AppState {
         let mut s = AppState::new(true);
+        s.reads = std::array::from_fn(|_| ReadStatus::Ready);
         s.cli_version = Some("1.2.0".into());
         s.containers.push(ContainerEntry {
             id: "qtest".into(),
