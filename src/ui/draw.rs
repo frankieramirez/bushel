@@ -1786,6 +1786,62 @@ mod tests {
     }
 
     #[test]
+    fn every_table_pane_keeps_the_filter_tail_and_cursor_in_the_frame() {
+        for (w, h) in [(55, 20), (80, 24), (120, 40)] {
+            for pane in Pane::all() {
+                for ascii in [false, true] {
+                    let cursor = if ascii { "_" } else { "▏" };
+                    for filter in ["qt".to_string(), format!("{}tail", "x".repeat(200))] {
+                        let mut s = tabled();
+                        s.pane = pane;
+                        s.filter = filter.clone();
+                        s.filter_input = true;
+                        let frame = render_theme(w, h, &s, ascii);
+                        let suffix = if filter == "qt" { "qt" } else { "tail" };
+                        assert!(
+                            frame.contains(&format!("{suffix}{cursor}")),
+                            "{pane:?} {w}x{h} ASCII={ascii}:\n{frame}"
+                        );
+                        assert!(frame.contains('/'), "{frame}");
+                        if filter.len() > 2 {
+                            assert!(frame.contains(if ascii { '~' } else { '…' }), "{frame}");
+                            if ascii && pane == Pane::Networks {
+                                if let Some(destination) =
+                                    std::env::var_os("BUSHEL_RENDER_PROOF_DIR")
+                                {
+                                    std::fs::write(
+                                        std::path::Path::new(&destination)
+                                            .join(format!("filter-networks-{w}x{h}.txt")),
+                                        &frame,
+                                    )
+                                    .unwrap();
+                                }
+                            }
+                        }
+                        s.filter_input = false;
+                        let frame = render_theme(w, h, &s, ascii);
+                        assert!(frame.contains(suffix), "{pane:?} {w}x{h}:\n{frame}");
+                        assert!(frame.contains('/'), "{frame}");
+                    }
+                    let mut s = tabled();
+                    s.pane = pane;
+                    s.filter = format!("{}界e\u{301}👩\u{200d}💻", "x".repeat(200));
+                    s.filter_input = true;
+                    let frame = render_theme(w, h, &s, ascii);
+                    // TestBackend's continuation cells contribute blanks after
+                    // wide glyphs; the complete grapheme symbols must survive.
+                    assert!(
+                        frame
+                            .replace(' ', "")
+                            .contains(&format!("界e\u{301}👩\u{200d}💻{cursor}")),
+                        "{pane:?} {w}x{h} ASCII={ascii}:\n{frame}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn the_settings_panel_shows_every_config_field_and_where_it_goes() {
         let mut s = sample();
         s.overlay = Overlay::Settings { cursor: 1 };

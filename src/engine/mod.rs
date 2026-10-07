@@ -715,7 +715,7 @@ impl<R: Runner> Engine<R> {
         match result {
             Ok(()) => {
                 self.state
-                    .log_message(format!("$ {command} → ok, awaiting poll confirmation"));
+                    .log_message(format!("$ {command} -> ok, awaiting poll confirmation"));
                 self.refresh_pane(plan.target.pane);
                 self.state.inspect_cache.remove(&plan.target.name);
             }

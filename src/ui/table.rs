@@ -1,5 +1,5 @@
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -146,7 +146,14 @@ fn draw_table(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, floor
             Style::new().fg(th.dim()),
         ));
     }
-    lines.push(Line::from(head));
+    // The active filter owns space in this row, independent of its pane's
+    // position in the switcher. Reserve that space before drawing the labels.
+    let filter_width = if state.filter_input || !state.filter.is_empty() {
+        area.width / 2
+    } else {
+        0
+    };
+    lines.push(Line::default());
     if !floor {
         let glyph = if th.ascii { "-" } else { "─" };
         lines.push(Line::from(Span::styled(
@@ -171,6 +178,41 @@ fn draw_table(frame: &mut Frame, state: &AppState, th: &Theme, area: Rect, floor
         }
     }
     frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(
+        Paragraph::new(Line::from(head)),
+        Rect {
+            width: area.width.saturating_sub(filter_width),
+            height: 1,
+            ..area
+        },
+    );
+    if filter_width > 0 {
+        let cursor = if state.filter_input { th.cursor() } else { "" };
+        let room = (filter_width as usize).saturating_sub(1 + usize::from(state.filter_input));
+        let clipped = crate::ui::log_view::input_tail(&state.filter, room) != state.filter;
+        let marker = if clipped && room > 0 {
+            if th.ascii { "~" } else { "…" }
+        } else {
+            ""
+        };
+        let tail = crate::ui::log_view::input_tail(
+            &state.filter,
+            room.saturating_sub(usize::from(!marker.is_empty())),
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("/{marker}{tail}{cursor}"),
+                Style::new().fg(th.accent()),
+            )))
+            .alignment(Alignment::Right),
+            Rect {
+                x: area.right() - filter_width,
+                width: filter_width,
+                height: 1,
+                ..area
+            },
+        );
+    }
 }
 
 fn empty_hint(state: &AppState) -> &'static str {
@@ -432,16 +474,6 @@ pub fn header_line(state: &AppState, th: &Theme) -> Vec<Span<'static>> {
                 Style::new().fg(th.dim())
             },
         ));
-        if active && (state.filter_input || !state.filter.is_empty()) {
-            spans.push(Span::styled(
-                format!(
-                    "  /{}{}",
-                    state.filter,
-                    if state.filter_input { th.cursor() } else { "" }
-                ),
-                Style::new().fg(th.accent()),
-            ));
-        }
     }
     spans
 }

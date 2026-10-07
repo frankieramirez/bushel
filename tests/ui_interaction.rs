@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
 use bushel::client::{Client, model::ContainerJson};
-use bushel::engine::{AppEvent, AppState, Command, Engine, Focus, Overlay, Pane, Screen};
-use bushel::runner::MockRunner;
+use bushel::engine::{
+    AppEvent, AppState, Command, DetailTab, Engine, Focus, Overlay, Pane, Screen, UiAction,
+};
+use bushel::runner::{MockRunner, Output};
 use bushel::ui::{Ui, draw, keymap, theme::Theme};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{Terminal, backend::TestBackend};
@@ -69,6 +71,83 @@ async fn filtering_keeps_a_visible_selection_and_unicode_backspace_removes_a_gra
     assert_eq!(engine.state.filter, "old-batch");
     assert_eq!(engine.state.selected_container().unwrap().id, "old-batch");
     engine.shutdown();
+}
+
+#[tokio::test]
+async fn actual_action_and_poll_messages_render_ascii_without_rewriting_external_text() {
+    let mock = Arc::new(MockRunner::new());
+    mock.on(&["start", "old-batch"], Output::ok(""));
+    mock.on(&["stop", "old-batch"], Output::fail(1, "external → é"));
+    for id in ["qtest", "old-batch"] {
+        mock.on(&["inspect", id], Output::ok("{}"));
+    }
+    let (tx, mut rx) = mpsc::channel(64);
+    let mut engine = Engine::new(Client::new(mock), tx, true);
+    engine.state.config.ascii = true;
+    engine.state.detail_tab = DetailTab::Inspect;
+    let mut containers: Vec<ContainerJson> =
+        serde_json::from_str(include_str!("../fixtures/1.2.0/ls.json")).unwrap();
+    engine.apply(AppEvent::Containers(1, Ok(containers.clone())));
+    engine.state.messages.clear();
+    engine.dispatch(Command::Bottom);
+    engine.dispatch(Command::Run(UiAction::Start));
+    apply_action_completion(&mut engine, &mut rx).await;
+    assert!(
+        engine
+            .state
+            .messages
+            .iter()
+            .any(|m| m.contains("awaiting poll confirmation"))
+    );
+    for container in &mut containers {
+        container.status.state = "running".into();
+    }
+    engine.apply(AppEvent::Containers(100, Ok(containers.clone())));
+    assert!(
+        engine
+            .state
+            .messages
+            .iter()
+            .any(|m| m.contains("stopped -> running"))
+    );
+    engine.dispatch(Command::OpenMessageLog);
+    for (width, height) in [(55, 20), (80, 24), (120, 40)] {
+        let (text, _) = render(&engine.state, width, height);
+        assert!(text.is_ascii(), "{width}x{height}: {text}");
+        assert!(text.contains("stopped -> running"), "{text}");
+        assert!(text.contains("$ container start old-batch -> ok"), "{text}");
+    }
+
+    // Raw CLI stderr and user identifiers retain their original Unicode.
+    engine.dispatch(Command::CloseOverlay);
+    engine.dispatch(Command::Top);
+    engine.dispatch(Command::Run(UiAction::Stop));
+    apply_action_completion(&mut engine, &mut rx).await;
+    engine.dispatch(Command::OpenMessageLog);
+    assert!(render(&engine.state, 120, 40).0.contains("external → é"));
+    engine.dispatch(Command::CloseOverlay);
+    containers[0].id = "job→é".into();
+    engine.apply(AppEvent::Containers(101, Ok(containers)));
+    engine.dispatch(Command::OpenMessageLog);
+    assert!(render(&engine.state, 120, 40).0.contains("job→é: appeared"));
+    engine.shutdown();
+}
+
+async fn apply_action_completion(
+    engine: &mut Engine<MockRunner>,
+    rx: &mut mpsc::Receiver<AppEvent>,
+) {
+    loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+            .await
+            .expect("action completed")
+            .expect("Engine sender remains alive");
+        let done = matches!(event, AppEvent::ActionDone { .. });
+        engine.apply(event);
+        if done {
+            break;
+        }
+    }
 }
 
 #[test]

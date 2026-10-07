@@ -641,7 +641,7 @@ engine_test!(external_stop_is_announced_but_bushel_stops_are_not, || {
         h.state()
             .messages
             .iter()
-            .any(|m| m.contains("running → stopped"))
+            .any(|m| m.contains("running -> stopped"))
     );
 });
 

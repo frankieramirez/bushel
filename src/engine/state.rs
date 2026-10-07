@@ -708,7 +708,7 @@ impl AppState {
                 entry.telemetry = old.telemetry.clone();
                 entry.pending = old.pending;
                 if old.state != entry.state {
-                    diffs.push(format!("{}: {} → {}", entry.id, old.state, entry.state));
+                    diffs.push(format!("{}: {} -> {}", entry.id, old.state, entry.state));
                     self.inspect_cache.remove(&entry.id);
                     let ours = matches!(
                         old.pending.map(|p| p.kind),
