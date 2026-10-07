@@ -1821,6 +1821,45 @@ engine_test!(the_settings_panel_moves_toggles_and_persists, || {
         valid.replace("layout = \"rail\"", "layout = \"table\"")
     );
     assert!(h.state().toast.is_none());
+
+    #[cfg(unix)]
+    {
+        let target = dir.join("target.toml");
+        let link = dir.join("linked.toml");
+        let original = "ascii = false\nlayout = \"table\"\nreduced_motion = true\n# keep me\n";
+        std::fs::write(&target, original).unwrap();
+        std::os::unix::fs::symlink("target.toml", &link).unwrap();
+        h.engine.configure(Config::load_from(link.clone()));
+        h.engine.state.toast = None;
+        h.engine.dispatch(Command::OpenSettings);
+        h.engine.dispatch(Command::SettingsMove(1));
+        h.engine.dispatch(Command::SettingsToggle);
+        assert!(
+            h.state().config.ascii,
+            "the requested session toggle still takes effect"
+        );
+        assert_eq!(h.state().layout(), LayoutMode::Table);
+        assert!(
+            h.state().config.reduced_motion,
+            "other session settings are retained"
+        );
+        assert!(
+            !h.state().persisted.effective().ascii,
+            "persisted settings stay unchanged"
+        );
+        assert!(
+            h.state()
+                .toast
+                .as_ref()
+                .is_some_and(|t| t.error && t.text.contains("symbolic link"))
+        );
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            std::path::Path::new("target.toml")
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), original);
+        assert_eq!(std::fs::read_to_string(&link).unwrap(), original);
+    }
 });
 
 engine_test!(

@@ -50,7 +50,11 @@ pub enum StreamEvent {
 }
 
 /// Output lines followed by exactly one terminal Exit event.
-/// Readers are drained for up to two seconds after process exit.
+/// The drain deadline starts when the child exits or is killed. Readers get
+/// up to two seconds to deliver remaining stdout and stderr, including queued
+/// lines. A descendant retaining a pipe or a stalled receiver cannot hold the
+/// stream open indefinitely: remaining readers are aborted and joined before
+/// Exit, and any output still undelivered at the deadline is discarded.
 pub type LineStream = mpsc::Receiver<StreamEvent>;
 
 pub struct KillHandle {
@@ -376,6 +380,40 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stream_exit_follows_large_final_output_on_both_pipes() {
+        let mut command = Command::new("sh");
+        // Over two MiB total: larger than both pipe buffers and the 256-event
+        // channel, exercising delivery under backpressure on both readers.
+        command.args(["-c", r#"i=0; while [ $i -lt 4096 ]; do printf 'out%04d:%0256d\n' "$i" 0; printf 'err%04d:%0256d\n' "$i" 0 >&2; i=$((i+1)); done; exit 5"#]);
+        let (mut stream, _kill) = spawn_command_stream(command).unwrap();
+        let mut stdout = 0;
+        let mut stderr = 0;
+        let mut exited = false;
+        while let Some(event) = stream.recv().await {
+            assert!(!exited, "no event may follow Exit");
+            match event {
+                StreamEvent::Stdout(line) => {
+                    assert_eq!(line, format!("out{stdout:04}:{:0256}", 0));
+                    stdout += 1;
+                }
+                StreamEvent::Stderr(line) => {
+                    assert_eq!(line, format!("err{stderr:04}:{:0256}", 0));
+                    stderr += 1;
+                }
+                StreamEvent::Exit(code) => {
+                    assert_eq!((stdout, stderr, code), (4096, 4096, 5));
+                    exited = true;
+                }
+            }
+            if (stdout + stderr) % 128 == 0 {
+                tokio::task::yield_now().await;
+            }
+        }
+        assert!(exited);
     }
 
     #[cfg(unix)]

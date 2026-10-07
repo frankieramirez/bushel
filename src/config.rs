@@ -135,7 +135,9 @@ impl PersistedConfig {
     }
 
     /// Persist only one known setting, preserving all other document content.
-    /// Invalid or externally changed files are left untouched.
+    /// Invalid or externally changed files are left untouched. Symbolic links
+    /// are refused because atomic rename would replace the link itself; both
+    /// the link and its target retain their original contents.
     pub fn save_setting(
         &mut self,
         key: &str,
