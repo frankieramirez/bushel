@@ -1329,12 +1329,19 @@ mod tests {
             reduced_motion: true,
         };
         let render = |tick| {
-            let mut terminal = Terminal::new(TestBackend::new(120, 1)).unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
             terminal
                 .draw(|f| {
+                    draw(f, &s, &th);
                     let mut spans = th.gradient_spans(" bushel ", true);
                     append_status_cluster(&mut spans, &s, &th, 120, tick);
-                    f.render_widget(Paragraph::new(Line::from(spans)), f.area());
+                    f.render_widget(
+                        Paragraph::new(Line::from(spans)),
+                        Rect {
+                            height: 1,
+                            ..f.area()
+                        },
+                    );
                 })
                 .unwrap();
             terminal.backend().buffer().clone()
@@ -1965,7 +1972,7 @@ mod tests {
         s.overlay = Overlay::PullInput {
             text: format!("{}終点", "界".repeat(60)),
         };
-        for (w, h) in [(55, 20), (120, 40)] {
+        for (w, h) in [(55, 20), (80, 24), (120, 40)] {
             let view = render(w, h, &s);
             assert!(view.replace(' ', "").contains("終点▏"), "{view}");
         }
