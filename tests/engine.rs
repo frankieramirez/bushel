@@ -187,6 +187,18 @@ engine_test!(
                 .commands()
                 .contains(&"container volume inspect qtest".to_string())
         );
+        assert!(render_state(h.state()).contains(r#""kind":"volume""#));
+        h.engine.dispatch(Command::SwitchPane(Pane::Containers));
+        h.pump();
+        assert!(render_state(h.state()).contains(r#""kind":"container""#));
+        assert_eq!(
+            h.mock
+                .commands()
+                .iter()
+                .filter(|command| command.as_str() == "container inspect qtest")
+                .count(),
+            1
+        );
     }
 );
 
