@@ -1,7 +1,9 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
-use crate::client::model::{ContainerJson, ImageJson, NetworkJson, StatsJson, VolumeJson};
+use crate::client::model::{
+    ContainerJson, ContainerState, ImageJson, NetworkJson, StatsJson, VolumeJson,
+};
 use crate::config::{Config, LayoutMode};
 
 pub const LOG_RING_CAP: usize = 10_000;
@@ -154,7 +156,7 @@ pub struct Pending {
 pub struct ContainerEntry {
     pub id: String,
     pub image: String,
-    pub state: String,
+    pub state: ContainerState,
     pub created: Option<String>,
     pub started: Option<String>,
     pub cpus: Option<u32>,
@@ -189,7 +191,7 @@ pub struct StatsSnapshot {
 
 impl ContainerEntry {
     pub fn is_running(&self) -> bool {
-        self.state == "running"
+        self.state.is_running()
     }
 }
 
@@ -518,7 +520,9 @@ impl AppState {
                 .containers
                 .iter()
                 .enumerate()
-                .filter(|(_, c)| Self::fuzzy_match(f, &format!("{} {} {}", c.id, c.image, c.state)))
+                .filter(|(_, c)| {
+                    Self::fuzzy_match(f, &format!("{} {} {}", c.id, c.image, c.state.label()))
+                })
                 .map(|(i, _)| i)
                 .collect(),
             Pane::Images => self
@@ -669,7 +673,7 @@ impl AppState {
             .map(|c| ContainerEntry {
                 id: c.id.clone(),
                 image: c.image_reference().to_string(),
-                state: c.status.state.clone(),
+                state: c.state(),
                 created: c.configuration.creation_date.clone(),
                 started: c.status.started_date.clone(),
                 cpus: c.configuration.resources.as_ref().and_then(|r| r.cpus),
@@ -698,7 +702,12 @@ impl AppState {
                 entry.telemetry = old.telemetry.clone();
                 entry.pending = old.pending;
                 if old.state != entry.state {
-                    diffs.push(format!("{}: {} → {}", entry.id, old.state, entry.state));
+                    diffs.push(format!(
+                        "{}: {} → {}",
+                        entry.id,
+                        old.state.label(),
+                        entry.state.label()
+                    ));
                     self.inspect_cache.remove(&entry.id);
                     let ours = matches!(
                         old.pending.map(|p| p.kind),
@@ -709,7 +718,7 @@ impl AppState {
                                 | ActionKind::DeleteContainer
                         )
                     );
-                    if old.state == "running" && !entry.is_running() && !ours {
+                    if old.is_running() && !entry.is_running() && !ours {
                         external_stops.push(entry.id.clone());
                     }
                 }
@@ -718,7 +727,7 @@ impl AppState {
                     entry.mem_bytes = None;
                 }
             } else {
-                diffs.push(format!("{}: appeared ({})", entry.id, entry.state));
+                diffs.push(format!("{}: appeared ({})", entry.id, entry.state.label()));
             }
         }
         for old in &self.containers {

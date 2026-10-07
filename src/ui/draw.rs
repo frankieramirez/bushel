@@ -276,7 +276,7 @@ fn detail_header(state: &AppState, th: &Theme, width: u16) -> Line<'static> {
                     Style::new().fg(th.text()).bold(),
                 ));
                 left.push(Span::styled(
-                    format!("   {} ", c.state),
+                    format!("   {} ", c.state.label()),
                     Style::new().fg(if c.is_running() {
                         th.accent()
                     } else {

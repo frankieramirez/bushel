@@ -76,9 +76,51 @@ pub struct ContainerNetwork {
     pub hostname: Option<String>,
 }
 
-impl ContainerJson {
+/// Client-owned interpretation of the container CLI's state vocabulary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContainerState {
+    Running,
+    Stopped,
+    Other(String),
+}
+
+impl ContainerState {
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Running => "running",
+            Self::Stopped => "stopped",
+            Self::Other(label) => label,
+        }
+    }
+
     pub fn is_running(&self) -> bool {
-        self.status.state == "running"
+        matches!(self, Self::Running)
+    }
+}
+
+impl From<&str> for ContainerState {
+    fn from(label: &str) -> Self {
+        match label {
+            "running" => Self::Running,
+            "stopped" => Self::Stopped,
+            other => Self::Other(other.to_string()),
+        }
+    }
+}
+
+impl From<String> for ContainerState {
+    fn from(label: String) -> Self {
+        Self::from(label.as_str())
+    }
+}
+
+impl ContainerJson {
+    pub fn state(&self) -> ContainerState {
+        ContainerState::from(self.status.state.as_str())
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.state().is_running()
     }
 
     pub fn image_reference(&self) -> &str {
@@ -285,5 +327,27 @@ pub struct SystemStatusJson {
 impl SystemStatusJson {
     pub fn is_running(&self) -> bool {
         self.status == "running"
+    }
+}
+
+#[cfg(test)]
+mod container_state_tests {
+    use super::*;
+
+    #[test]
+    fn container_states_parse_known_and_unknown_cli_labels() {
+        for version in ["1.2.0", "1.3.1"] {
+            let json = std::fs::read(format!("fixtures/{version}/ls.json")).unwrap();
+            let rows: Vec<ContainerJson> = serde_json::from_slice(&json).unwrap();
+            assert_eq!(rows[0].state(), ContainerState::Running);
+            assert_eq!(rows[1].state(), ContainerState::Stopped);
+        }
+        let row: ContainerJson =
+            serde_json::from_str(r#"{"id":"worker","status":{"state":"stopping"}}"#).unwrap();
+        assert_eq!(row.state(), ContainerState::Other("stopping".into()));
+        assert_eq!(row.state().label(), "stopping");
+        assert!(!row.is_running());
+        let missing: ContainerJson = serde_json::from_str(r#"{"id":"worker"}"#).unwrap();
+        assert_eq!(missing.state(), ContainerState::Other(String::new()));
     }
 }
